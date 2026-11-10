@@ -5,6 +5,8 @@
  *   node verify/probe-continue.js fresh   a folder with NO earlier conversation: what does `claude --continue` print and exit with?
  *   node verify/probe-continue.js prior   a folder WITH one (a first turn is made for it): does `--continue` pick it up, and does
  *                                         host/continue-flag.js (the check the host really uses) see the transcript the CLI wrote?
+ *   node verify/probe-continue.js meta    the INTERACTIVE CLI with `--resume <id>` where the id's transcript has ONLY bookkeeping lines (a file-history-snapshot,
+ *                                         no user or assistant entry): does it refuse and exit 1? (PR #250 safety net, host/resume-retry.js)
  *   node verify/probe-continue.js tty     the INTERACTIVE CLI (what a tab runs) in a pty with --continue and nothing to continue, 20 s,
  *                                         no turn made: this is the mode that measured the exit 1 "No conversation found to continue"
  *                                         (CLI 2.1.322) behind host/continue-flag.js. (The host resumes by session id now, host/main-session.js;
@@ -27,6 +29,7 @@ const { claudeProjectsDir } = require('../host/claude-config-dir');
 const { projectDirName } = require('../host/project-dir');
 
 const mode = process.argv[2] === 'prior' ? 'prior' : 'fresh';
+const RESUME_ID = '33333333-aaaa-4bbb-8ccc-000000000003';
 const SCRATCH = path.join(os.tmpdir(), 'claude', 'cc-continue-scratch', `${mode}-${Date.now()}`);
 fs.mkdirSync(SCRATCH, { recursive: true });
 const say = (...a) => console.log('[probe-continue]', ...a);
@@ -63,14 +66,14 @@ function turn(extra, prompt, ms = 120000) {
 }
 
 /** The interactive CLI (what a tab runs) in a pty, with `--continue` and nothing to continue: no turn is made, only the screen is read. */
-function tty(ms = 20000) {
+function tty(ms = 20000, extra = ['--continue']) {
   return new Promise((resolve) => {
     const pty = require('node-pty');
     // the host's own candidates (host/host.js resolveClaude)
     const bin = [path.join(process.env.APPDATA || '', 'npm/node_modules/@anthropic-ai/claude-code/bin/claude.exe'), path.join(os.homedir(), '.local/bin/claude.exe')]
       .find(c => fs.existsSync(c)) || 'claude.exe';
     say(`binary ${bin}`);
-    const p = pty.spawn(bin, ['--continue', '--model', 'haiku'], { cwd: SCRATCH, cols: 120, rows: 30, env: process.env });
+    const p = pty.spawn(bin, [...extra, '--model', 'haiku'], { cwd: SCRATCH, cols: 120, rows: 30, env: process.env });
     noteChild(p);
     children.add(p.pid);
     let screen = ''; let exited = null;
@@ -85,6 +88,15 @@ function tty(ms = 20000) {
 
 (async () => {
   say(`scratch folder ${SCRATCH}`);
+  if (process.argv[2] === 'meta') {
+    const dir = path.join(claudeProjectsDir(), projectDirName(SCRATCH));
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, `${RESUME_ID}.jsonl`), JSON.stringify({ type: 'file-history-snapshot', messageId: 'm', snapshot: {} }) + String.fromCharCode(10));
+    const r = await tty(20000, ['--resume', RESUME_ID]);
+    say(`interactive --resume <meta-only id>: ${r.exited === null ? 'still running after 20 s' : `exited ${r.exited}`}`);
+    say(`screen: ${JSON.stringify(r.screen.slice(0, 600))}`);
+    process.exit(0);
+  }
   if (process.argv[2] === 'tty') {
     const r = await tty();
     say(`interactive --continue, nothing to continue: ${r.exited === null ? 'still running after 20 s' : `exited ${r.exited}`}`);

@@ -50,7 +50,7 @@ test('host.js: a shell that fails to spawn ENDS the host through the same exit p
   assert.match(start, /\} else \{\s*\n\s*term = spawnTimed\(\);/, 'claude keeps the plain spawn, timed');
   const end = HOST.slice(HOST.indexOf('function endHost('));
   assert.match(end, /releaseSessionLock\(SESSION_LOCK, lockOwner\)[\s\S]*type: 'exit', exitCode, signal, \.\.\.extra[\s\S]*process\.exit\(exitCode \?\? 0\)/);
-  assert.match(HOST, /t\.onExit\(\(\{ exitCode, signal \}\) => \{[\s\S]{0,200}endHost\(exitCode, signal\);/);
+  assert.match(HOST, /t\.onExit\(\(\{ exitCode, signal \}\) => \{[\s\S]{0,420}endHost\(exitCode, signal\);/);
 });
 
 test('host.js: a shell host polls no quota, asks for none on attach, and loads no mod', () => {

@@ -173,6 +173,7 @@ const { worktreeEnv, worktreeRoot } = require('./worktree-env');
 const { allocate: allocatePortBlock, excludedRanges } = require('./port-blocks');
 const { branchHealth } = require('./branch-health');
 const { recordMainSession, resumeIdFor } = require('./main-session');
+const { createResumeWatch, WITHIN_MS: RESUME_RETRY_MS } = require('./resume-retry');
 
 // --- locate the real claude binary -----------------------------------------
 // npm installs a native claude.exe; spawning it directly avoids a cmd.exe shim
@@ -776,9 +777,13 @@ const MAIN_SESSIONS_FILE = path.join(HARNESS_DIR, 'state', 'main-sessions.json')
  * `--continue` (the folder's newest conversation, which may be a side session's). Asked at each spawn (a session started after the
  * kill switch, a lock or a click on an ended tab resumes too). The interactive CLI resuming nothing exits 1 (host/continue-flag.js).
  */
+let RESUME_REFUSED = false;      // the CLI refused a --resume once (host/resume-retry.js): the retry starts fresh
+let LAST_SPAWN_RESUMED = false;  // the arguments of the last claudeArgs() carried --resume
 function claudeArgs() {
-  const resumeId = SIDE || SHELL ? null : resumeIdFor({ file: MAIN_SESSIONS_FILE, cwd: CWD, store: { log: (l) => console.log(l) } });
-  return argsForSpawn({ side: SIDE, shell: SHELL, args: ARGS, options: ARGS_OPTIONS, modDir: ARGS_MOD_DIR, resumeId });
+  const resumeId = SIDE || SHELL || RESUME_REFUSED ? null : resumeIdFor({ file: MAIN_SESSIONS_FILE, cwd: CWD, store: { log: (l) => console.log(l) } });
+  const args = argsForSpawn({ side: SIDE, shell: SHELL, args: ARGS, options: ARGS_OPTIONS, modDir: ARGS_MOD_DIR, resumeId });
+  LAST_SPAWN_RESUMED = args.includes('--resume');
+  return args;
 }
 // A shell host runs the person's shell with no arguments (host/launch-target.js pickShell); claude's arguments are for claude.
 const SHELL_TARGET = SHELL ? pickShell(process.env) : null;
@@ -2009,7 +2014,21 @@ function startSession() {
   // And the identity names it, so a stop (▾, `--stop`) waits for this claude
   // too, lock or no lock (Dexter, PR #83 F1).
   republishIdentity();
-  wireTerm(term);
+  // PR #250 safety net: a --resume the CLI refuses (measured: "No conversation found", exit 1, at once) must not kill the tab at every
+  // launch. The host starts it ONCE more, fresh, and says why (host/resume-retry.js).
+  const retryFresh = () => {
+    console.log(`[host] the CLI refused --resume (exit 1 within ${RESUME_RETRY_MS / 1000} s, "No conversation found"): starting this session fresh, once`);
+    RESUME_REFUSED = true;
+    term = spawnTimed();
+    trackExit(term);
+    jobGuard.attach({ pid: term.pid, startOf: () => trackedStart(term), spawnWindow })
+      .catch((err) => console.log('[job-guard] attach failed:', err && err.message));
+    console.log('[host] pty pid       :', term.pid);
+    if (lockState.state === 'held') updateSessionLock(SESSION_LOCK, lockOwner, { claudePid: term.pid });
+    republishIdentity();
+    wireTerm(term);
+  };
+  wireTerm(term, !SHELL && LAST_SPAWN_RESUMED ? createResumeWatch() : null, retryFresh);
 }
 
 // --- attach surface ---------------------------------------------------------
@@ -2213,8 +2232,9 @@ function sayInTab(text) {
 }
 
 // The pty's two event handlers, attached when startSession() spawns it.
-function wireTerm(t) {
+function wireTerm(t, watch = null, retryFresh = null) {
   t.onData((data) => {
+    if (watch) watch.feed(data);
     termState.write(data, programStatusHost.deliver());
     const frame = Buffer.from(data, 'utf8');
     for (const ws of clients) {
@@ -2224,6 +2244,9 @@ function wireTerm(t) {
 
   t.onExit(({ exitCode, signal }) => {
     console.log(`[host] claude exited code=${exitCode} signal=${signal}`);
+    if (watch && retryFresh && watch.shouldRetry({ exitCode })) {
+      try { retryFresh(); return; } catch (err) { console.log('[host] the fresh retry could not start:', err && err.message); }
+    }
     endHost(exitCode, signal);
   });
 }
