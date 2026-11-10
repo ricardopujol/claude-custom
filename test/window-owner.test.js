@@ -67,11 +67,11 @@ test('decide: an unrecognised proof word never focuses', () => {
 
 // ---- the file's shape --------------------------------------------------------------------------------------------
 
-test('parseOwner: a pid, a start and a time; a port only when it is one', () => {
+test('parseOwner: a pid, a start and a time, and nothing else (the record never carried a port)', () => {
   const { parseOwner } = load();
-  assert.deepStrictEqual(parseOwner(JSON.stringify({ pid: 7, start: START_A, at: 5, port: 9000 })),
-    { pid: 7, start: START_A, at: 5, port: 9000 });
-  assert.strictEqual(parseOwner(JSON.stringify({ pid: 7, start: START_A, at: 5, port: 'x' })).port, undefined);
+  assert.deepStrictEqual(parseOwner(JSON.stringify({ pid: 7, start: START_A, at: 5, port: 9000, extra: 1 })),
+    { pid: 7, start: START_A, at: 5 });
+  assert.deepStrictEqual(parseOwner(JSON.stringify({ pid: 7, start: START_A })), { pid: 7, start: START_A, at: null });
 });
 
 test('parseOwner: refuses what is not a proof (no pid, bad pid, no start, not an object, half-written)', () => {
@@ -163,13 +163,25 @@ test('claim: a half-written or garbage file is no owner: proceed and replace it'
   assert.strictEqual(parseOwner(fs.readFileSync(ownerFileOf(root), 'utf8')).pid, 20);
 });
 
-test('claim: a proof that cannot be made -> proceed and overwrite', async () => {
+test('claim: a proof that cannot be made -> proceed (a window opens) but the file of the owner it could not disprove is left alone', async () => {
   const { claim, parseOwner } = load();
   const root = project();
   writeOwner(root, { pid: 10, start: START_A, at: 1 });
+  const before = fs.readFileSync(ownerFileOf(root), 'utf8');
   const r = await claim({ stateRoot: root, self: { pid: 20, start: START_B }, startTimes: async () => null });
   assert.strictEqual(r.action, 'proceed');
   assert.strictEqual(r.reason, 'unproven-owner');
+  assert.strictEqual(r.published, false);
+  assert.strictEqual(fs.readFileSync(ownerFileOf(root), 'utf8'), before, 'a slow PowerShell must not cut a live window off from the rule');
+  assert.strictEqual(parseOwner(before).pid, 10);
+});
+
+test('claim: an unproven owner whose file is garbage is still replaced (it names nobody)', async () => {
+  const { claim, parseOwner } = load();
+  const root = project();
+  writeOwner(root, 'not json');
+  const r = await claim({ stateRoot: root, self: { pid: 20, start: START_B }, startTimes: async () => null });
+  assert.strictEqual(r.action, 'proceed');
   assert.strictEqual(parseOwner(fs.readFileSync(ownerFileOf(root), 'utf8')).pid, 20);
 });
 
@@ -191,7 +203,7 @@ test('claim: a .claude-custom that is a link to somewhere else is never written 
   assert.deepStrictEqual(fs.readdirSync(elsewhere), []);
 });
 
-test('claim: two launches racing -- the loser publishes second, finds the winner, and focuses it', async () => {
+test('claim: a launch that comes second (sequentially) reads the winner\'s file and focuses it without ever reaching publish', async () => {
   const { claim } = load();
   const root = project();
   // Both read "no file". The winner lands its file between the loser's read and the loser's publish.
@@ -204,6 +216,27 @@ test('claim: two launches racing -- the loser publishes second, finds the winner
   assert.strictEqual(lose.action, 'focus');
   assert.strictEqual(lose.owner.pid, 10);
   assert.strictEqual(raced, false, 'a loser that reads the winner never reaches publish');
+});
+
+test('claim: two launches REALLY interleaved -- B runs its whole claim inside A\'s read-to-publish gap: exactly one publishes', async () => {
+  const { claim, parseOwner } = load();
+  const root = project();
+  const startTimes = async (pids) => new Map(pids.map(p => [p, p === 30 ? START_B : START_A]));
+  let b = null;
+  const hooks = {
+    beforePublish: () => {
+      hooks.beforePublish = () => {};
+      // B's claim runs synchronously up to its publish (no owner yet, so nothing to await): it publishes first
+      b = claim({ stateRoot: root, self: { pid: 30, start: START_B }, startTimes });
+    },
+  };
+  const a = await claim({ stateRoot: root, self: { pid: 20, start: START_A }, startTimes, hooks });
+  const bResult = await b;
+  assert.strictEqual(bResult.action, 'proceed');
+  assert.strictEqual(bResult.published, true);
+  assert.strictEqual(a.action, 'focus', 'A lost the exclusive publish, re-read, and focused B');
+  assert.strictEqual(a.owner.pid, 30);
+  assert.strictEqual(parseOwner(fs.readFileSync(ownerFileOf(root), 'utf8')).pid, 30);
 });
 
 test('claim: the winner appearing between the loser\'s read and its publish -> the exclusive publish refuses, the retry focuses', async () => {
@@ -263,15 +296,27 @@ test('takeOver: with no start time for this process, or a foreign look folder, i
 
 // ---- release -----------------------------------------------------------------------------------------------------
 
-test('release: removes the file only when it still names this process', () => {
+test('release: removes the file only when it still names this process, by pid AND start time', () => {
   const { release } = load();
   const root = project();
   writeOwner(root, { pid: 20, start: START_B, at: 1 });
-  assert.strictEqual(release({ stateRoot: root, selfPid: 99 }), false);
+  assert.strictEqual(release({ stateRoot: root, selfPid: 99, selfStart: START_B }), false);
+  assert.strictEqual(release({ stateRoot: root, selfPid: 20, selfStart: START_A }), false, 'same pid, another start: a reused pid\'s file');
+  assert.strictEqual(release({ stateRoot: root, selfPid: 20 }), false, 'no start to prove: nothing is removed');
   assert.strictEqual(fs.existsSync(ownerFileOf(root)), true, 'another process\'s file stays');
-  assert.strictEqual(release({ stateRoot: root, selfPid: 20 }), true);
+  assert.strictEqual(release({ stateRoot: root, selfPid: 20, selfStart: START_B }), true);
   assert.strictEqual(fs.existsSync(ownerFileOf(root)), false);
-  assert.strictEqual(release({ stateRoot: root, selfPid: 20 }), false, 'nothing to remove is not an error');
+  assert.strictEqual(release({ stateRoot: root, selfPid: 20, selfStart: START_B }), false, 'nothing to remove is not an error');
+});
+
+test('release: a dying owner W that read its own file does not delete the file L took over with in between', () => {
+  const { release, parseOwner } = load();
+  const root = project();
+  writeOwner(root, { pid: 20, start: START_B, at: 1 });              // W's file
+  const hooks = { afterRead: () => { writeOwner(root, { pid: 30, start: START_A, at: 2 }); hooks.afterRead = () => {}; } };   // L takes over
+  assert.strictEqual(release({ stateRoot: root, selfPid: 20, selfStart: START_B, hooks }), false);
+  assert.strictEqual(parseOwner(fs.readFileSync(ownerFileOf(root), 'utf8')).pid, 30, 'L\'s file is still there');
+  assert.deepStrictEqual(fs.readdirSync(path.join(root, '.claude-custom')).filter(n => n.endsWith('.gone')), [], 'no aside file left behind');
 });
 
 // ---- which lane to select ----------------------------------------------------------------------------------------
@@ -281,6 +326,22 @@ test('pickLane: the tab whose folder is the launch folder; a worktree folder pic
   const tabs = [{ key: 'a', cwd: 'C:\\p\\dev' }, { key: 'b', cwd: 'C:\\p\\feat-x', port: 7002 }];
   assert.strictEqual(pickLane(tabs, { cwd: 'c:/p/feat-x/' }), 'b');
   assert.strictEqual(pickLane(tabs, { cwd: 'C:\\p\\dev' }), 'a');
+});
+
+test('pickLane: a launch from a folder INSIDE a lane selects that lane; a sibling with the same prefix does not', () => {
+  const { pickLane } = load();
+  const tabs = [{ key: 'a', cwd: 'C:\\p\\dev' }, { key: 'b', cwd: 'C:\\p\\feat-x' }, { key: 'c', cwd: 'C:\\p\\feat-xy' }];
+  assert.strictEqual(pickLane(tabs, { cwd: 'C:\\p\\feat-x\\app' }), 'b');
+  assert.strictEqual(pickLane(tabs, { cwd: 'C:\\p\\feat-xy\\app\\src' }), 'c');
+  assert.strictEqual(pickLane(tabs, { cwd: 'C:\\p\\feat-xz\\app' }), null);
+});
+
+test('pickLane: nested lanes: the deepest tab that contains the folder wins; an exact match beats a containing one', () => {
+  const { pickLane } = load();
+  const tabs = [{ key: 'outer', cwd: 'C:\\p\\dev' }, { key: 'inner', cwd: 'C:\\p\\dev\\sub' }];
+  assert.strictEqual(pickLane(tabs, { cwd: 'C:\\p\\dev\\sub\\x' }), 'inner');
+  assert.strictEqual(pickLane(tabs, { cwd: 'C:\\p\\dev\\sub' }), 'inner');
+  assert.strictEqual(pickLane(tabs, { cwd: 'C:\\p\\dev\\other' }), 'outer');
 });
 
 test('pickLane: a port wins over a folder; nothing matching is null (focus only)', () => {

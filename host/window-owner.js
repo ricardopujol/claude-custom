@@ -2,7 +2,7 @@
 /**
  * One window per project (DESIGN_TABS_SESSIONS.md 3.3, Ricardo's pick P2): who owns this project's window?
  *
- * The window that opens first writes `<project>\.claude-custom\window.json` = { pid, start, at, port? }: its own Electron
+ * The window that opens first writes `<project>\.claude-custom\window.json` = { pid, start, at }: its own Electron
  * main pid and OS start time (host/proc-start.js FILETIME), the same pid + start proof host/host-identity.js and
  * host/kill-proven use. A later launch of the same project reads it BEFORE it makes a window and decides:
  *
@@ -24,23 +24,21 @@ const fs = require('fs');
 const path = require('path');
 const { lookDir, lookDirState, ensureLookDir } = require('./style');
 const { renameWithRetry } = require('./atomic-write');
-const { samePath } = require('./project-layout');
+const { samePath, isInside } = require('./project-layout');
 
 const OWNER_FILE = 'window.json';
 const ATTEMPTS = 3;
 
 const isPid = (n) => Number.isInteger(n) && n > 0;
 
-/** The file's text as an owner record, or null for anything that is not a proof (half-written, wrong shape). */
+/** The file's text as an owner record { pid, start, at }, or null for anything that is not a proof (half-written, wrong shape). */
 function parseOwner(text) {
   let o;
   try { o = JSON.parse(text); } catch { return null; }
   if (!o || typeof o !== 'object' || Array.isArray(o)) return null;
   if (!isPid(o.pid)) return null;
   if (typeof o.start !== 'string' || !o.start) return null;
-  const out = { pid: o.pid, start: o.start, at: Number.isFinite(o.at) ? o.at : null };
-  if (Number.isInteger(o.port) && o.port >= 1 && o.port <= 65535) out.port = o.port;
-  return out;
+  return { pid: o.pid, start: o.start, at: Number.isFinite(o.at) ? o.at : null };
 }
 
 /**
@@ -77,8 +75,8 @@ function readRaw(file) {
  * Put `doc` at `file` unless somebody holds it: 'ok' | 'exists'. `staleText` is the bytes of a file we judged dead; it is removed
  * first, but only while it still holds exactly those bytes.
  */
-function publish(file, doc, { staleText = null, link = fs.linkSync, now = Date.now } = {}) {
-  ensureLookDir(path.dirname(path.dirname(file)), fs);
+function publish(stateRoot, file, doc, { staleText = null, link = fs.linkSync, now = Date.now } = {}) {
+  ensureLookDir(stateRoot, fs);
   const temp = `${file}.${process.pid}.${now()}.tmp`;
   fs.writeFileSync(temp, JSON.stringify(doc), { encoding: 'utf8', mode: 0o600 });
   try {
@@ -114,10 +112,13 @@ async function claim({ stateRoot, self, startTimes, now = Date.now, link, hooks 
     const d = decide({ owner, proof, selfPid: self.pid });
     if (d.action === 'focus') return { ...d, owner, file };
     if (typeof self.start !== 'string' || !self.start) return { ...d, reason: 'no-self-start', file, published: false };
+    // A proof that could not be made (a slow PowerShell) opens a window but never takes a LIVE owner's file: it would cut that window off
+    // from the rule for good (PR #247 Miguel I4). A file that names nobody (garbage) is still replaced.
+    if (d.reason === 'unproven-owner') return { ...d, file, published: false };
     if (typeof hooks.beforePublish === 'function') hooks.beforePublish();
     let r;
     try {
-      r = publish(file, { pid: self.pid, start: self.start, at: now() }, { staleText: text, link, now });
+      r = publish(stateRoot, file, { pid: self.pid, start: self.start, at: now() }, { staleText: text, link, now });
     } catch {
       return { ...d, file, published: false };           // cannot write the file: still no reason to refuse a window
     }
@@ -135,20 +136,33 @@ function takeOver({ stateRoot, self, now = Date.now, link } = {}) {
   if (lookDirState(stateRoot, fs) === 'foreign') return false;
   if (typeof self.start !== 'string' || !self.start) return false;
   const file = path.join(lookDir(stateRoot), OWNER_FILE);
-  try { return publish(file, { pid: self.pid, start: self.start, at: now() }, { staleText: readRaw(file), link, now }) === 'ok'; } catch { return false; }
-}
-
-/** Remove the file when it still names this process (a clean exit). true when it removed one. */
-function release({ stateRoot, selfPid } = {}) {
-  const file = path.join(lookDir(stateRoot), OWNER_FILE);
-  const text = readRaw(file);
-  const owner = text === null ? null : parseOwner(text);
-  if (!owner || owner.pid !== selfPid) return false;
-  try { fs.rmSync(file, { force: true }); return true; } catch { return false; }
+  try { return publish(stateRoot, file, { pid: self.pid, start: self.start, at: now() }, { staleText: readRaw(file), link, now }) === 'ok'; } catch { return false; }
 }
 
 /**
- * The lane a launch asked for: the tab on that port, else the tab whose folder is the launch folder. null = just focus.
+ * Remove the file when it still names this process, by pid AND start time (a clean exit, a quit). true when it removed one.
+ * The removal is guarded by the bytes read: the file is renamed aside, and if what was moved is not what was read (a launch took
+ * over between the read and the remove) it is put back, so a dying window never deletes the file of the window that replaced it
+ * (PR #247 Dexter 3).
+ */
+function release({ stateRoot, selfPid, selfStart, hooks = {} } = {}) {
+  if (typeof selfStart !== 'string' || !selfStart) return false;
+  const file = path.join(lookDir(stateRoot), OWNER_FILE);
+  const text = readRaw(file);
+  const owner = text === null ? null : parseOwner(text);
+  if (!owner || owner.pid !== selfPid || owner.start !== selfStart) return false;
+  if (typeof hooks.afterRead === 'function') hooks.afterRead();
+  const aside = `${file}.${process.pid}.${Date.now()}.gone`;
+  try { fs.renameSync(file, aside); } catch { return false; }          // already gone, or held: nothing of ours to remove
+  const same = readRaw(aside) === text;
+  if (!same) { try { fs.linkSync(aside, file); } catch { /* a newer file is already there: keep that one */ } }
+  try { fs.rmSync(aside, { force: true }); } catch { /* nothing left to remove */ }
+  return same;
+}
+
+/**
+ * The lane a launch asked for: the tab on that port, else the tab whose folder IS the launch folder, else the deepest tab whose folder
+ * CONTAINS it (a terminal opened in `<lane>\app`: project resolution climbs, so lane resolution does too). null = just focus.
  * `tabs` is tabShell.snapshot().tabs ({ key, cwd, port? }).
  */
 function pickLane(tabs, { cwd, port } = {}) {
@@ -158,8 +172,14 @@ function pickLane(tabs, { cwd, port } = {}) {
     if (byPort) return byPort.key;
   }
   if (typeof cwd !== 'string' || !cwd) return null;
-  const byCwd = tabs.find(t => t && typeof t.cwd === 'string' && samePath(t.cwd, cwd));
-  return byCwd ? byCwd.key : null;
+  const withCwd = tabs.filter(t => t && typeof t.cwd === 'string');
+  const exact = withCwd.find(t => samePath(t.cwd, cwd));
+  if (exact) return exact.key;
+  let best = null;
+  for (const t of withCwd) {
+    if (isInside(cwd, t.cwd) && (best === null || isInside(t.cwd, best.cwd))) best = t;   // the deeper container wins
+  }
+  return best ? best.key : null;
 }
 
 /**
