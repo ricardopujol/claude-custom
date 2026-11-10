@@ -876,7 +876,7 @@ function createShell(deps) {
   }
 
   /**
-   * A branch tab whose claude exited keeps a dead page, and a click on it starts a fresh session (BACKLOG #140): the page is
+   * A branch tab whose claude exited keeps a dead page, and a click on it starts a session again (BACKLOG #140); a main tab's host resumes ITS OWN last conversation when it has one recorded (#166, host/main-session.js), else it is fresh: the page is
    * dropped and the record goes back to unstarted, so select() starts it as it retries a failed start. Side and shell tabs
    * have their own reopen; a folder being removed or already merged (finishing), or a reader with unsaved edits (#50), is left as it is.
    */

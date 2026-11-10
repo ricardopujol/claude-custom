@@ -20,7 +20,8 @@ const CODE = strip(HOST);
 test('the arguments are rebuilt with the mod once the CLI\'s version is known, from the same options', () => {
   assert.match(CODE, /const ARGS_OPTIONS = \{ settingsFile, helperExists, canvasMcp, side: SIDE \};/);
   assert.match(CODE, /let ARGS = buildClaudeArgs\(ARGS_OPTIONS\);/);
-  assert.match(CODE, /ARGS = buildClaudeArgs\(\{ \.\.\.ARGS_OPTIONS, modDir: modPluginDirFor\(\{ enabled, version, dir: MOD_DIR, forced \}\) \}\);/);
+  // the directory is worked out ONCE and both the boot ARGS and the spawn-time rebuild (argsForSpawn, PR #250 Miguel Y1) use it
+  assert.match(CODE, /const modDir = modPluginDirFor\(\{ enabled, version, dir: MOD_DIR, forced \}\);\s*ARGS = buildClaudeArgs\(\{ \.\.\.ARGS_OPTIONS, modDir \}\);\s*ARGS_MOD_DIR = modDir;/);
 });
 
 test('the mod is decided by the switch, the CLI\'s version and the directory, before the session starts', () => {

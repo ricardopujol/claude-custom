@@ -20,7 +20,7 @@ const path = require('path');
 const fs = require('fs');
 const pty = require('node-pty');
 const { WebSocketServer } = require('ws');
-const { writeHarnessSettings, buildClaudeArgs, findUserStatusLine, findUserTheme } = require('./settings-writer');
+const { writeHarnessSettings, buildClaudeArgs, argsForSpawn, findUserStatusLine, findUserTheme } = require('./settings-writer');
 const { claudeConfigDir, setConfigAnchor } = require('./claude-config-dir');
 const { createHookBridge } = require('./hook-bridge');
 const { createTerminalState } = require('./terminal-state');
@@ -172,7 +172,7 @@ const { liveSessionsIn } = require('./session-registry');
 const { worktreeEnv, worktreeRoot } = require('./worktree-env');
 const { allocate: allocatePortBlock, excludedRanges } = require('./port-blocks');
 const { branchHealth } = require('./branch-health');
-const { hasConversation } = require('./continue-flag');
+const { recordMainSession, resumeIdFor } = require('./main-session');
 
 // --- locate the real claude binary -----------------------------------------
 // npm installs a native claude.exe; spawning it directly avoids a cmd.exe shim
@@ -768,14 +768,17 @@ const ARGS_OPTIONS = { settingsFile, helperExists, canvasMcp, side: SIDE };
 let ARGS = buildClaudeArgs(ARGS_OPTIONS);
 // The mod's directory ARGS was last rebuilt with (prepareMod), so a spawn-time rebuild keeps the plugin.
 let ARGS_MOD_DIR = null;
+// The main session's id, per folder (host/main-session.js): the next main session resumes ITS OWN conversation with it.
+const MAIN_SESSIONS_FILE = path.join(HARNESS_DIR, 'state', 'main-sessions.json');
 /**
- * What claude is started with RIGHT NOW (BACKLOG #166): ARGS, and for a lane's main session `--continue` when the CLI's own session
- * store has a conversation here, asked at each spawn (a session started after the kill switch, or after a lock blocked it, resumes
- * too). A side session and a shell tab start fresh. The interactive CLI with nothing to continue exits 1 (host/continue-flag.js).
+ * What claude is started with RIGHT NOW (BACKLOG #166; PR #250 Dexter 1): ARGS for a side session and a shell host; for a lane's main
+ * session `--resume <its recorded session id>` when the CLI's own store still has that transcript, else a FRESH session. Never
+ * `--continue` (the folder's newest conversation, which may be a side session's). Asked at each spawn (a session started after the
+ * kill switch, a lock or a click on an ended tab resumes too). The interactive CLI resuming nothing exits 1 (host/continue-flag.js).
  */
 function claudeArgs() {
-  if (SIDE || SHELL) return ARGS;
-  return buildClaudeArgs({ ...ARGS_OPTIONS, modDir: ARGS_MOD_DIR, continueSession: hasConversation(CWD) });
+  const resumeId = SIDE || SHELL ? null : resumeIdFor({ file: MAIN_SESSIONS_FILE, cwd: CWD, store: { log: (l) => console.log(l) } });
+  return argsForSpawn({ side: SIDE, shell: SHELL, args: ARGS, options: ARGS_OPTIONS, modDir: ARGS_MOD_DIR, resumeId });
 }
 // A shell host runs the person's shell with no arguments (host/launch-target.js pickShell); claude's arguments are for claude.
 const SHELL_TARGET = SHELL ? pickShell(process.env) : null;
@@ -1649,6 +1652,8 @@ if (helperExists) {
     if (ev.event === 'SessionStart' && ev.payload && ev.payload.session_id) {
       sessionId = ev.payload.session_id;
       console.log('[host] session id     :', sessionId);
+      // a main host keeps its own id, so its next session resumes it (a side host and a shell host never do: they start fresh)
+      if (!SIDE && !SHELL) recordMainSession({ file: MAIN_SESSIONS_FILE, cwd: CWD, sessionId });
       if (SIDE) republishIdentity();     // the identity names it, for the producers that read transcripts
       canvasControl.sessionChanged(sessionId);
       // the roster cards match an agent's worktree claim on it (backlog #57): a /clear starts a new one
@@ -3419,8 +3424,9 @@ async function prepareMod() {
       return;
     }
     modPort = await modServer.listen();
-    ARGS = buildClaudeArgs({ ...ARGS_OPTIONS, modDir: modPluginDirFor({ enabled, version, dir: MOD_DIR, forced }) });
-    ARGS_MOD_DIR = modPluginDirFor({ enabled, version, dir: MOD_DIR, forced });
+    const modDir = modPluginDirFor({ enabled, version, dir: MOD_DIR, forced });
+    ARGS = buildClaudeArgs({ ...ARGS_OPTIONS, modDir });
+    ARGS_MOD_DIR = modDir;
     console.log('[host] claude-custom mod: on, posts to 127.0.0.1:' + modPort + ' (CLI', version ? version.join('.') : 'stand-in', ')');
     setModStatus({ state: 'on', reason: null });
   } catch (err) {
