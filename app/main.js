@@ -246,6 +246,9 @@ app.commandLine.appendSwitch('host-resolver-rules', HOST_RESOLVER_RULES);
 // test/renderer-backgrounding-wiring.test.js). Priority only: hidden pages are still throttled by Chromium's timers.
 app.commandLine.appendSwitch('disable-renderer-backgrounding');
 
+// Each window's own Chromium cache, so a second window prints no "Unable to move the cache" lines (BACKLOG #215).
+require('./cache-dirs').useOwnCaches(app);
+
 // `hosts/<port>.token`, and nothing else: written only by the host that won
 // that port's bind (PR #75 F2), so it names whoever is listening. Null when it
 // can't be read.
