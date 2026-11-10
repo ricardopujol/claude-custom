@@ -19,7 +19,7 @@ const TREE_A = { version: 2, tree: 'A' };
 const TREE_B = { version: 2, tree: 'B' };
 const GLOBAL_TREE = { version: 2, tree: 'GLOBAL' };
 
-function tmp() { return fs.mkdtempSync(path.join(os.tmpdir(), 'plstore-')); }
+function tmp() { return require('./tmp-dir').tmpDir('plstore-'); }
 
 // One project window: its own ipc, its own pushes, the shared install-wide store under it.
 function window_(globalStore, projectDir, opts = {}) {

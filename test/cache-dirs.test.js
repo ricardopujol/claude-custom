@@ -7,7 +7,7 @@ const path = require('node:path');
 
 const { cacheDirFor, cacheSwitches, sweepStale, useOwnCaches, PREFIX } = require('../app/cache-dirs');
 
-const scratch = () => fs.mkdtempSync(path.join(os.tmpdir(), 'cache-dirs-test-'));
+const scratch = () => require('./tmp-dir').tmpDir('cache-dirs-test-');
 
 test('two processes get two different disk-cache folders, never the shared user-data one', () => {
   const tmp = scratch();

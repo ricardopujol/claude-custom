@@ -191,6 +191,8 @@ const ALLOWED_GLOBALS = new Set([
   // app/paste-action.js (BACKLOG #12, #8). Both called as bare globals from
   // renderer.js's key handler, like isPanelToggle.
   'pasteAction', 'isPasteKey', 'pasteFrame', 'pasteFailureNote', 'copyKeyAction', 'selectionVisible',
+  // app/right-click-guard.js (#194): called bare from renderer.js right after term.open
+  'installRightClickGuard',
   // fileEntries: the drop's and the pasted file list's entries (#136 (1)), called bare from renderer.js's sendDropFiles
   'fileEntries',
   // pasteEventDecision, noUsablePathNote: what the capture-phase paste listener does with an event (PR #246 Y2, D6)
