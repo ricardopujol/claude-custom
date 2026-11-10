@@ -853,6 +853,23 @@ function createShell(deps) {
     tab.status = null;
   }
 
+  /**
+   * BACKLOG #140 (2026-11-07 sighting): the 3 s poll is what marks a session ended, so a click in the seconds after claude exited
+   * found a tab that still looked running and showed its dead page: no terminal, no session. A person's click on a started tab asks
+   * its port once; a refusal is the same proof the poll takes (captureListening), and the tab is restarted as an ended one is.
+   */
+  async function restartIfDead(tab) {
+    if (tab.started !== true || tab.starting === true || tab.ended === true || isCompanionEntry(tab) || !Number.isInteger(tab.port)) return;
+    let answer;
+    try { answer = await hosts.probe(tab.port); } catch { return; }
+    // the record may have changed while the port was asked: only this same, still-started, still-selected record is acted on
+    if (answer !== 'refused' || tabs.get(tab.key) !== tab || tab.started !== true || tab.ended === true || tab.closed || selectedKey !== tab.key) return;
+    tab.ended = true;
+    resetEnded(tab);
+    if (!tab.started && !tab.starting) { sendSelected(tab); await start(tab); }
+    publish();
+  }
+
   /** Select a tab, starting it (or retrying a failed start) as needed; `restart`: a person's click also restarts an ended session. */
   function select(key, restart = false) {
     const next = tabModel.select(model(), key);
@@ -870,6 +887,7 @@ function createShell(deps) {
       if (restart) resetEnded(tab);
       sendSelected(tab);
       if (!tab.started && !tab.starting) started = start(tab);
+      else if (restart) started = restartIfDead(tab);
     }
     publish();
     return started;
