@@ -18,10 +18,11 @@
 
    Safety: every suspended pid is registered with the hygiene registry (Ctrl+C or a crash resumes it), the shells are ended
    through killProven (pid + start time re-proved on a held handle), and the session through its held pty handle. Nothing is
-   ever killed or suspended by name. Run it under ~/.claude/scripts/heavy-lock.ps1.
+   ever killed or suspended by name. It takes the heavy-work lock itself when it starts.
 
    RESULTS: filled in below after the run. */
 
+const { noteChild } = require('./lib/launch-electron');   // BACKLOG #179: takes the heavy-work lock now, before anything heavy starts; noteChild records each host / claude it starts
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
@@ -79,6 +80,7 @@ async function main() {
   const term = pty.spawn(resolveClaudeExe(), ['--permission-mode', 'default'], {
     name: 'xterm-256color', cols: 140, rows: 50, cwd: CWD, env: { ...cleanEnv(), TERM: 'xterm-256color' },
   });
+  noteChild(term);   // the lock's work record: a live term keeps this probe a live holder (BACKLOG #112)
   hygiene.registerChild(term);
   const xterm = new Terminal({ cols: 140, rows: 50, allowProposedApi: true });
   term.onData(d => xterm.write(d));

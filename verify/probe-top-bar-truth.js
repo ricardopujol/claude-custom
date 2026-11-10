@@ -32,6 +32,7 @@
    (b) Ctrl-U (\x15) clears a draft without submitting ("Ctrl+Y to paste
        deleted text"). Bare /model opens a picker: the `❯` input box is gone
        and "Esc to cancel" shows; one Esc closes it ("Kept model as ..."). */
+const { noteChild } = require('./lib/launch-electron');   // BACKLOG #179: takes the heavy-work lock now, before anything heavy starts; noteChild records each host / claude it starts
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -94,6 +95,7 @@ const args = process.platform === 'win32'
   ? ['/c', 'claude', '--settings', settingsFile]
   : ['--settings', settingsFile];
 const child = pty.spawn(shell, args, { name: 'xterm-256color', cols: COLS, rows: ROWS, cwd: REPO, env });
+noteChild(child);   // the lock's work record: a live child keeps this probe a live holder (BACKLOG #112)
 child.onData(d => term.write(d));
 
 const screen = () => {

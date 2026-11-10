@@ -14,6 +14,18 @@ const VERIFY = path.join(__dirname, '..', 'verify');
 const strip = (s) => s.replace(/\/\*[\s\S]*?\*\//g, m => m.replace(/[^\r\n]/g, ' ')).replace(/^[ \t]*\/\/.*$/gm, m => ' '.repeat(m.length));
 const LAUNCHER_REQUIRE = /require\([^)]*launch-electron/;
 const HEAVY_START = /\b(?:spawn|spawnSync|execFile|execFileSync|exec|execSync|fork)\s*\(/;
+// Every verify/ script, subfolders included (#243 Miguel I1: verify/probe71/ held four claude starters), but not verify/lib/
+// (helpers) or node_modules. Relative names with forward slashes ('probe71/probe-mod-in-pty.js').
+function verifyScripts(dir = VERIFY, rel = '') {
+  const out = [];
+  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (e.isDirectory()) {
+      if ((rel === '' && e.name === 'lib') || e.name === 'node_modules') continue;
+      out.push(...verifyScripts(path.join(dir, e.name), `${rel}${e.name}/`));
+    } else if (e.name.endsWith('.js')) out.push(`${rel}${e.name}`);
+  }
+  return out;
+}
 
 // Returns the line of the first heavy start that precedes the launcher require, or 0.
 function startsBeforeLauncher(source) {
@@ -33,8 +45,8 @@ test('the checker finds a spawn that comes before the launcher require, and igno
 
 test('every verify script requires the launcher before it starts anything heavy', () => {
   const late = [];
-  for (const f of fs.readdirSync(VERIFY)) {
-    if (!f.endsWith('.js')) continue;
+  assert.ok(verifyScripts().some(f => f.startsWith('probe71/')), 'the scan reads subfolders');
+  for (const f of verifyScripts()) {
     const line = startsBeforeLauncher(fs.readFileSync(path.join(VERIFY, f), 'utf8'));
     if (line) late.push(`verify/${f}:${line}`);
   }
@@ -69,8 +81,9 @@ function assignedName(s, at) {
   const m = /(?:^|[\s;(,])(?:(?:const|let|var)\s+)?([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*=\s*(?:await\s+)?(?:[A-Za-z_$][\w$]*)?$/.exec(s.slice(lineStart, at));
   return m ? m[1] : null;
 }
-// Probes that take the lock: through the launcher, or through host/heavy-lock directly (createProcessLock / acquire).
-const TAKES_LOCK = (src) => LAUNCHER_REQUIRE.test(src) || /require\([^)]*host\/heavy-lock['"]\)/.test(src);
+// Probes that take the lock: through the launcher, through host/heavy-lock directly (createProcessLock / acquire), or, for an
+// Electron main, through verify/lib/electron-main-lock (#179), however the path is written; never heavy-lock-watch.
+const TAKES_LOCK = (src) => LAUNCHER_REQUIRE.test(src) || /require\([^)]*(?:host[\\/'",\s]+heavy-lock|lib[\\/'",\s]+electron-main-lock)(?:\.js)?['"]/.test(src);
 
 // strip(), and every string's contents blanked too (quotes kept, line breaks kept): a word "spawn (" in a message, or the
 // source of a child script handed to `node -e`, is not a start in this file.
@@ -152,13 +165,14 @@ test('#237 Miguel S6: the scan covers a probe that takes the lock through host/h
   assert.strictEqual(TAKES_LOCK(strip("const { createProcessLock } = require('../host/heavy-lock');")), true);
   assert.strictEqual(TAKES_LOCK(strip("const L = require('./lib/launch-electron');")), true);
   assert.strictEqual(TAKES_LOCK(strip("const x = require('../host/heavy-lock-watch');")), false);
+  assert.strictEqual(TAKES_LOCK(strip("const h = require(path.join(__dirname, '..', 'host', 'heavy-lock'));")), true);
+  assert.strictEqual(TAKES_LOCK(strip("const m = require('./lib/electron-main-lock').takeMainLock({ app, label });")), true);
   assert.strictEqual(TAKES_LOCK(strip("const fs = require('fs');")), false);
 });
 
 test('every probe that takes the lock records each process it starts by hand with noteChild (or excuses it, with a reason)', () => {
   const missing = [];
-  for (const f of fs.readdirSync(VERIFY)) {
-    if (!f.endsWith('.js')) continue;
+  for (const f of verifyScripts()) {
     const src = fs.readFileSync(path.join(VERIFY, f), 'utf8');
     if (!TAKES_LOCK(strip(src))) continue;
     for (const u of unrecordedStarts(src)) missing.push(`verify/${f}:${u.line}: ${u.text}`);

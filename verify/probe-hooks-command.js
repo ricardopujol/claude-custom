@@ -12,6 +12,7 @@
    `--settings` supplying a single SessionStart hook:
      - user events still listed  -> H1, hooks accumulate, do NOT union
      - only SessionStart listed  -> H2, user hooks replaced, MUST union */
+const { noteChild } = require('./lib/launch-electron');   // BACKLOG #179: takes the heavy-work lock now, before anything heavy starts; noteChild records each host / claude it starts
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -45,6 +46,7 @@ async function run(label, args) {
                    'CLAUDE_CODE_ENTRYPOINT', 'CLAUDE_CODE_BRIDGE_SESSION_ID']) delete env[k];
 
   const p = pty.spawn(BIN, args, { name: 'xterm-256color', cols: COLS, rows: ROWS, cwd: REPO, env });
+  noteChild(p);   // the lock's work record: a live p keeps this probe a live holder (BACKLOG #112)
   p.onData(d => term.write(d));
   await sleep(11000);
 

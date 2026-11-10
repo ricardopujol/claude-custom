@@ -14,10 +14,12 @@
  * ELECTRON_RUN_AS_NODE is stripped from the hosts' environment first (CLAUDE.md traps). Only processes this probe started are
  * stopped, through their own handles (verify/lib/process-hygiene.js), never by name.
  *
- * No Electron and no window, so it doesn't take the heavy lock: three plain node hosts, one at a time, each a few seconds.
+ * No Electron and no window, but its hosts are heavy work, so it takes the heavy-work lock itself (BACKLOG #179): three plain
+ * node hosts, one at a time, each a few seconds.
  *
  * Run: node verify/probe-kill-switch.js        (exit 0 = all three held)
  */
+const { noteChild } = require('./lib/launch-electron');   // BACKLOG #179: takes the heavy-work lock now, before anything heavy starts; noteChild records each host / claude it starts
 const { spawn, spawnSync } = require('child_process');
 const fs = require('fs');
 const net = require('net');
@@ -60,6 +62,7 @@ async function startHost() {
     CLAUDE_CUSTOM_CLAUDE_HOME: claudeHome,
   });
   const child = spawn(process.execPath, [path.join(ROOT, 'host', 'host.js')], { cwd: ROOT, env, windowsHide: true });
+  noteChild(child);   // the lock's work record: a live child keeps this probe a live holder (BACKLOG #112)
   hygiene.registerChild(child);
   const h = { child, out: '', exited: false, exitAt: null };
   child.stdout.on('data', (d) => { h.out += d; });
