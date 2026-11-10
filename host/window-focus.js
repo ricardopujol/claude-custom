@@ -5,8 +5,10 @@
  *
  * A named pipe the window's own main process listens on, `\\.\pipe\claude-custom-window-<pid>` -- the same transport the
  * hook helper already uses for a host (`claude-custom-<pid>`). The pid is the one in the owner file (host/window-owner.js), so the
- * launcher needs nothing else to find it. One JSON line in ({ cwd?, port? }), one JSON line out ({ ok }) the moment the message is understood, then it closes.
- * The owner focuses and selects AFTER answering, once its window is ready: a launch never waits for a window to start.
+ * launcher needs nothing else to find it. One JSON line in ({ cwd?, port? }), one JSON line out ({ ok }), then it closes.
+ * A window that is READY answers ok the moment the message is understood and focuses and selects right after. A window still starting
+ * HOLDS the launch (no idle drop) until it is ready (ok) or stops / passes its start bound (not ok), so ok is never said by a window that
+ * may end before it acts (PR #247 round 2 M2). The launch's own wait is longer than the bound (host/window-claim.js).
  *
  * WHY NOT THE OTHER TWO (measured, verify/measure-single-instance-lock.js; reasons in the PR):
  *   - Electron's requestSingleInstanceLock is per user-data dir, not per project: a window of another project is refused too.
@@ -51,7 +53,9 @@ function cleanMessage(raw) {
 
 /**
  * Listen for launches. Resolves { close() } once the pipe is up; rejects when it can't be (the name is taken): the caller then
- * publishes no owner file. `onFocus(msg)` runs AFTER the launch was answered ok, and may wait for the window to be ready.
+ * publishes no owner file. `onFocus(msg)` runs AFTER the launch was answered ok, which only a ready window does.
+ * `accepting()` -> bool: false answers not-ok at once. `whenReady()` -> bool | Promise<bool>: held on until it settles; anything but
+ * true (false, a rejection, a throw) answers not-ok. Default: ready.
  */
 function listen({ pid, onFocus, accepting = () => true, whenReady = () => true, idleMs = DEFAULT_IDLE_MS, log = () => {} } = {}) {
   return new Promise((resolve, reject) => {
@@ -90,6 +94,7 @@ function listen({ pid, onFocus, accepting = () => true, whenReady = () => true, 
         let ready;
         try { ready = Promise.resolve(whenReady()); } catch { ready = Promise.resolve(false); }
         ready.catch(() => false).then((isReady) => {
+          if (sock.destroyed) return;        // the launch gave up while held: nobody to answer, and nothing to act for (PR #248 Miguel S2)
           let open = false;
           try { open = isReady === true && accepting() === true; } catch { open = false; }
           if (!open) return reply({ ok: false, error: 'closing' });

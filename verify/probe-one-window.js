@@ -19,10 +19,12 @@
  *   7  two launches started together on one project: exactly one window survives, the other exits 0
  *   8  close, then reopen (PR #247 Dexter 1 / Miguel B1): a launch while the first window is still shutting down gets a window of its own,
  *      and the file names it: one window, never zero
- *   9  the double click during a close (PR #247 round 2, M3): two launches while the first window is shutting down end with ONE window
- *      (one opens it, the other is handed to it). NOT here: a cancelled quit (M1) needs the unsaved-text prompt and a launch held while
- *      the owner starts (M2) needs an attach-only refusal; neither has a probe command, so test/window-claim-edges.test.js covers them
- *      with the real owner file and the real pipes.
+ *   9  two launches after a close: they start once the first window has released its file (so this is the plain publish race of case 7,
+ *      plus the owner HOLDING the second launch until the first is ready: PR #247 round 2 M2) and end with ONE window (one opens it, the
+ *      other is handed to it). It does NOT reach the M3 takeover (both launches reading the dying owner's file before its release): that
+ *      timing is pinned by the unit tests (test/window-owner.test.js, test/window-claim-edges.test.js). A cancelled quit (M1) needs the
+ *      unsaved-text prompt and a start that ends before ready (M2) needs an attach-only refusal; neither has a probe command, so
+ *      test/window-claim-edges.test.js covers them with the real owner file and the real pipes.
  *
  * SAFE. A scratch project in a temp folder (never dev\), the hosts' `claude` is cmd.exe (CLAUDE_CUSTOM_BIN), ELECTRON_RUN_AS_NODE and every
  * CLAUDE_CUSTOM_* the probe doesn't set are deleted by the launcher, registry / portraits / uploads / UI state / user data are temp
@@ -282,7 +284,7 @@ async function main() {
   }
 
   // 9 ---------------------------------------------------------------------------------
-  // The double click during a close (PR #247 round 2, Dexter M3): two launches while the first window is shutting down end with ONE window.
+  // Two launches after a close: ONE window (the plain publish race plus the M2 hold). Not the M3 takeover; see the header.
   const y = makeProject('proj4');
   const w9 = await launchApp(y.container);
   const sw9 = await firstWindowUp(w9);
@@ -296,7 +298,7 @@ async function main() {
     await sleep(5000);
     e9.push(...pair.filter(a => /this launch ends/.test(a.out)));
     k9 = pair.filter(a => !/this launch ends/.test(a.out));
-    check('9: two launches during a close: one opens the window, the other is handed to it', e9.length === 1 && k9.length === 1, `enders=${e9.length} keepers=${k9.length}`);
+    check('9: two launches after a close: one opens the window, the other is handed to it', e9.length === 1 && k9.length === 1, `enders=${e9.length} keepers=${k9.length}`);
     if (k9.length === 1) {
       const s9 = await firstWindowUp(k9[0]);
       check('9: ...and the keeper has one window and the file names it', !!s9 && s9.windows === 1 && (readOwner(y) || {}).pid === k9[0].child.pid,

@@ -2681,7 +2681,11 @@ app.whenReady().then(async () => {
     // The old behaviour, kept: a refused or unfindable port ends the launch.
     // A host that merely was slow leaves the window up, with its reason and Retry.
     console.error('[main] could not start:', first.error);
-    if (first.error === NO_PORT_ERROR || /resolvePort:/.test(String(first.error))) { app.exit(1); return; }
+    if (first.error === NO_PORT_ERROR || /resolvePort:/.test(String(first.error))) {
+      windowClaim.stop();         // markReady() already ran: a launch held on this window must hear no, not ok, before the exit (PR #248 Dexter 1)
+      app.exit(1);
+      return;
+    }
   }
   if (MODE === 'tabs') setInterval(() => { reloadMarks(); tabShell.poll(); }, POLL_MS);
   // #119 A6: read the repo's open issues once, a little after the window is up, so a tab whose branch came from an

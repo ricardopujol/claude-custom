@@ -3,7 +3,7 @@
  * "One window per project", the launch-time orchestration and the owner's life cycle (DESIGN_TABS_SESSIONS.md 3.3). Out of app/main.js
  * with every effect handed in (PR #247 Miguel I2), so each path is a test and not a regex over main.js.
  *
- *   createWindowClaim(deps) -> { run(), markReady(), stop(), accepting() }
+ *   createWindowClaim(deps) -> { run(), markReady(), stop(), resume(), accepting() }
  *
  * run() is called once, before this process makes a window. It answers 'exit' (another window owns the project and has accepted this
  * launch: end without a window) or 'proceed' (make the window). The paths:
@@ -34,6 +34,7 @@
 
 const DEFAULT_READY_BOUND_MS = 180_000;
 const SEND_SLACK_MS = 10_000;       // a launch waits this much longer than the owner may take to be ready
+const MAX_TAKEOVER_TRIES = 3;       // sends a launch makes (each may wait readyBound + slack) before it just opens its window
 
 function createWindowClaim(deps) {
   const {
@@ -45,6 +46,10 @@ function createWindowClaim(deps) {
   const readyBoundMs = Number.isFinite(deps.readyBoundMs) ? deps.readyBoundMs : DEFAULT_READY_BOUND_MS;
 
   const t0 = now();
+  // The hold is measured on a monotonic clock, like the launch's own send timer: a wall-clock step back must not stretch the hold past
+  // the launch's wait (PR #248 Dexter 2).
+  const mono = deps.mono || (() => performance.now());
+  const monoT0 = mono();
   let pipe = null;
   let self = { pid, start: null };
   let ready = false;
@@ -80,13 +85,15 @@ function createWindowClaim(deps) {
     if (stopped) return Promise.resolve(false);
     if (ready) return Promise.resolve(true);
     return new Promise((resolve) => {
-      const timer = setTimeout(() => resolve(false), Math.max(0, readyBoundMs - (now() - t0)));
+      const left = Math.min(readyBoundMs, Math.max(0, readyBoundMs - (mono() - monoT0)));
+      const timer = setTimeout(() => resolve(false), left);
       if (timer.unref) timer.unref();
       readyPromise.then(() => { clearTimeout(timer); resolve(ready && !stopped); });
     });
   }
 
-  // A launch came in and was answered 'accepted' (so this window is ready): act on it (never for one that is quitting).
+  // A launch came in and was answered 'accepted' (so this window is ready): act on it (never for one that is quitting). The wait stays for
+  // a caller that hands a message in directly before ready; through the pipe it is already resolved.
   async function onLaunch(msg) {
     await readyPromise;
     if (stopped) return;
@@ -128,7 +135,7 @@ function createWindowClaim(deps) {
         log(`[main] one window: owner pid ${r.owner.pid} did not accept (${why}); opening a window and taking the owner file over`);
         if (takeOver({ stateRoot, self, judgedText: r.text }) === true) { published = true; break; }
         published = false;
-        if (attempt >= 2) break;
+        if (attempt + 1 >= MAX_TAKEOVER_TRIES) break;
         r = await claim({ stateRoot, self, startTimes });
         published = r.published === true;
       }
@@ -155,7 +162,11 @@ function createWindowClaim(deps) {
       if (stopped) { if (p) await p.close().catch(() => {}); return; }       // stopped again while listening: quitting for real
       pipe = p;
       const r = await claim({ stateRoot, self, startTimes });
-      if (stopped) return;
+      if (stopped) {
+        // A quit landed while the claim ran: stop() found no file to release yet, so release what the claim just published.
+        if (r.published === true) { released = false; releaseFile(); }
+        return;
+      }
       if (r.published === true && pipe) hookExit();
       else if (r.published === true) releaseFile();
       else if (pipe) { const q = pipe; pipe = null; await q.close().catch(() => {}); }

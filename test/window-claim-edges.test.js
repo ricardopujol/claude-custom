@@ -51,7 +51,7 @@ function realClaim(root, pid, acts, extra = {}) {
     project: { kind: 'container', root: path.dirname(root), dev: root }, launchCwd: root, explicitPort: null,
     listen: focus.listen, claim: owner.claim, send: focus.send, takeOver: owner.takeOver, release: owner.release,
     forwardedCwd: owner.forwardedCwd, act: async (msg) => { acts.push([pid, msg]); }, onExit: () => {},
-    now: Date.now, readyBoundMs: extra.readyBoundMs || 60_000, log: () => {},
+    now: Date.now, readyBoundMs: extra.readyBoundMs || 60_000, log: extra.log || (() => {}),
   });
 }
 
@@ -138,8 +138,13 @@ test('M2 real: an owner whose start hangs past the bound lets the held launch go
   const acts = [];
   const w = realClaim(root, uniquePid(), acts, { readyBoundMs: 300 });
   await w.run();
-  const l = realClaim(root, uniquePid(), acts, { readyBoundMs: 300 });
+  const logs = [];
+  const l = realClaim(root, uniquePid(), acts, { readyBoundMs: 300, log: (m) => logs.push(m) });
+  const t = Date.now();
   assert.strictEqual(await l.run(), 'proceed');
+  // The OWNER's bound ended the hold (answer 'closing' after ~300 ms), not the launch's own 10 s send timeout (PR #248 Dexter 3).
+  assert.ok(Date.now() - t < 3000, `took ${Date.now() - t} ms`);
+  assert.ok(logs.some(m => /did not accept \(closing\)/.test(m)), logs.join(' | '));
   l.stop();
   w.stop();
 });
@@ -172,11 +177,18 @@ test('M3 fake: the takeover uses the bytes the refusal was judged on, and a fail
 
 test('M3 fake: a takeover that keeps failing ends in a window, never a lost launch or a loop', async () => {
   const { createWindowClaim } = load();
-  const { deps } = fakes({ claim: async () => ({ ...live, text: 'W' }), send: async () => ({ ok: false, error: 'closing' }), takeOver: () => false });
+  let sends = 0, claims = 0, takeOvers = 0;
+  const { deps } = fakes({
+    claim: async () => { claims++; return { ...live, text: 'W' }; },
+    send: async () => { sends++; return { ok: false, error: 'closing' }; },
+    takeOver: () => { takeOvers++; return false; },
+  });
   assert.strictEqual(await createWindowClaim(deps).run(), 'proceed');
+  // exactly three tries (each real send may wait readyBound + 10 s): PR #248 Dexter 4
+  assert.deepStrictEqual([claims, sends, takeOvers], [3, 3, 3]);
 });
 
-test('M3 real: the double click. L1 took over after W released; L2, refused by W earlier, finds L1 on file and is handed to it', async () => {
+test('M3 real: the double click. L1 took over after W released; L2\'s takeover with the bytes it judged (W\'s) fails and leaves L1\'s file alone (the hand-over itself is the M3 fake test)', async () => {
   const owner = require('../host/window-owner');
   const root = mkRoot();
   const acts = [];
