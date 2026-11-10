@@ -10162,8 +10162,12 @@ term.onKey(() => { if (term.hasSelection()) term.clearSelection(); });
 // where-are-we summary and counts as touching the tab.
 term.onKey(() => { summaryTyped(); });
 
+// A right click pastes nothing (BACKLOG #194): the CLI pastes on a right-button mouse report, so none is sent from a claude tab
+// (a shell tab keeps them: mc, vim and htop use the right button). app/right-click-guard.js.
+const rightClickFilter = createRightClickFilter(() => hostKind !== 'shell');
 term.onData((data) => {
-  sentInputs.push(data);                      // what the probe reads back: did this reach the pty path?
+  if (rightClickFilter.drop(data)) return;
+  sentInputs.push(data);                     // what the probe reads back: did this reach the pty path?
   if (sentInputs.length > 20) sentInputs.shift();
   logLine(pendingKeyDesc || 'input', data);
   pendingKeyDesc = null;
@@ -10171,7 +10175,10 @@ term.onData((data) => {
 });
 
 // Bracketed-paste and other multi-byte writes.
-term.onBinary((data) => send(data));
+term.onBinary((data) => {
+  if (rightClickFilter.drop(data)) return;
+  send(data);
+});
 
 // --- drag and drop ------------------------------------------------------------
 // Dropping a file types its path into the prompt and, when the file lives

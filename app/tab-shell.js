@@ -662,6 +662,7 @@ function createShell(deps) {
       isDev: entry.isDev === true, port: null, token: null, view: null,
       started: false, starting: false, error: null, status: null, closed: false, startPromise: null, pending: null,
       attachPromise: null, unconfirmed: null, ended: false, occupancySent: EMPTY_OCCUPANCY,
+      startId: 0,     // counts this record's sessions (present / resetEnded): a probe answer belongs to the session it asked about
     };
   }
 
@@ -697,6 +698,7 @@ function createShell(deps) {
     tab.view = views.create(tab);
     tab.occupancySent = EMPTY_OCCUPANCY;     // a fresh page knows nothing yet
     tab.started = true;
+    tab.startId = (tab.startId || 0) + 1;
     tab.ended = false;          // a host of its own again: watched again (Dexter F2)
     // A host given up on earlier, if it ever binds, meets this one's lock and
     // exits on its own (session-gate idleExit): nothing left to warn about.
@@ -848,9 +850,39 @@ function createShell(deps) {
     if (tab.view) { try { views.destroy(tab); } catch (err) { log('[shell] destroy failed:', err && err.message); } }
     tab.view = null;
     tab.started = false;
+    tab.startId = (tab.startId || 0) + 1;
     tab.port = null;
     tab.token = null;
     tab.status = null;
+  }
+
+  /**
+   * BACKLOG #140 (2026-11-07 sighting): the 3 s poll is what marks a session ended, so a click in the seconds after claude exited
+   * found a tab that still looked running and showed its dead page: no terminal, no session. A person's click on a started tab asks
+   * its port once; a refusal is the same proof the poll takes (captureListening), and the tab is restarted as an ended one is.
+   */
+  // A lane the merged close or the remover owns, or a reader with unsaved edits, is left to the poll and the reducer (PR #251 Dexter 1):
+  // the reducer moves a merged lane on only when the POLL reports its host refused, and a click must not consume that report.
+  const ownedElsewhere = (tab) => {
+    const phase = phaseOf(tab.key);
+    return phase === 'finishing' || phase === 'removing' || !!readerUnsavedOf(tab)
+      || mergedBusy.has(tab.key) || closing.has(tab.key) || ending.has(tab.key);
+  };
+
+  async function restartIfDead(tab) {
+    const sessionId = tab.startId;
+    const same = () => tabs.get(tab.key) === tab && tab.startId === sessionId && tab.started === true && tab.closed !== true && selectedKey === tab.key;
+    if (tab.started !== true || tab.starting === true || tab.ended === true || isCompanionEntry(tab) || !Number.isInteger(tab.port) || ownedElsewhere(tab)) return;
+    let answer;
+    try { answer = await hosts.probe(tab.port); } catch { return; }
+    // the record may have changed while the port was asked (a restart, a close, another tab selected): only the same session is acted on
+    if (!same() || tab.starting === true || ownedElsewhere(tab)) return;
+    // A refusal is proof, and so is a poll that marked it ended while the probe was out (PR #251 Dexter 2: the click must not be lost).
+    if (answer !== 'refused' && tab.ended !== true) return;
+    tab.ended = true;
+    resetEnded(tab);
+    if (!tab.started && !tab.starting) { sendSelected(tab); await start(tab); }
+    publish();
   }
 
   /** Select a tab, starting it (or retrying a failed start) as needed; `restart`: a person's click also restarts an ended session. */
@@ -870,6 +902,7 @@ function createShell(deps) {
       if (restart) resetEnded(tab);
       sendSelected(tab);
       if (!tab.started && !tab.starting) started = start(tab);
+      else if (restart) started = restartIfDead(tab);
     }
     publish();
     return started;
@@ -1030,10 +1063,13 @@ function createShell(deps) {
       // Captured now, reconciled now, in this order, before the next poll
       // starts: the markers first, then the hosts (see observeWorktrees).
       const seen = observeWorktrees(text, container, git.marker);
+      const sessionsAsked = new Map([...tabs].map(([k, t]) => [k, t.startId]));
       const listening = await captureListening(tabs.values(), hosts.probe);
-      // Refused once: that session ended. Its port is free for another tab.
+      // Refused once: that session ended. Its port is free for another tab. An answer about a session that has since been
+      // restarted (a click's restartIfDead) is about the old one: dropped, never applied to the new one (PR #251 Dexter 2).
       for (const [k, v] of Object.entries(listening)) {
         const t = tabs.get(k);
+        if (t && t.startId !== sessionsAsked.get(k)) { delete listening[k]; continue; }
         if (v === false && t) t.ended = true;
       }
       if (seen) reconcileWith({ ...seen, listening });
