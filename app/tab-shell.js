@@ -1759,6 +1759,23 @@ function createShell(deps) {
     return { ok: true };
   }
 
+  /**
+   * Reopen the lane closed by hand whose folder is `cwd` (or contains it), and select it: what Open on a background host of this project
+   * does when its tab was closed here (PR #247 Dexter 2). { ok, key } or { ok: false, error }.
+   */
+  async function reopenFolder(cwd) {
+    const k = typeof cwd === 'string' && cwd ? keyOf(cwd) : null;
+    if (k === null) return { ok: false, error: 'no folder' };
+    const rows = closedRows();
+    const row = rows.find(c => c.key === k) || rows.find((c) => {
+      const entry = closedByHand.find(x => x.key === c.key);
+      return !!entry && isInside(cwd, entry.path);
+    });
+    if (!row) return { ok: false, error: 'no closed lane for that folder' };
+    const r = await reopen(row.key);
+    return { ...r, key: row.key };
+  }
+
   /** What the `+` menu offers. */
   function plusMenu() {
     const busy = !!(create && create.phase === 'running');
@@ -2310,7 +2327,7 @@ function createShell(deps) {
 
   return {
     open, poll, select: userSelect, closeTab, report, raise, attentionClick, goTo, selectFolder, tabStates, typeMerged, typed, menuState, override,
-    createWorktree, openCreate, cancelCreate, openPicker, closePicker, plusMenu, reopen, reorder, lanesMenu, looked, isLooked, openSide, sideMenu, openShell, shellMenu, issueOf,
+    createWorktree, openCreate, cancelCreate, openPicker, closePicker, plusMenu, reopen, reopenFolder, reorder, lanesMenu, looked, isLooked, openSide, sideMenu, openShell, shellMenu, issueOf,
     next: () => step(1), previous: () => step(-1),
     isTabView, tabForSender, tabByKey, tabmodeOf, snapshot, model, destroy, branchOf, occupancyFor, boxAnswered,
     // #139: the merged closes the last poll started (a test awaits them; main never needs to).

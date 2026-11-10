@@ -59,6 +59,10 @@ const { createOccupancyService } = require('../host/occupancy-service');
 const { readCloseFacts } = require('../host/close-safety');
 const { occupancyDir, createClaimWriter } = require('../host/occupancy-store');
 const { startTimes, createSelfStartTime, isAlive: isPidAlive } = require('../host/proc-start');
+// One window per project (DESIGN_TABS_SESSIONS.md 3.3): the owner file + proof, and the pipe a second launch speaks through.
+const windowOwner = require('../host/window-owner');
+const windowFocus = require('../host/window-focus');
+const { createWindowClaim } = require('../host/window-claim');
 // ...and it PRODUCES the ones no host can: claims read off the subagent transcripts, for sessions that no
 // host of this build runs (a plain terminal, an older build). host/occupancy-transcripts.js.
 const { createTranscriptScanner } = require('../host/occupancy-transcripts');
@@ -217,6 +221,9 @@ const PROBE_PORT = Number(process.env.CLAUDE_CUSTOM_TABS_PROBE) || 0;
 // A probe window is killed by pid, which leaves a ghost icon in the notification area until the mouse passes over it. So only the
 // tray's own probe (verify/probe-tray.js) gets a tray; in every other probe the tray (and starting hidden) is off.
 const TRAY_ON = !PROBE_PORT || process.env.CLAUDE_CUSTOM_TRAY_PROBE === '1';
+// One window per project applies to a person's windows. A probe's windows come many to a temp folder, so they are outside the rule
+// unless the probe of the rule itself (verify/probe-one-window.js) sets CLAUDE_CUSTOM_ONE_WINDOW_PROBE=1.
+const ONE_WINDOW_ON = !PROBE_PORT || process.env.CLAUDE_CUSTOM_ONE_WINDOW_PROBE === '1';
 // The probe's secret; every driver command must carry it (Miguel, PR #75 M4).
 // handleProbeCommand refuses everything when it's missing or short.
 const PROBE_TOKEN = process.env.CLAUDE_CUSTOM_TABS_PROBE_TOKEN || null;
@@ -1148,6 +1155,17 @@ async function backgroundModel() {
 const backgroundActions = createBackgroundActions({
   select: key => tabShell.select(key),
   focusWindow,
+  // A host of THIS project is shown in this window (one window per project): its tab is selected, a lane closed by hand is reopened.
+  // Another project's host keeps the attach-only spawn below until a window can open one on a project's behalf.
+  thisProject: (o) => {
+    const p = projectOf(o.cwd);
+    return !!p && samePath(p.root, PROJECT_ROOT);
+  },
+  laneFor: (o) => windowOwner.pickLane(tabShell.snapshot().tabs, { cwd: o.cwd, port: o.port }),
+  reopenLane: async (o) => {
+    const r = await tabShell.reopenFolder(o.cwd);
+    return r && r.ok ? r.key : null;
+  },
   // Attach-only: it attaches to that host or refuses (host/launch-target.js).
   spawnWindow: ({ cwd, port }) => {
     const child = spawn(process.execPath, [INSTALL_DIR], {
@@ -1977,6 +1995,8 @@ function startProbeDriver(port) {
       } catch (err) { stripLayout = { error: err.message }; }
       const snap = tabShell.snapshot();
       return {
+        // verify/probe-one-window.js: how many windows this Electron process has made (one window per project: it must stay 1)
+        windows: BrowserWindow.getAllWindows().length,
         mode: MODE, selectedKey: snap.selectedKey, tabs: model, hosts, stripDom, stripOccupancy, stripChrome, stripLayout, viewDom, noMenuBar, windowFrame,
         // 1B: the keys main says have a tab, and the Lanes menu's rows (Not started / Merged, with the ones closed by hand)
         stripKeys: snap.strip.map(e => e.key), lanes: snap.lanes,
@@ -2383,6 +2403,31 @@ function startIndexing(seams) {
   setTimeout(() => { projects(PROJECT_ROOT).catch(() => {}); }, 15_000).unref();
 }
 
+// --- one window per project -------------------------------------------------------------------------------------
+// A second launch of this project is answered by the first window (focus + the lane it named) and ends without a window. The logic is
+// host/window-claim.js with these effects handed in; the pipe is up BEFORE the owner file names this process, and the owner says no
+// while it is quitting or its start never finished.
+const ownStartTime = createSelfStartTime();   // this process's own start time, asked once: the owner file, the claims and the sampler prove "this process" with it
+
+// The owner side: a launch came in (and was already answered "accepted": it never waits for this window to start). Once the window is
+// ready, focus it (restoring a minimised or tray-hidden window) and select the lane the launch named, if this window has one.
+async function onLaunchFocus(msg) {
+  focusWindow();
+  const key = windowOwner.pickLane(tabShell.snapshot().tabs, msg);
+  if (key) tabShell.select(key);
+  console.log(`[main] a second launch asked for this window (${JSON.stringify(msg.cwd || null)}${msg.port ? `, port ${msg.port}` : ''}): ${key ? 'selected a lane' : 'focused'}`);
+}
+
+const windowClaim = createWindowClaim({
+  enabled: ONE_WINDOW_ON, stateRoot: STATE_ROOT, pid: process.pid, ownStart: () => ownStartTime(), startTimes,
+  project: PROJECT, launchCwd: LAUNCH_CWD, explicitPort: EXPLICIT_PORT,
+  listen: windowFocus.listen, claim: windowOwner.claim, send: windowFocus.send, takeOver: windowOwner.takeOver,
+  release: windowOwner.release, forwardedCwd: windowOwner.forwardedCwd,
+  act: onLaunchFocus,
+  onExit: (fn) => process.on('exit', fn),       // app.exit skips will-quit; a crash leaves a file the next launch proves dead
+  log: (...a) => console.log(...a),
+});
+
 app.whenReady().then(async () => {
   console.log('[main] project       :', PROJECT_ROOT, `(${MODE})`);
   console.log('[main] launched on   :', LAUNCH_CWD);
@@ -2390,6 +2435,9 @@ app.whenReady().then(async () => {
   // Named and refused (see explicitPort): nothing sensible is left to do, and
   // opening a window anyway would show a terminal wired to nothing.
   if (EXPLICIT_PORT && EXPLICIT_PORT.bad !== undefined) { app.exit(1); return; }
+
+  // One window per project: before anything is made, ask whether this project's window already exists.
+  if (await windowClaim.run() === 'exit') { app.exit(0); return; }
 
   const seams = readSeams(process.env);
   const openPrsReader = seams.openPrsFixture
@@ -2409,8 +2457,6 @@ app.whenReady().then(async () => {
     onChange: () => { if (tabShell) tabShell.refresh(); },
     log: (...a) => console.log(...a),
   });
-  // This process's own start time, asked once: the claims below and the shared sampler's owner record both prove "this process" with it.
-  const ownStartTime = createSelfStartTime();
   transcriptOccupancy = createTranscriptScanner({
     // #81: a side host's session: its agents' claims are readers', whoever writes them
     readerSessions: () => readerSessionIds(ownIdentities() || []),
@@ -2617,7 +2663,9 @@ app.whenReady().then(async () => {
   occupancyService.start();
   transcriptOccupancy.start();
   const first = await tabShell.open();
+  windowClaim.markReady();        // from here a second launch is handed to this window
   if (attachOnlyRefusal) {
+    windowClaim.stop();           // this process is about to end: it is no window to hand a launch to
     console.error('[main] Open refused:', attachOnlyRefusal.reason);
     if (!PROBE_PORT && win && !win.isDestroyed()) {
       await dialog.showMessageBox(win, { type: 'info', buttons: ['OK'], message: attachOnlyText(attachOnlyRefusal) });
@@ -2640,6 +2688,11 @@ app.whenReady().then(async () => {
   // Headless verification path.
   if (process.env.CLAUDE_CUSTOM_SCREENSHOT) runScreenshotPath();
   if (PROBE_PORT) startProbeDriver(PROBE_PORT);
+}).catch((err) => {
+  // A start that threw must not stay the project's owner: every later launch would be handed to a window that never comes up.
+  console.error('[main] startup failed:', (err && err.stack) || err);
+  windowClaim.stop();
+  if (!win || win.isDestroyed()) app.exit(1);
 });
 
 // Closing the window detaches; it does not end the session.
@@ -2657,7 +2710,7 @@ app.on('will-quit', (e) => {
   e.preventDefault();
   resources.resumeAll({ deadlineMs: 10000 }).catch(() => {}).finally(() => app.quit());
 });
-app.on('before-quit', () => { quitting = true; });
+app.on('before-quit', () => { quitting = true; windowClaim.stop(); });   // a launch from here on opens its own window (close, then reopen)
 app.on('will-quit', () => { if (trayController) trayController.destroy(); if (resourceSampler) resourceSampler.stop(); if (transcriptOccupancy) transcriptOccupancy.close(); if (occupancyService) occupancyService.close(); });
 // A panel page that called window.print() leaves the browser unable to terminate; this ends the process if quitting stalls (app/quit-watchdog.js).
 armQuitWatchdog(app, QUIT_LOG_FILE ? { onFire: () => quitMark('quit watchdog fires') } : {});
