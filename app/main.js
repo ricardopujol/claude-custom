@@ -1154,12 +1154,16 @@ async function backgroundModel() {
 const backgroundActions = createBackgroundActions({
   select: key => tabShell.select(key),
   focusWindow,
-  // A host of THIS project is shown in this window (one window per project): its tab's key, null when this window has no tab for it,
-  // undefined for another project's host (which keeps the attach-only spawn below until a window can open one on a project's behalf).
-  laneFor: (o) => {
+  // A host of THIS project is shown in this window (one window per project): its tab is selected, a lane closed by hand is reopened.
+  // Another project's host keeps the attach-only spawn below until a window can open one on a project's behalf.
+  thisProject: (o) => {
     const p = projectOf(o.cwd);
-    if (!p || !samePath(p.root, PROJECT_ROOT)) return undefined;
-    return windowOwner.pickLane(tabShell.snapshot().tabs, { cwd: o.cwd, port: o.port });
+    return !!p && samePath(p.root, PROJECT_ROOT);
+  },
+  laneFor: (o) => windowOwner.pickLane(tabShell.snapshot().tabs, { cwd: o.cwd, port: o.port }),
+  reopenLane: async (o) => {
+    const r = await tabShell.reopenFolder(o.cwd);
+    return r && r.ok ? r.key : null;
   },
   // Attach-only: it attaches to that host or refuses (host/launch-target.js).
   spawnWindow: ({ cwd, port }) => {

@@ -65,3 +65,10 @@ test('a launch\'s folder is logged as JSON (a newline in it cannot forge a log l
   const fn = src.slice(src.indexOf('async function onLaunchFocus'), src.indexOf('const windowClaim = createWindowClaim('));
   assert.match(fn, /JSON\.stringify\(msg\.cwd \|\| null\)/);
 });
+
+test('the menu\'s Open hands main\'s project check, lane lookup and reopen to the actions', () => {
+  const block = src.slice(src.indexOf('createBackgroundActions({'));
+  assert.match(block, /thisProject:\s*\(o\)\s*=>\s*\{[\s\S]{0,200}samePath\(p\.root, PROJECT_ROOT\)/);
+  assert.match(block, /laneFor:\s*\(o\)\s*=>\s*windowOwner\.pickLane\(tabShell\.snapshot\(\)\.tabs/);
+  assert.match(block, /reopenLane:\s*async \(o\)\s*=>[\s\S]{0,160}tabShell\.reopenFolder\(o\.cwd\)/);
+});
