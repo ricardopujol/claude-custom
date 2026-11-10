@@ -24,6 +24,8 @@
  *     under 70% CPU (now <load>): NOT RUN                                         the slot was free, the machine wasn't
  *   [heavy-lock] the lock could not be taken (<why>): NOT RUN                     the lock script failed (the 'error'
  *                                                                                 shape: <why> is its output, one line)
+ * (In the queue variant the parenthesis reads the script's own "first in line:" line when it prints one: "the first in line
+ * is held back by the load gate since <t>" or "is not held back by the load gate"; an older script gets the guess above.)
  * The first and third get " (heavy-lock.ps1 ran past its wait and was stopped)" after the "<n> min" part when the script
  * call was killed by its own wait + 1 minute timer (a loaded machine); then an unreadable holder reads "held by a holder
  * its status could not name". The last line is always one physical line starting "[heavy-lock]".
@@ -43,12 +45,26 @@ const { spawn } = require('child_process');
 const heavy = require('../host/heavy-lock');
 const { killPidTree } = require('../host/kill-tree');
 
+// The name this run takes the slot under (#183): the command's own first words, so a probe's child sees "held by node
+// verify/probe-x.js (pid N)" and not a suite of another lane. `npm test` keeps its name (its argv is `node --test ...`, which
+// says less). No parentheses: a label must never read as the "(pid N)" part of an owner (host/heavy-lock.js WRAPPER_OWNER).
+const LABEL_MAX = 80;
+function labelFor(argv, env = process.env) {
+  if (env && env.npm_lifecycle_event === 'test') return 'npm test';
+  // The command and its first argument that isn't a flag (`node --no-warnings verify/p.js` -> `node verify/p.js`); with none, the
+  // first two words. Printable ASCII only: the label travels through the lock script's console code page and must come back
+  // the same (Dexter 2; ownerFor does it too).
+  const first = argv.slice(1).find(a => typeof a === 'string' && !a.startsWith('-'));
+  const words = (first === undefined ? argv.slice(0, 2) : [argv[0], first]).join(' ').replace(/[()]/g, '').replace(/\s+/g, ' ').trim();
+  return (words || 'command').replace(/[^\x20-\x7e]/g, '?').slice(0, LABEL_MAX);
+}
+
 async function main(argv, {
   acquire = heavy.acquire, spawn: spawnFn = spawn, killFn = killPidTree, proc = process, log = console.error, env = process.env,
 } = {}) {
   if (!argv.length) { log('usage: node scripts/with-heavy-lock.js <command> [args...]'); return 2; }
   let lock;
-  try { lock = acquire({ label: 'npm test', env, log }); } catch (err) {
+  try { lock = acquire({ label: labelFor(argv, env), env, log }); } catch (err) {
     // Only the lock's own refusals are NOT RUN. Anything else is a bug in this code: its stack, and 1 (#237 Miguel M4).
     if (!(err instanceof heavy.HeavyLockError)) {
       log(`[heavy-lock] the lock code itself failed (a bug, not a busy lock): ${(err && err.stack) || err}`);
@@ -103,7 +119,7 @@ async function main(argv, {
   }
 }
 
-module.exports = { main };
+module.exports = { main, labelFor };
 
 if (require.main === module) {
   main(process.argv.slice(2)).then((code) => { process.exitCode = code; });
