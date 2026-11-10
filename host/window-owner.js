@@ -110,7 +110,7 @@ async function claim({ stateRoot, self, startTimes, now = Date.now, link, hooks 
     const owner = text === null ? null : parseOwner(text);
     const proof = owner && owner.pid !== self.pid ? await proveOwner(owner, { startTimes }) : null;
     const d = decide({ owner, proof, selfPid: self.pid });
-    if (d.action === 'focus') return { ...d, owner, file };
+    if (d.action === 'focus') return { ...d, owner, file, text };
     if (typeof self.start !== 'string' || !self.start) return { ...d, reason: 'no-self-start', file, published: false };
     // A proof that could not be made (a slow PowerShell) opens a window but never takes a LIVE owner's file: it would cut that window off
     // from the rule for good (PR #247 Miguel I4). A file that names nobody (garbage) is still replaced.
@@ -131,12 +131,15 @@ async function claim({ stateRoot, self, startTimes, now = Date.now, link, hooks 
  * The owner on file was proven live but could not be reached (it is mid-shutdown, or a build from before the pipe): this launch
  * opens its window anyway, and the file must then name THAT window, or a later launch would be handed to a window on its way out.
  * true when the file now names this process.
+ * `judgedText` is the file's bytes the refusal was judged on (claim's `text`); only those are replaced. A file that names someone else
+ * now (a launch that took over a moment ago, PR #247 Dexter M3) is left alone and this says false, so the caller claims again and is
+ * handed to that window. With nothing judged it removes nothing.
  */
-function takeOver({ stateRoot, self, now = Date.now, link } = {}) {
+function takeOver({ stateRoot, self, judgedText = null, now = Date.now, link } = {}) {
   if (lookDirState(stateRoot, fs) === 'foreign') return false;
   if (typeof self.start !== 'string' || !self.start) return false;
   const file = path.join(lookDir(stateRoot), OWNER_FILE);
-  try { return publish(stateRoot, file, { pid: self.pid, start: self.start, at: now() }, { staleText: readRaw(file), link, now }) === 'ok'; } catch { return false; }
+  try { return publish(stateRoot, file, { pid: self.pid, start: self.start, at: now() }, { staleText: typeof judgedText === 'string' ? judgedText : null, link, now }) === 'ok'; } catch { return false; }
 }
 
 /**

@@ -72,7 +72,7 @@ test('the owner only hears what it understands: a wrong type, a bad port or a hu
   } finally { await server.close(); }
 });
 
-test('a window still starting accepts the launch at once, and acts when it is ready (the launch never waits for a start)', async () => {
+test('with no whenReady given the window counts as ready: the launch is accepted at once, and onFocus (which may be slow) acts after', async () => {
   const { listen, send } = load();
   const pid = uniquePid();
   let release;

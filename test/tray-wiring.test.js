@@ -80,7 +80,7 @@ test('Quit from the tray brings a hidden window up first when there is unsaved r
 
 test('a cancelled close puts quitting back, so close-to-tray keeps working (Miguel Y2)', () => {
   const close = MAIN.slice(MAIN.indexOf("win.on('close'"), MAIN.indexOf("win.on('closed'"));
-  assert.match(close, /closeGuarded = true; win\.close\(\); \}\s*else quitting = false;/);
+  assert.match(close, /closeGuarded = true; win\.close\(\); \}\s*else \{\s*quitting = false;/);
 });
 
 test('will-quit destroys the tray FIRST, so a throwing sampler stop cannot leave a ghost icon (Miguel S1)', () => {
