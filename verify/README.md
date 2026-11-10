@@ -45,10 +45,18 @@ busy lock by its first words, with the same exit code:
     [heavy-lock] machine busy after a 20 min wait: the lock is free, but its load gate needs 8 GB free RAM and under 70% CPU (now 4.2 GB free, 91% CPU): NOT RUN
 
 Two more shapes end the same way, with the same exit code. Earlier tickets
-still waiting with nobody holding the slot (the first in line is between two
-polls, or held back by the load gate):
+still waiting with nobody holding the slot. The lock script says which kind of
+wait it is (its `first in line:` line), and the line repeats it, either not held
+back by the load gate (so the first in line is between two polls):
 
-    [heavy-lock] lock busy for 20 min, held by nobody now but 2 ahead in the queue (the first may be held back by the load gate: 8 GB free RAM and under 70% CPU): NOT RUN
+    [heavy-lock] lock busy for 20 min, held by nobody now but 2 ahead in the queue (the first in line is not held back by the load gate, so it is between two polls): NOT RUN
+
+or held back by it:
+
+    [heavy-lock] lock busy for 20 min, held by nobody now but 2 ahead in the queue (the first in line is held back by the load gate since 10:05:00: 8 GB free RAM and under 70% CPU): NOT RUN
+
+(An older lock script prints no such line, and the wrapper guesses: "the first may be
+held back by the load gate".)
 
 And the lock script itself failing (its output, on one line):
 
@@ -74,7 +82,7 @@ passes that code through unchanged, and its last line then says whose 75 it is:
 own identity (`npm test (pid 123 start 456)`). It skips the lock only while that
 same holder really holds it, and the line names that holder:
 
-    [heavy-lock] HEAVY_LOCK_HELD is set and the slot is held by npm test (pid 123 start 456) (since 10:00:00): not taking the lock (re-entrant, under that holder)
+    [heavy-lock] HEAVY_LOCK_HELD is set and the slot is held by npm test (pid 123 start 456) (since 10:00:00): not taking the lock (re-entrant, under that holder, the one HEAVY_LOCK_HELD names)
 
 Under another lane's holder it's a stranger's variable: a `WARNING: ... a
 STRANGER'S variable` line, and the lock is waited for like any run. With nobody
