@@ -36,14 +36,14 @@ function memoryLayout(seed = {}) {
 }
 
 function harness({ list = porcelain(FOUR), running = {}, layout, launchedFrom = null } = {}) {
-  const h = { running: { ...running }, spawns: [], controls: [], logs: [], listText: list, gitGate: null, listCalls: 0, failWait: new Set() };
+  const h = { running: { ...running }, spawns: [], controls: [], logs: [], listText: list, gitGate: null, listCalls: 0, failWait: new Set(), markers: {} };
   const base = 7700;
   const tokenOf = (port) => (h.running[port] === undefined ? null : `tok-${port}`);
   const deps = {
     mode: 'tabs', container: ROOT, cwd: wt('dev'), launchedFrom, log: (...a) => h.logs.push(a.join(' ')),
     git: {
       list: async () => { h.listCalls++; if (h.gitGate) await h.gitGate; await settle(); return h.listText; },
-      marker: () => null,
+      marker: (p, branch) => (h.markers[normPath(p)] === branch ? { branch, pr: 1, mergedAt: '2026-11-05T00:00:00Z' } : null),
     },
     ops: NO_OPS,
     hosts: {
@@ -181,10 +181,66 @@ test('a git that cannot list at first still gets its launch set once it can, and
   assert.deepStrictEqual(h.spawns, [key('dev'), key('feat-a')]);
 });
 
-test('an early develop that git does not list is ended, not left running with no tab', async () => {
-  const h = harness({ list: porcelain([['feat-a', 'feat/a']]) });
+// --- PR #250 review: Dexter 3 (merged lanes), Dexter 4 (real launchedFrom values), Dexter 5 + Miguel Y2 (an unusable first answer) ---
+
+test('Dexter 3: a merged pinned lane is never started by the launch (#139: the window starts no claude in a lane on its way out)', async () => {
+  const layout = memoryLayout({ pinned: [key('feat-a'), key('feat-b')] });
+  const h = harness({ layout });
+  h.markers[key('feat-a')] = 'feat/a';
   await h.shell.open();
   await flush();
-  assert.strictEqual(h.shell.tabByKey(key('dev')), null, 'no tab record for a folder git does not list');
-  assert.strictEqual(h.controls.filter(c => c.msg.type === 'stop').length, 1, 'its session was asked to stop');
+  assert.deepStrictEqual(h.spawns, [key('dev'), key('feat-b')], 'develop and the unmerged pin only');
+  assert.strictEqual(h.shell.tabByKey(key('feat-a')).started, false);
+});
+
+for (const [what, from] of [['the project container (what main.js sends for a window opened on the project)', ROOT], ['develop own folder', wt('dev')], ['a folder inside develop', path.join(wt('dev'), 'src')], ['a folder outside the project', path.join(os.tmpdir(), 'elsewhere')]]) {
+  test(`Dexter 4: develop starts before the first git poll answers when the window is opened from ${what}`, async () => {
+    const h = harness({ launchedFrom: from });
+    let release;
+    h.gitGate = new Promise(r => { release = r; });
+    const opening = h.shell.open();
+    await flush();
+    assert.deepStrictEqual(h.spawns, [key('dev')], 'spawned while git is still being asked');
+    release();
+    await opening;
+    await flush();
+    assert.deepStrictEqual(h.spawns, [key('dev')]);
+  });
+}
+
+test('Dexter 4: opened from a lane own worktree (or a folder in it), develop does NOT start before git answers; that lane starts first', async () => {
+  for (const from of [wt('feat-b'), path.join(wt('feat-b'), 'src')]) {
+    const h = harness({ launchedFrom: from });
+    let release;
+    h.gitGate = new Promise(r => { release = r; });
+    const opening = h.shell.open();
+    await flush();
+    assert.deepStrictEqual(h.spawns, [], String(from));
+    release();
+    await opening;
+    await flush();
+    assert.strictEqual(h.spawns[0], key('feat-b'));
+    assert.ok(h.spawns.includes(key('dev')));
+  }
+});
+
+test('Dexter 5 / Miguel Y2: a first git answer with no develop in it (unusable) never stops an attached develop, and changes nothing', async () => {
+  const h = harness({ list: porcelain([['feat-a', 'feat/a']]), running: { 7700: wt('dev') } });
+  await h.shell.open();
+  await flush();
+  assert.deepStrictEqual(h.controls.filter(c => c.msg.type === 'stop'), [], 'the running develop session is left alone');
+  assert.strictEqual(h.shell.tabByKey(key('dev')).started, true, 'still attached, waiting for a list that has develop in it');
+});
+
+test('Miguel Y2: an unusable first answer does not use up the launch set: a good list later still starts the pins', async () => {
+  const layout = memoryLayout({ pinned: [key('feat-a')] });
+  const h = harness({ layout, list: porcelain([['feat-b', 'feat/b']]) });
+  await h.shell.open();
+  await flush();
+  assert.deepStrictEqual(h.spawns, [key('dev')], 'develop came up regardless');
+  h.listText = porcelain(FOUR);
+  await h.shell.poll();
+  await flush();
+  assert.deepStrictEqual(h.spawns, [key('dev'), key('feat-a')], 'the launch set ran when the list was usable');
+  assert.strictEqual(h.shell.tabByKey(key('dev')).branch, 'develop', 'and the early record took its branch then');
 });

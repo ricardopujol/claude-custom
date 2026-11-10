@@ -595,7 +595,9 @@ function createShell(deps) {
     if (prune && state.tabs.length > 0) {
       const known = new Set([...state.tabs.map(t => keyOf(t.path)), ...closed.map(c => c.key), ...reopenedUnlisted]);
       order = order.filter(k => known.has(k));
-      pinned = pinned.filter(k => known.has(k));     // P7: a pin whose folder git no longer lists is forgotten, like the order
+      // P7: a pin whose folder git no longer lists AT ALL is forgotten. Listed but not openable (detached mid-rebase, prunable,
+      // initializing) is still listed: its pin stays (PR #250 Dexter 2). Before git has given a usable list nothing is pruned.
+      if (listedKeys !== null) pinned = pinned.filter(k => listedKeys.has(k) || known.has(k));
     }
     try {
       const r = layout.save({ order, closed, pinned });
@@ -1010,8 +1012,8 @@ function createShell(deps) {
         const { state: next, actions } = lifecycle.removeResult(state, p, r);
         state = next;
         apply(actions, before);
-        // #167 (P7): the merged close ignores a pin, and the pin goes with the lane, in one save.
-        if (r && r.ok === true && pinned.includes(key)) { pinned = pinned.filter(k => k !== key); persistLayout(); }
+        // #167 (P7): the merged close ignores a pin, and the pin goes with the lane (folder removed, or kept for its brief), in one save.
+        if (r && (r.ok === true || r.kept === true) && pinned.includes(key)) { pinned = pinned.filter(k => k !== key); persistLayout(); }
         // #139 (P5): a merged lane's tab that the removal closed leaves "Closed <lane> (merged)" on the strip's notice line, after
         // apply (the selection it makes would clear it). A tab that was drawn always gets it, whoever ended its session.
         if (hadTab && !tabs.has(key)) {
@@ -1023,19 +1025,25 @@ function createShell(deps) {
       });
   }
 
+  // Every folder git listed in its last USABLE answer (one with develop in it), openable or not; null until there is one.
+  let listedKeys = null;
+  const usableAnswer = (o) => !!o && Array.isArray(o.worktrees) && o.worktrees.some(w => w && w.isDev === true);
+
   function reconcileWith(observation) {
     const before = model();
+    const usable = usableAnswer(observation);
+    if (usable) listedKeys = new Set(observation.worktrees.map(w => keyOf(w.path)));
     const { state: next, actions } = lifecycle.reconcile(state, observation);
     state = next;
     reopenedUnlisted.clear();     // git has answered: state.tabs is the truth again
     apply(actions, before);
-    settleEarlyTabs();
+    if (usable) settleEarlyTabs();
     // The reducer forgets a hand close once git stops listing the worktree: so does the saved list.
     const stillClosed = closedByHand.filter(c => state.dismissed.includes(c.key));
     if (stillClosed.length !== closedByHand.length) { closedByHand = stillClosed; persistLayout(); }
-    // ... and a pin on a lane git stopped listing (P7). An empty list is no answer: it prunes nothing.
-    if (state.tabs.length > 0) {
-      const listed = new Set([...state.tabs.map(t => keyOf(t.path)), ...closedByHand.map(c => c.key)]);
+    // ... and a pin on a folder git stopped listing at all (P7; see persistLayout). An unusable answer is no answer: it prunes nothing.
+    if (usable) {
+      const listed = new Set([...listedKeys, ...closedByHand.map(c => c.key)]);
       if (pinned.some(k => !listed.has(k))) { pinned = pinned.filter(k => listed.has(k)); persistLayout(); }
     }
     if (selectWhenListed !== null && tabs.has(selectWhenListed)) {
@@ -1046,31 +1054,22 @@ function createShell(deps) {
       const first = firstSelection();
       if (first !== null) select(first);
     }
-    startLaunchSet();
+    if (usable) startLaunchSet();     // an unusable answer must not use up the once-per-window launch set (PR #250 Miguel Y2)
   }
 
   /**
-   * A record made before git had answered (develop, P10) meets git's list: listed, it takes its branch (and apply gave it its side
-   * and shell hosts, from the batch's one read); not listed, nothing would draw it and nobody could end it, so its session is stopped and the record dropped.
+   * A record made before git had answered (develop, P10) meets a USABLE git list (one with develop in it): it takes its branch (and
+   * apply gave it its side and shell hosts, from the batch's one read). It is never stopped here: an attached session was alive before
+   * this window and is the person's (Remote Control survives the window on purpose), and a list that does not name develop is
+   * unusable (host/tab-lifecycle.js reconcile), which never reaches this (PR #250 Dexter 5).
    */
   function settleEarlyTabs() {
-    for (const t of [...tabs.values()]) {
+    for (const t of tabs.values()) {
       if (t.early !== true) continue;
       const entry = state.tabs.find(x => keyOf(x.path) === t.key);
-      if (entry) {
-        t.early = false;
-        t.branch = entry.branch === undefined ? null : entry.branch;
-        continue;
-      }
-      log(`[shell] ${t.key}: started at launch, but git doesn't list the folder; ending it`);
+      if (!entry) { log(`[shell] ${t.key}: started at launch; git's list names no such tab (left as it is)`); continue; }
       t.early = false;
-      t.closed = true;
-      if (t.started && t.port && t.token) {
-        hosts.control({ port: t.port, token: t.token, msg: { type: 'stop' } }).catch(() => {});
-      }
-      if (t.view) { try { views.destroy(t); } catch (err) { log('[shell] destroy failed:', err && err.message); } }
-      t.view = null;
-      tabs.delete(t.key);
+      t.branch = entry.branch === undefined ? null : entry.branch;
     }
   }
 
@@ -1327,10 +1326,21 @@ function createShell(deps) {
    * stays closed), and not when the window was opened from a lane's worktree: that lane is the first start then (the poll's
    * first selection), and develop follows in the launch set.
    */
+  /**
+   * The same question firstSelection answers once git has: is the window opened from a LANE's worktree? Before git has answered the
+   * lanes are unknown, so by shape: inside the project container, and neither the container itself (what main.js sends for a window
+   * opened on the project) nor develop's folder nor inside it. Anything else (outside the project, no folder) resolves to develop.
+   */
+  function launchedFromALane(devPath) {
+    if (typeof launchedFrom !== 'string' || launchedFrom === '') return false;
+    if (keyOf(launchedFrom) === keyOf(container) || keyOf(launchedFrom) === devKey || isInside(launchedFrom, devPath)) return false;
+    return isInside(launchedFrom, container);
+  }
+
   function startDevelopAtOnce() {
     if (mode !== 'tabs' || devKey === null || tabs.has(devKey) || state.dismissed.includes(devKey)) return;
     const devPath = path.join(container, 'dev');
-    if (typeof launchedFrom === 'string' && launchedFrom !== '' && keyOf(launchedFrom) !== devKey && !isInside(launchedFrom, devPath)) return;
+    if (launchedFromALane(devPath)) return;
     const rec = newRecord({ path: devPath, branch: null, isDev: true });
     rec.early = true;
     tabs.set(devKey, rec);
@@ -1353,7 +1363,10 @@ function createShell(deps) {
     const first = named === null ? undefined : named;
     for (const k of tabLanes.launchSet({ lanes, devKey, pinned, order, dismissed: state.dismissed, first })) {
       const tab = tabs.get(k);
-      if (tab && !tab.started && !tab.starting && !ending.has(k)) start(tab);
+      if (!tab || tab.started || tab.starting || ending.has(k)) continue;
+      // #139: the window starts no claude in a lane on its way out (a merged lane shows as merged and waits for the person)
+      if (wasMerged(k)) { log(`[shell] ${k}: merged; the launch doesn't start it`); continue; }
+      start(tab);
     }
   }
 

@@ -121,7 +121,7 @@ test('a pinned lane from the last run is pinned on open', async () => {
   assert.strictEqual(entryOf(h, 'feat-a').pinned, false);
 });
 
-test('a layout with no pinned field (an older store) is nothing pinned, and a throwing pin never breaks the shell', async () => {
+test('a layout with no pinned field (an older store) is nothing pinned', async () => {
   const old = { load: () => ({ order: [], closed: [], error: null }), save: () => ({ ok: true }) };
   const h = await opened({ layout: old });
   assert.strictEqual(entryOf(h, 'feat-a').pinned, false);
@@ -133,13 +133,6 @@ test('P7: a pin whose folder git no longer lists is forgotten, like the order', 
   const h = await opened({ layout });
   h.shell.pin(key('feat-a'));
   assert.deepStrictEqual(layout.last().pinned, [key('feat-b'), key('feat-a')]);
-});
-
-test('P7: git listing nothing yet (the first poll has not answered) costs no pin', async () => {
-  const layout = memoryLayout({ pinned: [key('feat-b')] });
-  const h = harness({ layout });          // not opened: state.tabs is empty
-  assert.strictEqual(h.shell.pin(key('feat-b')).ok, false, 'nothing to pin yet');
-  assert.ok(layout.saved.every(s => s.pinned.includes(key('feat-b'))), 'and nothing saved without it');
 });
 
 test('a pin outlives a hand close of its lane (it is visibility: the lane is a Lanes row, still pinned when it comes back)', async () => {
@@ -170,4 +163,46 @@ test('main.js: the lane tab menu has the Pin / Unpin item, built from tabShell.p
   assert.match(menu, /tabShell\.pinMenu\(key\)/);
   assert.match(menu, /pinState\.pinned \? tabShell\.unpin\(pinState\.target\) : tabShell\.pin\(pinState\.target\)/);
   assert.ok(menu.indexOf('pinItem') > menu.indexOf("if (isShellKey(key))"), 'only the branch tab\'s menu (after the side and shell returns)');
+});
+
+test('Dexter 2 (P7): a pin on a lane git still lists but cannot open (detached mid-rebase) is kept, and the lane is pinned when it opens', async () => {
+  const layout = memoryLayout({ pinned: [key('feat-a')] });
+  const h = await opened({ layout, list: porcelain([['dev', 'develop'], ['feat-a', null], ['feat-b', 'feat/b']]) });
+  assert.strictEqual(entryOf(h, 'feat-a'), undefined, 'not a tab yet: git lists it detached');
+  h.shell.pin(key('feat-b'));      // any save runs the prune
+  assert.ok(layout.saved.length > 0);
+  assert.ok(layout.saved.every(s => s.pinned.includes(key('feat-a'))), JSON.stringify(layout.saved.map(s => s.pinned)));
+  h.listText = porcelain(FOUR);     // the rebase ended
+  await h.shell.poll();
+  await flush();
+  assert.strictEqual(entryOf(h, 'feat-a').pinned, true);
+});
+
+test('P7: a pin whose folder git does not list at all is still forgotten (the prune keys on git\'s whole list)', async () => {
+  const layout = memoryLayout({ pinned: [key('feat-a'), key('feat-gone')] });
+  const h = await opened({ layout });
+  h.shell.pin(key('feat-b'));
+  assert.deepStrictEqual(layout.last().pinned, [key('feat-a'), key('feat-b')]);
+});
+
+test('Dexter 7: a pin before the first poll has answered is refused, and costs the layout nothing once it has', async () => {
+  const layout = memoryLayout({ pinned: [key('feat-b')] });
+  const h = harness({ layout });
+  assert.strictEqual(h.shell.pin(key('feat-a')).ok, false, 'nothing to pin before git has answered');
+  assert.strictEqual(h.shell.unpin(key('feat-b')).ok, true, 'but an unpin of a kept pin is allowed');
+  const again = harness({ layout });
+  await again.shell.open();
+  await flush();
+  assert.strictEqual(entryOf(again, 'feat-b').pinned, true, 'the kept pin is there once the first poll has answered');
+  again.shell.pin(key('feat-a'));
+  assert.deepStrictEqual(layout.last().pinned, [key('feat-b'), key('feat-a')]);
+});
+
+test('Dexter 7: a layout that throws on save never breaks pin or unpin', async () => {
+  const throwing = { load: () => ({ order: [], closed: [], pinned: [], error: null }), save: () => { throw new Error('disk full'); } };
+  const h = await opened({ layout: throwing });
+  assert.deepStrictEqual(h.shell.pin(key('feat-a')), { ok: true });
+  assert.strictEqual(entryOf(h, 'feat-a').pinned, true, 'pinned in memory whatever the disk says');
+  assert.deepStrictEqual(h.shell.unpin(key('feat-a')), { ok: true });
+  assert.ok(h.logs.some(l => /layout\.save threw: disk full/.test(l)));
 });
