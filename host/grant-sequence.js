@@ -99,8 +99,14 @@ function ruleWidth(lines) {
 const RIGHT_MARGIN_COLS = 2;
 // Columns a string takes on screen (the CLI wraps by these, not by `.length`): emoji and East Asian wide characters take two, combining
 // marks, joiners and variation selectors none. Not a full wcwidth table: the ranges that show up in a prompt.
-const WIDE = /[ᄀ-ᅟ⺀-꓏가-힣豈-﫿︰-﹯＀-｠￠-￦⌚⌛⏩-⏬⏰⏳◽◾☔☕♈-♓♿⚓⚡⚪⚫⚽⚾⛄⛅⛎⛔⛪⛲⛳⛵⛺⛽✅✊✋✨❌❎❓-❕❗➕-➗➰➿⬛⬜⭐⭕]|[\u{1F300}-\u{1F64F}\u{1F680}-\u{1F6FF}\u{1F900}-\u{1F9FF}\u{20000}-\u{3FFFD}]/u;
-const ZERO = /[̀-ͯ​-‍︀-️]/u;
+const cpClass = (ranges) => new RegExp('[' + ranges.map(([a, b]) => String.fromCodePoint(a) + (b ? '-' + String.fromCodePoint(b) : '')).join('') + ']', 'u');
+// code points, not literal characters: invisible ones in a source file are what test/renderer-scope.test.js refuses
+const WIDE = cpClass([[0x1100, 0x115F], [0x2E80, 0xA4CF], [0xAC00, 0xD7A3], [0xF900, 0xFAFF], [0xFE30, 0xFE6F], [0xFF00, 0xFF60], [0xFFE0, 0xFFE6],
+  [0x231A, 0x231B], [0x23E9, 0x23EC], [0x23F0], [0x23F3], [0x25FD, 0x25FE], [0x2614, 0x2615], [0x2648, 0x2653], [0x267F], [0x2693], [0x26A1],
+  [0x26AA, 0x26AB], [0x26BD, 0x26BE], [0x26C4, 0x26C5], [0x26CE], [0x26D4], [0x26EA], [0x26F2, 0x26F3], [0x26F5], [0x26FA], [0x26FD], [0x2705],
+  [0x270A, 0x270B], [0x2728], [0x274C], [0x274E], [0x2753, 0x2755], [0x2757], [0x2795, 0x2797], [0x27B0], [0x27BF], [0x2B1B, 0x2B1C], [0x2B50],
+  [0x2B55], [0x1F300, 0x1F64F], [0x1F680, 0x1F6FF], [0x1F900, 0x1F9FF], [0x20000, 0x3FFFD]]);
+const ZERO = cpClass([[0x0300, 0x036F], [0x200B, 0x200D], [0xFE00, 0xFE0F]]);
 function cellWidth(s) {
   let n = 0;
   for (const ch of s) n += ZERO.test(ch) ? 0 : (WIDE.test(ch) ? 2 : 1);
