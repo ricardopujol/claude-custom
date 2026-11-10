@@ -127,7 +127,11 @@ const isHeld = (env) => !!env && typeof env[ENV_VAR] === 'string' && (env[ENV_VA
 // Is the live holder the one this flag names? An identity names exactly the holder that wrote it (the script's own
 // StartsWith match, so "(pid 1 ...)" never names "(pid 12 ...)"). A bare "1" names a by-hand holder only: never a holder in
 // the wrapper form, which is some lane's wrapper or probe and set its own identity for its own children.
-const flagNames = (flag, holder) => (flag === '1' ? !WRAPPER_OWNER.test(holder) : String(holder).startsWith(flag));
+// The status text comes back through the console's code page (heavy-lock.ps1 sets no OutputEncoding), so a non-ASCII character
+// in a holder can arrive as U+FFFD. Owners are written printable-ASCII (ownerFor), and a holder is compared the same way, so
+// the one mangled character can't turn a run's own wrapper into a STRANGER (#183 Dexter 2).
+const ascii = (s) => String(s).replace(/[^\x20-\x7e]/g, '?');
+const flagNames = (flag, holder) => (flag === '1' ? !WRAPPER_OWNER.test(holder) : ascii(holder).startsWith(ascii(flag)));
 
 // `holder`: who held the slot when the wait ended (null: nobody, or unknown); `waitedMs`: how long this asker waited.
 class HeavyLockError extends Error {
@@ -162,7 +166,7 @@ function notRunLine(err) {
       const first = err.firstInLine ? oneLine(err.firstInLine) : null;
       const gate = !first ? `the first may be held back by the load gate: ${LOAD_GATE}`
         : /^held back/.test(first) ? `the first in line is ${first}: ${LOAD_GATE}`
-          : `the first in line is ${first}`;
+          : `the first in line is ${first}, so it is between two polls`;
       return `[heavy-lock] ${span}${timed}, held by nobody now but ${detail} (${gate}): NOT RUN`;
     }
     if (!holder && timed) return `[heavy-lock] ${span}${timed}, held by a holder its status could not name: NOT RUN`;
@@ -177,8 +181,10 @@ function notRunLine(err) {
 
 // Closed with a paren so that "(pid 1 ...)" is never a prefix of "(pid 12 ...)": the script releases by StartsWith(owner).
 // With a start time the owner is "<label> (pid N start T)", the shape a later asker can prove dead.
-const ownerFor = (label, pid = process.pid, start = null) =>
-  (typeof start === 'string' && /^\d+$/.test(start)) ? `${label} (pid ${pid} start ${start})` : `${label} (pid ${pid})`;
+const ownerFor = (label, pid = process.pid, start = null) => {
+  const l = ascii(label);
+  return (typeof start === 'string' && /^\d+$/.test(start)) ? `${l} (pid ${pid} start ${start})` : `${l} (pid ${pid})`;
+};
 
 function parseOwner(text) {
   const m = /\(pid (\d+) start (\d+)\)/.exec(String(text || ''));
@@ -361,12 +367,10 @@ function reentrantSkip({ env, scriptPath, exists, run, startsOf, work, log }) {
   const outer = scriptThere ? readHolder({ run, startsOf, work, log }) : { holder: null, live: null };
   if (outer.live === null || (outer.live === true && flagNames(flag, outer.holder))) {
     // Flag set and no script: the reason is the missing script, not an unreadable status (#237 Miguel S3).
-    // A flag that is an identity (not the by-hand "1") names the holder that started this process: its own outer wrapper
-    // or probe, never another lane's suite (#183).
-    const pidOf = flag !== '1' && outer.holder ? /\(pid (\d+)(?: start \d+)?\)/.exec(outer.holder) : null;
-    const outerPid = pidOf ? pidOf[1] : null;
+    // An identity flag names the holder it was copied from. That proves the string, not that the holder is an ancestor of this
+    // process, so the line says what is known (#183, Dexter 1) and no more.
     log(outer.holder
-      ? `[heavy-lock] ${ENV_VAR} is set and the slot is held by ${outer.holder}: not taking the lock (re-entrant, under that holder${outerPid ? `: your own outer wrapper, pid ${outerPid}` : ''})`
+      ? `[heavy-lock] ${ENV_VAR} is set and the slot is held by ${outer.holder}: not taking the lock (re-entrant, under that holder${flag === '1' ? '' : ', the one HEAVY_LOCK_HELD names'})`
       : !scriptThere
         ? `[heavy-lock] ${ENV_VAR} is set and the lock script ${scriptPath} is not on this machine: not taking the lock (re-entrant, no script to ask)`
         : `[heavy-lock] ${ENV_VAR} is set and who holds the slot could not be read: not taking the lock (re-entrant, can't tell)`);
@@ -389,13 +393,18 @@ function reentrantSkip({ env, scriptPath, exists, run, startsOf, work, log }) {
 function failureFrom(r, waitedMs, run) {
   // The script's own "[heavy-lock] ..." lines (its stderr progress) are for a person watching the wait; the error text
   // keeps what the script answered (#187). The line the script prints on a queue give-up is read, not inferred.
-  const said = String((r && r.stdout) || '').split(/\r?\n/).filter(l => !/^\s*\[heavy-lock\]/.test(l)).join('\n').trim();
+  const raw = String((r && r.stdout) || '').trim();
+  const kept = raw.split(/\r?\n/).filter(l => !/^\s*\[heavy-lock\]/.test(l)).join('\n').trim();
+  // defaultRun appends a "[<code> <message>]" tag to the LAST line, which is a progress line when stderr came last: the tag
+  // survives the filter, and a filter that leaves nothing falls back to the raw text (Dexter 3, Miguel S3).
+  const tag = /\[(?!heavy-lock\])[^[\]]*\]\s*$/.exec(raw);
+  const said = (kept && tag && !kept.includes(tag[0].trim()) ? `${kept} ${tag[0].trim()}` : kept) || raw;
   if (r && r.status === SCRIPT_BUSY) {
-    const m = /^busy: (.*)$/m.exec(said);
-    const what = m ? m[1].trim() : '';
+    const line = /^busy: (.*)$/m.exec(said);
+    const what = line ? line[1].trim() : '';
     const queued = /^\d+ ahead in the queue$/.test(what);
-    const f = /^first in line: (.*)$/m.exec(said);
-    return new HeavyLockError('busy', `${said || 'busy'}. ${HINT}`, { holder: what && !queued ? what : null, detail: queued ? what : null, waitedMs, firstInLine: f ? f[1].trim() : null });
+    const first = /^first in line: (.*)$/m.exec(said);
+    return new HeavyLockError('busy', `${said || 'busy'}. ${HINT}`, { holder: what && !queued ? what : null, detail: queued ? what : null, waitedMs, firstInLine: first ? first[1].trim() : null });
   }
   if (r && r.status === SCRIPT_LOADED) {
     const m = /^machine too loaded: (.*)$/m.exec(said);

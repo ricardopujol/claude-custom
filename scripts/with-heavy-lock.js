@@ -51,8 +51,12 @@ const { killPidTree } = require('../host/kill-tree');
 const LABEL_MAX = 80;
 function labelFor(argv, env = process.env) {
   if (env && env.npm_lifecycle_event === 'test') return 'npm test';
-  const words = argv.slice(0, 2).join(' ').replace(/[()]/g, '').replace(/\s+/g, ' ').trim();
-  return (words || 'command').slice(0, LABEL_MAX);
+  // The command and its first argument that isn't a flag (`node --no-warnings verify/p.js` -> `node verify/p.js`); with none, the
+  // first two words. Printable ASCII only: the label travels through the lock script's console code page and must come back
+  // the same (Dexter 2; ownerFor does it too).
+  const first = argv.slice(1).find(a => typeof a === 'string' && !a.startsWith('-'));
+  const words = (first === undefined ? argv.slice(0, 2) : [argv[0], first]).join(' ').replace(/[()]/g, '').replace(/\s+/g, ' ').trim();
+  return (words || 'command').replace(/[^\x20-\x7e]/g, '?').slice(0, LABEL_MAX);
 }
 
 async function main(argv, {

@@ -536,8 +536,26 @@ test('Dexter r2 5 / 2026-11-05: HEAVY_LOCK_HELD under the live holder it names p
   const r = rig({ holder: OUTER });
   r.env[ENV_VAR] = OUTER_ID;
   acquire({ label: 'x', pid: 7, ...r.deps() });
-  // #183: the holder its own flag names is this run's own outer wrapper, never "another lane's suite".
-  assert.deepStrictEqual(r.log, [`[heavy-lock] HEAVY_LOCK_HELD is set and the slot is held by ${OUTER}: not taking the lock (re-entrant, under that holder: your own outer wrapper, pid 1)`]);
+  // #183: say what is known (the holder the flag names), not that it is an ancestor: a string prefix proves no ancestry (Dexter 1).
+  assert.deepStrictEqual(r.log, [`[heavy-lock] HEAVY_LOCK_HELD is set and the slot is held by ${OUTER}: not taking the lock (re-entrant, under that holder, the one HEAVY_LOCK_HELD names)`]);
+});
+
+test('#183 Dexter 1: a probe holder is never called a wrapper, and nothing claims "your own"', () => {
+  const holder = 'node verify/probe-x.js (pid 5 start 6) (since 10:00:00)';
+  const r = rig({ holder, alive: { 5: '6' } });
+  r.env[ENV_VAR] = 'node verify/probe-x.js (pid 5 start 6)';
+  acquire({ label: 'x', pid: 7, ...r.deps() });
+  assert.strictEqual(r.log.length, 1);
+  assert.ok(!/wrapper|your own/.test(r.log[0]), r.log[0]);
+  assert.ok(r.log[0].includes(holder));
+});
+
+test('#183 Dexter 2: a label is printable ASCII on both sides of the OEM code page round trip', () => {
+  assert.strictEqual(ownerFor('probe-ñ.js', 7, '1'), 'probe-?.js (pid 7 start 1)');
+  const r = rig({ holder: 'probe-�.js (pid 5 start 6) (since 10:00:00)', alive: { 5: '6' } });   // what a non-UTF-8 console gives back for the ñ
+  r.env[ENV_VAR] = 'probe-?.js (pid 5 start 6)';
+  const lock = acquire({ label: 'x', pid: 7, ...r.deps() });
+  assert.strictEqual(lock.state, 'reentrant', 'its own wrapper, not a STRANGER');
 });
 
 test('#183: a by-hand bare "1" holder is not called "your own wrapper"', () => {
@@ -749,16 +767,26 @@ test('#187: notRunLine says what the script said about the first in line; an old
   assert.strictEqual(notRunLine(mk('held back by the load gate since 10:05:00')),
     '[heavy-lock] lock busy for 20 min, held by nobody now but 2 ahead in the queue (the first in line is held back by the load gate since 10:05:00: 8 GB free RAM and under 70% CPU): NOT RUN');
   assert.strictEqual(notRunLine(mk('not held back by the load gate')),
-    '[heavy-lock] lock busy for 20 min, held by nobody now but 2 ahead in the queue (the first in line is not held back by the load gate): NOT RUN');
+    '[heavy-lock] lock busy for 20 min, held by nobody now but 2 ahead in the queue (the first in line is not held back by the load gate, so it is between two polls): NOT RUN');
   assert.strictEqual(notRunLine(mk(null)),
     '[heavy-lock] lock busy for 20 min, held by nobody now but 2 ahead in the queue (the first may be held back by the load gate: 8 GB free RAM and under 70% CPU): NOT RUN');
 });
 
 test('#187: the error text drops the script\'s raw [heavy-lock] lines', () => {
-  const r = rig({ acquireOverride: { status: 2, stdout: `[heavy-lock] waited 19:40 for the slot: 2 ahead in the queue\nbusy: 2 ahead in the queue\n${FIRST_FREE}\n[heavy-lock] this run's queue ticket was gone: written back in its place` } });
+  // stdout first, then stderr: the order defaultRun joins them in.
+  const r = rig({ acquireOverride: { status: 2, stdout: `busy: 2 ahead in the queue\n${FIRST_FREE}\n[heavy-lock] waited 19:40 for the slot: 2 ahead in the queue\n[heavy-lock] this run's queue ticket was gone: written back in its place` } });
   assert.throws(() => acquire({ label: 'x', pid: 7, ...r.deps() }), (e) => !/\[heavy-lock\]/.test(e.message) && /busy: 2 ahead in the queue/.test(e.message));
-  const t = rig({ acquireOverride: { status: 1, stdout: '[heavy-lock] could not take the slot: boom\ncould not take the slot: boom' } });
+  const t = rig({ acquireOverride: { status: 1, stdout: 'could not take the slot: boom\n[heavy-lock] could not take the slot: boom' } });
   assert.throws(() => acquire({ label: 'x', pid: 7, ...t.deps() }), (e) => e.code === 'error' && !/\[heavy-lock\]/.test(e.message) && /boom/.test(e.message));
+});
+
+test('#187 Dexter 3 / Miguel S3: filtering never leaves the reason empty or drops the error tag defaultRun appends', () => {
+  // Only prefixed lines: the raw text is the reason, not an empty one.
+  const only = rig({ acquireOverride: { status: 1, stdout: '[heavy-lock] could not take the slot: boom' } });
+  assert.throws(() => acquire({ label: 'x', pid: 7, ...only.deps() }), (e) => e.code === 'error' && /boom/.test(e.message));
+  // The tag lands on the last line, which is a progress line.
+  const tagged = rig({ acquireOverride: { status: null, stdout: 'busy: x\n[heavy-lock] waited 1:00 for the slot [powershell ended by SIGTERM]' } });
+  assert.throws(() => acquire({ label: 'x', pid: 7, ...tagged.deps() }), (e) => /powershell ended by SIGTERM/.test(e.message));
 });
 
 test('#178 b: the watcher runs exactly around the wait, with the asker and its start, and is stopped whether the acquire holds or gives up', () => {

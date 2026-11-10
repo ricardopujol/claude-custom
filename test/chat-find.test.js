@@ -22,6 +22,17 @@ test('findMatches: offsets stay the text\'s own when lower-casing changes its le
   assert.deepStrictEqual(findMatches(text, 'x'), [{ start: 2, end: 3 }, { start: 6, end: 7 }]);
 });
 
+test('#203 Dexter 5: an "İ" elsewhere never changes which other matches are found', () => {
+  const cases = [['i̇', 'İ'], ['abc ABC', 'abc'], ['İ x', 'x'], ['i̇ i̇', 'İ'], ['aaaa', 'aa']];
+  for (const [t, q] of cases) {
+    const before = findMatches(t, q);
+    const after = findMatches(`${t} İ`, q);
+    for (const m of before) assert.ok(after.some(a => a.start === m.start && a.end === m.end), `${JSON.stringify(t)} / ${JSON.stringify(q)}: ${JSON.stringify(m)} lost`);
+  }
+  assert.deepStrictEqual(findMatches('i̇ İ', 'İ'), [{ start: 0, end: 2 }, { start: 3, end: 4 }]);
+  assert.deepStrictEqual(findMatches('İ', 'i'), [], 'a match may not end inside one character\'s lower-case form');
+});
+
 test('findMatches: no query, no text or a non-string is no match, never a throw or an endless loop', () => {
   for (const [t, q] of [['abc', ''], ['', 'a'], [null, 'a'], ['abc', null], [undefined, undefined], [5, 5]]) {
     assert.deepStrictEqual(findMatches(t, q), []);
@@ -54,6 +65,9 @@ test('stepIndex: one match stays put, none is -1, a stale index is pulled back i
   assert.strictEqual(stepIndex({ index: 0, count: 1, shift: false }), 0);
   assert.strictEqual(stepIndex({ index: 0, count: 0, shift: false }), -1);
   assert.strictEqual(stepIndex({ index: 9, count: 3, shift: true }), 0, 'index past the end (the chat shrank)');
+  // Dexter 4: past the end is newer than every match, so the nearest older one is the last, with nothing skipped.
+  assert.strictEqual(stepIndex({ index: 5, count: 3, shift: false }), 2);
+  assert.strictEqual(stepIndex({ index: 5, count: 3, shift: false, order: 'top-down' }), 0);
   assert.strictEqual(stepIndex({ index: -1, count: 3, shift: false }), 2, 'no current match: Enter starts at the first of the order');
   assert.strictEqual(stepIndex({ index: -1, count: 3, shift: true, order: 'top-down' }), 0, 'top-down starts at the top too');
 });
@@ -66,12 +80,16 @@ test('stepIndex walks every match exactly once in a full lap, newest first', () 
 });
 
 test('isFindKey: Ctrl+F on keydown only, no Shift, Alt or Meta', () => {
-  const key = (o) => ({ type: 'keydown', ctrlKey: true, shiftKey: false, altKey: false, metaKey: false, code: 'KeyF', ...o });
+  const key = (o) => ({ type: 'keydown', ctrlKey: true, shiftKey: false, altKey: false, metaKey: false, key: 'f', code: 'KeyF', ...o });
   assert.strictEqual(isFindKey(key({})), true);
+  assert.strictEqual(isFindKey(key({ key: 'F' })), true, 'Caps Lock');
+  assert.strictEqual(isFindKey(key({ key: 'f', code: 'KeyY' })), true, 'Dvorak: the F letter on another position');
+  assert.strictEqual(isFindKey(key({ key: 'u', code: 'KeyF' })), false, 'Dvorak: Ctrl+U sits on the KeyF position');
   assert.strictEqual(isFindKey(key({ type: 'keyup' })), false);
   assert.strictEqual(isFindKey(key({ shiftKey: true })), false);
   assert.strictEqual(isFindKey(key({ ctrlKey: false })), false);
   assert.strictEqual(isFindKey(key({ altKey: true })), false);
-  assert.strictEqual(isFindKey(key({ code: 'KeyG' })), false);
+  assert.strictEqual(isFindKey(key({ key: 'g', code: 'KeyG' })), false);
+  assert.strictEqual(isFindKey(key({ key: undefined })), false);
   assert.strictEqual(isFindKey(null), false);
 });

@@ -14,23 +14,31 @@
 const DEFAULT_ORDER = 'bottom-up';
 const orderOf = (order) => (order === 'top-down' ? 'top-down' : DEFAULT_ORDER);
 
-// Every non-overlapping match of `query` in `text`, in document order. Anything that isn't a non-empty string is no match.
+// Every non-overlapping match of `query` in `text`, in document order, case-insensitive unless asked. ONE path for any text:
+// the text is lower-cased character by character with a map back to its own offsets (lower-casing can change a length:
+// "İ" gives two code units), so a character elsewhere never changes which matches are found. A match must start and end on a
+// character's edge, never inside its lower-case form. Anything that isn't a non-empty string is no match.
 function findMatches(text, query, { caseSensitive = false } = {}) {
   if (typeof text !== 'string' || typeof query !== 'string' || !text || !query) return [];
-  const hay = caseSensitive ? text : text.toLowerCase();
-  const needle = caseSensitive ? query : query.toLowerCase();
-  if (hay.length !== text.length) return findMatchesSlow(text, query, caseSensitive);   // a case change that moved offsets
+  const fold = caseSensitive ? (s) => s : (s) => s.toLowerCase();
+  let hay = '';
+  const from = [];   // folded unit -> where its source character starts in `text`
+  const to = [];     // folded unit -> where that character ends
+  for (let i = 0; i < text.length;) {
+    const cp = text.codePointAt(i);
+    const len = cp > 0xffff ? 2 : 1;
+    const f = fold(text.slice(i, i + len));
+    for (let k = 0; k < f.length; k++) { from.push(i); to.push(i + len); }
+    hay += f;
+    i += len;
+  }
+  const needle = fold(query);
+  if (!needle) return [];
   const out = [];
-  for (let at = hay.indexOf(needle); at !== -1; at = hay.indexOf(needle, at + needle.length)) out.push({ start: at, end: at + needle.length });
-  return out;
-}
-// Lowercasing can change a string's length ('İ' becomes two code units): compare window by window instead, so offsets stay the text's own.
-function findMatchesSlow(text, query, caseSensitive) {
-  const fold = (s) => (caseSensitive ? s : s.toLowerCase());
-  const want = fold(query);
-  const out = [];
-  for (let at = 0; at + query.length <= text.length;) {
-    if (fold(text.slice(at, at + query.length)) === want) { out.push({ start: at, end: at + query.length }); at += query.length; } else at += 1;
+  for (let at = hay.indexOf(needle); at !== -1;) {
+    const last = at + needle.length - 1;
+    const onEdges = (at === 0 || from[at] !== from[at - 1]) && (last === hay.length - 1 || from[last + 1] !== from[last]);
+    if (onEdges) { out.push({ start: from[at], end: to[last] }); at = hay.indexOf(needle, at + needle.length); } else at = hay.indexOf(needle, at + 1);
   }
   return out;
 }
@@ -43,18 +51,21 @@ function firstIndex(count, order) {
 
 // Where Enter (shift false) or Shift+Enter (shift true) moves from `index`, wrapping round. Bottom-up: Enter goes to an older
 // match (a lower index), Shift+Enter to a newer one. Top-down is the reverse. No current match (-1) starts at firstIndex.
+// An index past the end (the chat shrank) sits beyond the newest match: the next lower index is the last one, with nothing
+// skipped, and the next higher one wraps round to the first.
 function stepIndex({ index, count, shift = false, order } = {}) {
   if (!Number.isInteger(count) || count <= 0) return -1;
   if (!Number.isInteger(index) || index < 0) return firstIndex(count, order);
-  const here = Math.min(index, count - 1);   // the chat shrank under the old index
-  const older = orderOf(order) === 'bottom-up';
-  const delta = (older ? !shift : shift) ? -1 : 1;
-  return (here + delta + count) % count;
+  const lower = (orderOf(order) === 'bottom-up') ? !shift : shift;
+  if (index >= count) return lower ? count - 1 : 0;
+  return (index + (lower ? -1 : 1) + count) % count;
 }
 
-// Ctrl+F on keydown only (a held key repeats: the caller decides what a repeat does).
+// Ctrl+F on keydown only (a held key repeats: the caller decides what a repeat does). By the key's letter, not its place on
+// the board: on a Dvorak layout Ctrl+F is `key` 'f' on another `code`, and the `KeyF` place holds Ctrl+U (Dexter 6).
 function isFindKey(e) {
-  return !!e && e.type === 'keydown' && e.ctrlKey === true && !e.shiftKey && !e.altKey && !e.metaKey && e.code === 'KeyF';
+  return !!e && e.type === 'keydown' && e.ctrlKey === true && !e.shiftKey && !e.altKey && !e.metaKey
+    && typeof e.key === 'string' && e.key.toLowerCase() === 'f';
 }
 
 const api = { DEFAULT_ORDER, findMatches, firstIndex, stepIndex, isFindKey };
