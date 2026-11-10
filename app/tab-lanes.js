@@ -7,7 +7,8 @@
  *   1B  A branch tab is on the strip only while its lane has a running session, or it is the selected tab. Every other
  *       lane (not started, merged, closed by hand) is a row in the Lanes menu: placeLanes.
  *   2A  Tabs shrink to MIN_TAB; the ones that still do not fit go to the same menu as "Hidden tabs", shown as +N. The
- *       selected tab and develop always stay: splitOverflow, capacityFor.
+ *       selected tab, develop and every pinned lane (#167) always stay: splitOverflow, capacityFor.
+ *   Pins (#167): a pinned lane is on the strip even when idle (placeLanes) and is never +N (splitOverflow).
  *   Drag to reorder: develop is first and never moves; every other lane has a place in a saved order: applyOrder, moveKey.
  *
  * Entries are the strip model's (app/tab-model.js, as app/tab-shell.js fills them in): `{ key, label, isDev, selected,
@@ -43,6 +44,12 @@ function needsYou(e) {
   return !!e && typeof e === 'object' && (e.needsInput === true || hasMessages(e));
 }
 
+/**
+ * A pinned lane (BACKLOG #167; documentation/DESIGN_TABS_SESSIONS.md 3.2) is always on the strip, running or not, and is must-keep
+ * under overflow (never +N). Only a real `true` on a lane counts; a companion is never pinned.
+ */
+const isPinned = e => !!e && typeof e === 'object' && e.pinned === true && !isCompanion(e);
+
 // A lane whose folder is going, or failed to go, has something to say on the strip; it can't slip into a menu quietly.
 const needsEye = e => e.phase === 'removing' || e.badge === 'warn';
 
@@ -61,7 +68,7 @@ function placeLanes(entries, closedRows) {
   const onStrip = new Set();
   for (const e of list) {
     if (isCompanion(e)) continue;
-    if (e.isDev === true || e.selected === true || isRunning(e) || needsEye(e) || hasCompanion.has(e.key)) onStrip.add(e.key);
+    if (e.isDev === true || e.selected === true || isPinned(e) || isRunning(e) || needsEye(e) || hasCompanion.has(e.key)) onStrip.add(e.key);
   }
   const strip = [];
   const notStarted = [];
@@ -110,7 +117,7 @@ function splitOverflow(stripEntries, capacity) {
     units.push(u);
     byLane.set(e.key, u);
   }
-  const must = (u) => u.lane.isDev === true || u.entries.some(x => x.selected === true || needsYou(x));
+  const must = (u) => u.lane.isDev === true || isPinned(u.lane) || u.entries.some(x => x.selected === true || needsYou(x));
   let budget = cap - units.filter(must).reduce((n, u) => n + u.entries.length, 0);
   const shownUnits = new Set(units.filter(must));
   let full = false;

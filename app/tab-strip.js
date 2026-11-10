@@ -139,6 +139,29 @@ function issueLine(i) {
   return nonEmpty(i.title) ? `#${i.number} ${i.title}` : `#${i.number}`;
 }
 
+const PIN_TITLE = 'Pinned · resumes at launch · right-click to unpin';
+// The pin's outline (GitHub Octicons "pin", 16 px grid, MIT), drawn in currentColor so the page's --pin tints it. An <svg> made with
+// createElementNS and a path attribute: no innerHTML, no image (the page's CSP allows img-src 'self' only).
+const PIN_PATH = 'M4.456.734a1.75 1.75 0 0 1 2.826.504l.613 1.327a3.081 3.081 0 0 0 2.084 1.707l2.454.584c1.332.317 1.8 1.972.832 2.94L11.06 10l3.72 3.72a.75.75 0 1 1-1.061 1.06L10 11.06l-2.204 2.205c-.968.968-2.623.5-2.94-.832l-.584-2.454a3.081 3.081 0 0 0-1.707-2.084l-1.327-.613a1.75 1.75 0 0 1-.504-2.826L4.456.734Z';
+function pinGlyph(doc) {
+  const g = el(doc, 'span', 'pin');
+  g.title = PIN_TITLE;
+  if (typeof doc.createElementNS === 'function') {
+    const NS = 'http://www.w3.org/2000/svg';
+    const svg = doc.createElementNS(NS, 'svg');
+    svg.setAttribute('viewBox', '0 0 16 16');
+    svg.setAttribute('width', '11');
+    svg.setAttribute('height', '11');
+    svg.setAttribute('aria-hidden', 'true');
+    const p = doc.createElementNS(NS, 'path');
+    p.setAttribute('d', PIN_PATH);
+    p.setAttribute('fill', 'currentColor');
+    svg.appendChild(p);
+    g.appendChild(svg);
+  }
+  return g;
+}
+
 function paintTab(doc, entry, bridge, all) {
   const cls = ['tab'];
   if (entry.selected) cls.push('selected');
@@ -171,6 +194,9 @@ function paintTab(doc, entry, bridge, all) {
   // (app/summary-display.js hoverLines, labelled as a local model's); this only draws them.
   const said = Array.isArray(entry.summaryLines) ? entry.summaryLines.filter(nonEmpty) : [];
   if (said.length) tab.title = [tab.title, ...said].join('\n');
+  // #167 (Ricardo's pick P4, "A"): a pinned lane wears a pin glyph before the status dot. The model says who is pinned; a side or
+  // shell tab never is. Only a real `true` draws it.
+  if (entry.pinned === true && entry.side !== true && entry.shell !== true) tab.appendChild(pinGlyph(doc));
   // The dots read the CLI's own state when it reports one (OSC 7501, app/program-status-display.js); without it they are
   // exactly what they always were. The kind and message ride in the tooltip as text, never in the tab's chrome.
   const ps = typeof module !== 'undefined' && module.exports ? require('./program-status-display') : root.programStatusDisplay;

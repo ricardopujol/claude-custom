@@ -151,3 +151,23 @@ test('a pin outlives a hand close of its lane (it is visibility: the lane is a L
   assert.deepStrictEqual(layout.last().pinned, [key('feat-a')]);
   assert.strictEqual(layout.last().closed.length, 1);
 });
+
+// --- the right-click menu's Pin / Unpin: the shell decides, main only draws and clicks ------------------
+
+test('pinMenu: a lane offers Pin, a pinned lane offers Unpin, develop and companions offer nothing', async () => {
+  const h = await opened({ layout: memoryLayout({ pinned: [key('feat-b')] }) });
+  assert.deepStrictEqual(h.shell.pinMenu(key('feat-a')), { show: true, pinned: false, label: 'Pin (starts at launch)', target: key('feat-a') });
+  assert.deepStrictEqual(h.shell.pinMenu(key('feat-b')), { show: true, pinned: true, label: 'Unpin', target: key('feat-b') });
+  for (const k of [key('dev'), key('feat-a') + '|side', key('feat-a') + '|shell', 'c:\nowhere', null, undefined]) {
+    assert.strictEqual(h.shell.pinMenu(k).show, false, String(k));
+  }
+});
+
+test('main.js: the lane tab menu has the Pin / Unpin item, built from tabShell.pinMenu and clicking pin / unpin', () => {
+  const fs = require('fs');
+  const main = fs.readFileSync(path.join(__dirname, '..', 'app', 'main.js'), 'utf8').replace(/\r\n/g, '\n');
+  const menu = main.slice(main.indexOf('function tabMenuTemplate('), main.indexOf('let win = null;'));
+  assert.match(menu, /tabShell\.pinMenu\(key\)/);
+  assert.match(menu, /pinState\.pinned \? tabShell\.unpin\(pinState\.target\) : tabShell\.pin\(pinState\.target\)/);
+  assert.ok(menu.indexOf('pinItem') > menu.indexOf("if (isShellKey(key))"), 'only the branch tab\'s menu (after the side and shell returns)');
+});

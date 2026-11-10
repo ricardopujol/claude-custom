@@ -502,9 +502,13 @@ function tabMenuTemplate(key) {
   if (isSideKey(key)) return [sideItem, { type: 'separator' }, closeSideItem];
   if (isShellKey(key)) return [shellItem, { type: 'separator' }, closeShellItem];
   const issue = tabShell.issueOf(key);
+  // #167: Pin / Unpin, for a lane's tab only (the shell says: not develop, which is always started at launch).
+  const pinState = tabShell.pinMenu(key);
+  const pinItem = { label: pinState.label, click: () => (pinState.pinned ? tabShell.unpin(pinState.target) : tabShell.pin(pinState.target)) };
   return [
     markSubmenu(tabShell.branchOf(key)),
     { type: 'separator' },
+    ...(pinState.show ? [pinItem] : []),
     // #119 A6: a lane started from a GitHub issue keeps its link.
     ...(issue ? [{ label: `Open issue #${issue.number}${issue.title ? ` ${menuText(issue.title).slice(0, 60)}` : ''}`, click: () => openIssue(key).catch(logShellError('open issue')) }] : []),
     sideItem,

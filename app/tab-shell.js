@@ -653,6 +653,18 @@ function createShell(deps) {
   const unpin = (key) => setPinned(key, false);
 
   /**
+   * The Pin / Unpin item of a lane tab's right-click menu: `{ show, pinned, label, target }`. Shown for a lane only (not develop, not a
+   * side or shell tab, not a key the strip doesn't list). The labels are Claude's call, shown at Ricardo's live look.
+   */
+  function pinMenu(key) {
+    const none = { show: false, pinned: false, label: '', target: null };
+    if (mode !== 'tabs' || typeof key !== 'string' || key === '') return none;
+    if (!model().some(e => e.key === key && !isCompanionEntry(e) && !e.isDev)) return none;
+    const on = pinned.includes(key);
+    return { show: true, pinned: on, label: on ? 'Unpin' : 'Pin (starts at launch)', target: key };
+  }
+
+  /**
    * The Lanes menu's rows (app/tab-lanes.js lanesMenuRows): `hiddenKeys` are the tabs the strip page couldn't fit (2A),
    * checked against what is really on the strip (develop and the selected tab are never hidden). The first lane closed by
    * hand carries the Ctrl+Shift+T shortcut, which reopens it.
@@ -2361,7 +2373,7 @@ function createShell(deps) {
 
   return {
     open, poll, select: userSelect, closeTab, report, raise, attentionClick, goTo, selectFolder, tabStates, typeMerged, typed, menuState, override,
-    createWorktree, openCreate, cancelCreate, openPicker, closePicker, plusMenu, reopen, reopenFolder, reorder, pin, unpin, lanesMenu, looked, isLooked, openSide, sideMenu, openShell, shellMenu, issueOf,
+    createWorktree, openCreate, cancelCreate, openPicker, closePicker, plusMenu, reopen, reopenFolder, reorder, pin, unpin, pinMenu, lanesMenu, looked, isLooked, openSide, sideMenu, openShell, shellMenu, issueOf,
     next: () => step(1), previous: () => step(-1),
     isTabView, tabForSender, tabByKey, tabmodeOf, snapshot, model, destroy, branchOf, occupancyFor, boxAnswered,
     // #139: the merged closes the last poll started (a test awaits them; main never needs to).
