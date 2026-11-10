@@ -1933,16 +1933,6 @@ async function restartAfterRefusal() {
   }
 }
 
-// A line written into the tab the way the pty's own output is (the screen a later window attaches to, and every client now).
-function sayInTab(text) {
-  const data = '\x1b[33m' + text + '\x1b[0m\r\n';
-  termState.write(data, programStatusHost.deliver());
-  const frame = Buffer.from(data, 'utf8');
-  for (const ws of clients) {
-    if (ws.readyState === ws.OPEN) ws.send(frame, { binary: true });
-  }
-}
-
 // BACKLOG #217: the retry of a spawn that failed because the binary was not usable (mid-update). True when the failure is ours (a retry
 // is scheduled, or the bound ran out and the host ended with its error); false for any other error, which the caller rethrows.
 let bootFirstFailedAt = null;
