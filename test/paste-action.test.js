@@ -259,3 +259,79 @@ test('no range, or anything not a number, is not visible', () => {
   assert.strictEqual(selectionVisible(range(1, 2), undefined, 30), false);
   assert.strictEqual(selectionVisible(range(1, 2), 0, null), false);
 });
+
+// --- #136 (1): Ctrl+V of a file copied in Explorer acts like a drop (Ricardo 2026-11-06: "Act like a drop") -----------------------
+
+const PA = require('../app/paste-action');
+
+test('#136 (1): files on the clipboard (no text, no image) are a files paste', () => {
+  assert.deepStrictEqual(PA.pasteAction({ text: '', hasImage: false, hasFiles: true }), { kind: 'files' });
+});
+
+test('#136 (1): text and an image still win over files, so a plain-text paste stays exactly as it was', () => {
+  assert.strictEqual(PA.pasteAction({ text: 'abc', hasImage: false, hasFiles: true }).kind, 'text');
+  assert.strictEqual(PA.pasteAction({ text: '', hasImage: true, hasFiles: true }).kind, 'image');
+  assert.strictEqual(PA.pasteAction({ text: '', hasImage: false, hasFiles: 'yes' }).kind, 'none', 'hasFiles must be literally true');
+});
+
+test('#136 (1): fileEntries turns Files into the drop frame\'s entries, through the same path source as a drop', () => {
+  assert.strictEqual(typeof PA.fileEntries, 'function');
+  const pathFor = (f) => f.p;
+  const files = [{ p: 'C:\\a\\x.md', type: 'text/markdown', size: 10 }, { p: 'C:\\a\\dir', type: '', size: 0 }, { p: '', type: '', size: 3 }];
+  assert.deepStrictEqual(PA.fileEntries(files, pathFor), [
+    { path: 'C:\\a\\x.md', isDirectory: false },
+    { path: 'C:\\a\\dir', isDirectory: true },
+  ]);
+  assert.deepStrictEqual(PA.fileEntries(files, null), [], 'no path source, nothing to drop');
+  assert.deepStrictEqual(PA.fileEntries(null, pathFor), []);
+  assert.deepStrictEqual(PA.fileEntries([{ p: 'C:\\b' }], () => { throw new Error('gone'); }), [], 'a path source that throws drops that file');
+});
+
+test('#136 (1): the renderer wires a files paste to the drop\'s own code, and leaves text and image pastes alone', () => {
+  const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'app', 'renderer.js'), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+  // one function sends the drop frame, for a drop and for a pasted file
+  const sends = src.match(/userInput\(JSON\.stringify\(\{ type: 'drop', entries \}\)\)/g) || [];
+  assert.strictEqual(sends.length, 1, 'the drop frame is built in one place');
+  assert.match(src, /function sendDropFiles\(files\)[\s\S]{0,300}fileEntries\(files, /);
+  const drop = src.slice(src.indexOf("dropZone.addEventListener('drop'"));
+  assert.match(drop.slice(0, drop.indexOf('\n});')), /sendDropFiles\(files\)/, 'the drop goes through it');
+  // Ctrl+V with files asks main for a native paste; the page takes the Files from that paste event, capture phase, before xterm
+  const fn = src.slice(src.indexOf('async function pasteFromClipboard'));
+  const body = fn.slice(0, fn.indexOf('\n}'));
+  assert.match(body, /action\.kind === 'files'[\s\S]{0,200}window\.harness\.pasteFiles\(\)/);
+  assert.match(src, /document\.addEventListener\('paste', [\s\S]{0,900}sendDropFiles\(files\)[\s\S]{0,300}\}, true\);/);
+  assert.match(body, /action\.kind === 'text'[\s\S]{0,200}pasteFrame\(action\.text, term\.modes\.bracketedPasteMode\)/, 'text keeps its frame');
+});
+
+// ---- PR #246 (Miguel Y2, Dexter D6): the capture-phase paste listener's decision --------------------------------------------------
+const { pasteEventDecision, noUsablePathNote } = require('../app/paste-action');
+
+test('a paste with files in the terminal (or one this page asked for) is taken and sent down the drop path', () => {
+  assert.deepStrictEqual(pasteEventDecision({ fileCount: 2, inTerm: true }), { act: 'files', disarm: true, notice: null });
+  assert.strictEqual(pasteEventDecision({ armed: true, fileCount: 1 }).act, 'files');
+});
+
+test('an ordinary text paste is never taken, armed or not', () => {
+  assert.strictEqual(pasteEventDecision({ hasText: true, inTerm: true }).act, 'ignore');
+  assert.deepStrictEqual(pasteEventDecision({}), { act: 'ignore', disarm: false, notice: null });
+  assert.strictEqual(pasteEventDecision({ fileCount: 1, inTerm: false }).act, 'ignore', 'files pasted elsewhere (a text box) are left to it');
+});
+
+test('Y2: an armed paste that carries text and no files falls through to the normal paste, and disarms', () => {
+  assert.deepStrictEqual(pasteEventDecision({ armed: true, hasText: true }), { act: 'ignore', disarm: true, notice: null });
+});
+
+test('D6: an armed paste with nothing in it is taken and SAID, never silent', () => {
+  const d = pasteEventDecision({ armed: true });
+  assert.strictEqual(d.act, 'empty');
+  assert.strictEqual(d.disarm, true);
+  assert.match(d.notice.name, /no copied file/);
+  assert.match(noUsablePathNote().name, /nothing was pasted/);
+});
+
+test('the listener uses the decision (and says so when no file has a usable path)', () => {
+  const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'app', 'renderer.js'), 'utf8');
+  assert.match(src, /pasteEventDecision\(\{/);
+  assert.match(src, /flourish\(noUsablePathNote\(\)\)/);
+});

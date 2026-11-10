@@ -231,3 +231,115 @@ test('extra fields on the bumped key survive (a newer build\'s data), and an ove
   fs.writeFileSync(file, JSON.stringify({ 'git:opened': { count: Number.MAX_SAFE_INTEGER, last: 'x' } }));
   assert.deepStrictEqual(counters.bump('git:opened'), { ok: false, reason: 'full' });
 });
+
+// ---- BACKLOG #97 (Ricardo 2026-11-06: "Fix the count first"): only his own gestures in his own windows count ------------------
+// MEASURED 2026-11-07 (verify/probe-dock-tree.js in a lane, before and after; numbers in the PR): a probe's window drives the dock
+// through window.__dockProbe, every action of which went through commitPlacement / selectModule and so counted as a gesture; the
+// host and main it starts write the counters of the checkout it runs from (dev's, when a probe runs there). So counting is OFF in
+// any process a probe started (the probe mark, host/probe-mark.js), in main started under the tabs probe, and in anything a
+// `node --test` run started.
+
+const { countingOff, resetPrefix } = require('../host/usage-counters');
+const { MARK_VAR, makeMark } = require('../host/probe-mark');
+
+test('#97: countingOff says why a process never counts, and null for a person\'s own window', () => {
+  assert.strictEqual(typeof countingOff, 'function');
+  assert.strictEqual(countingOff({}), null);
+  assert.strictEqual(countingOff({ PATH: 'x', CLAUDE_CUSTOM_SESSION: '1' }), null, 'a harness-hosted session is a person\'s');
+  assert.strictEqual(countingOff({ [MARK_VAR]: makeMark(1234) }), 'probe');
+  assert.strictEqual(countingOff({ CLAUDE_CUSTOM_TABS_PROBE: '7790' }), 'probe');
+  assert.strictEqual(countingOff({ NODE_TEST_CONTEXT: 'child-v8' }), 'test');
+  assert.strictEqual(countingOff(undefined), null);
+});
+
+test('#97: a counter that is off refuses every bump and never creates the file', () => {
+  const dir = tmpDir('usage-counters-off');
+  const store = createStore({ dir });
+  const counters = createUsageCounters({ store, off: 'probe' });
+  for (const key of ['panel:agents', 'git:opened', 'game:stack:start']) assert.deepStrictEqual(counters.bump(key), { ok: false, reason: 'off' }, key);
+  assert.ok(!fs.existsSync(path.join(dir, `${STORE_KEY}.json`)));
+});
+
+test('#97: a counter that is not off counts as before', () => {
+  const dir = tmpDir('usage-counters-on');
+  const counters = createUsageCounters({ store: createStore({ dir }), off: null });
+  assert.strictEqual(counters.bump('panel:agents').count, 1);
+});
+
+test('#97 reset: resetPrefix drops the panel:* keys, keeps every other key verbatim, and keeps the old file whole beside it', () => {
+  const { store, file, dir } = setup();
+  const before = { 'panel:agents': { count: 76, last: 'a' }, 'panel:style': { count: 87, last: 'b' }, 'git:opened': { count: 134, last: 'c', extra: 1 },
+    'game:stack:start': { count: 1, last: 'd' } };
+  const text = JSON.stringify(before, null, 2);
+  fs.writeFileSync(file, text);
+  const r = resetPrefix({ store, prefix: 'panel:', now: () => Date.parse('2026-11-07T18:30:00Z') });
+  assert.strictEqual(r.ok, true);
+  assert.deepStrictEqual(r.removed.sort(), ['panel:agents', 'panel:style']);
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(file, 'utf8')), { 'git:opened': before['git:opened'], 'game:stack:start': before['game:stack:start'] });
+  assert.strictEqual(r.archive, path.join(dir, `${STORE_KEY}.before-reset-2026-11-07T18-30-00Z.json`));
+  assert.strictEqual(fs.readFileSync(r.archive, 'utf8'), text, 'the old values are kept, byte for byte');
+});
+
+test('#97 reset: a missing file resets nothing and writes nothing; an unreadable one is refused and left alone', () => {
+  const a = setup();
+  assert.deepStrictEqual(resetPrefix({ store: a.store, prefix: 'panel:' }), { ok: true, removed: [], archive: null });
+  assert.ok(!fs.existsSync(a.file));
+  const b = setup();
+  fs.writeFileSync(b.file, '{ not json');
+  const r = resetPrefix({ store: b.store, prefix: 'panel:' });
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(fs.readFileSync(b.file, 'utf8'), '{ not json');
+  assert.ok(!fs.readdirSync(b.dir).some(f => f.includes('before-reset')));
+});
+
+test('Y1 (PR #246): a copy that fails half way leaves no archive and drops no key; a short copy is caught and refused', () => {
+  const before = { 'panel:agents': { count: 7, last: 'a' }, 'git:opened': { count: 3, last: 'b' } };
+  // the copy dies after writing part of the file
+  const a = setup();
+  const text = JSON.stringify(before);
+  fs.writeFileSync(a.file, text);
+  const dying = (src, dest) => { fs.writeFileSync(dest, text.slice(0, 10)); throw new Error('disk full'); };
+  const r = resetPrefix({ store: a.store, prefix: 'panel:', now: () => Date.parse('2026-11-07T18:30:00Z'), copyFile: dying });
+  assert.strictEqual(r.ok, false);
+  assert.match(r.reason, /could not be kept/);
+  assert.strictEqual(fs.readFileSync(a.file, 'utf8'), text, 'no key was dropped');
+  assert.ok(!fs.readdirSync(a.dir).some(f => f.includes('before-reset')), 'no truncated archive, no .partial left: ' + fs.readdirSync(a.dir));
+  // a copy that "succeeds" but is short
+  const b = setup();
+  fs.writeFileSync(b.file, text);
+  const short = (src, dest) => fs.writeFileSync(dest, text.slice(0, 10));
+  const r2 = resetPrefix({ store: b.store, prefix: 'panel:', copyFile: short });
+  assert.strictEqual(r2.ok, false);
+  assert.strictEqual(fs.readFileSync(b.file, 'utf8'), text);
+  assert.ok(!fs.readdirSync(b.dir).some(f => f.includes('before-reset')));
+  // an archive of that name already there is never overwritten
+  const c = setup();
+  fs.writeFileSync(c.file, text);
+  const stamp = () => Date.parse('2026-11-07T18:30:00Z');
+  const first = resetPrefix({ store: c.store, prefix: 'panel:', now: stamp });
+  assert.strictEqual(first.ok, true);
+  fs.writeFileSync(c.file, text);
+  assert.strictEqual(resetPrefix({ store: c.store, prefix: 'panel:', now: stamp }).ok, false, 'same second, same name: refused');
+  assert.strictEqual(fs.readFileSync(first.archive, 'utf8'), text);
+});
+
+test('#97 reset: only a prefix that names a counter family is accepted (an empty one would wipe everything)', () => {
+  const { store, file } = setup();
+  fs.writeFileSync(file, JSON.stringify({ 'git:opened': { count: 2, last: 'x' } }));
+  for (const bad of ['', ':', 'panel', undefined, 'git:opened:']) assert.strictEqual(resetPrefix({ store, prefix: bad }).ok, false, String(bad));
+  assert.strictEqual(JSON.parse(fs.readFileSync(file, 'utf8'))['git:opened'].count, 2);
+});
+
+test('#97 wiring: host and main build their counters off for a probe or a test process; the page counts nothing on a probe page', () => {
+  const strip = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+  const read = (f) => strip(fs.readFileSync(path.join(__dirname, '..', f), 'utf8'));
+  assert.match(read('host/host.js'), /createUsageCounters\(\{ store, off: countingOff\(process\.env\)/);
+  assert.match(read('app/main.js'), /createUsageCounters\(\{ store: uiStore, off: countingOff\(process\.env\) \}\)/);
+  const r = read('app/renderer.js');
+  assert.match(r, /function usage\(key\) \{ if \(usageOff\) return; sendJson/);
+  assert.match(r, /const usageOff = new URLSearchParams\(location\.search\)\.get\('probe'\) === '1';/);
+  // Claude's own canvas render reveals its panel, but it is not a gesture of the person's
+  assert.match(r, /function canvasDock\(\) \{[\s\S]*?try \{ revealModule\('canvas', \{ gesture: false \}\); \} finally \{ uncountedReveal = false; \}/);
+  assert.match(r, /function revealModule\(id, \{ gesture = true \} = \{\}\) \{\s*if \(gesture\) usageGesture\(\);/);
+  assert.match(r, /function commitPlacement\(next, \{ justThisTab = false, select = null, userAction = true, refit = true, gesture = true \} = \{\}\) \{[\s\S]{0,200}if \(gesture\) usageGesture\(\);/);
+});

@@ -39,7 +39,7 @@ const { handlePortraitMessage, handleGlobalPortraitMessage } = require('./portra
 const { watchGlobalDir } = require('./global-watch');
 const { createHiddenAgents, validRosterMsg } = require('./hidden-agents');
 const { createMedals } = require('./medals');
-const { createUsageCounters } = require('./usage-counters');
+const { createUsageCounters, countingOff } = require('./usage-counters');
 const { validGive, validRemove } = require('../app/medals-display');
 const { createBubbles, createBubbleSettings } = require('./bubbles');
 const { createBubbleGate } = require('./bubble-gate');
@@ -145,6 +145,7 @@ const { writeIdentity, fileFor, readIdentity, readTokenFile } = require('./host-
 const { markFromEnv } = require('./probe-mark');
 const { pickerPayload, createProjectsReader } = require('./project-picker');
 const { resolveLaunchTarget, pickShell, shellEnv } = require('./launch-target');
+const { ptyEnv } = require('./pty-env');
 const { samePath } = require('./project-path');
 const { lockPathFor, acquire: acquireSessionLock, release: releaseSessionLock,
         updateOwn: updateSessionLock, readHolder } = require('./session-lock');
@@ -463,7 +464,8 @@ console.log('[host] theme          :', theme.name);
 const mood = createMoodMachine({ mono: () => performance.now() });
 const processes = createProcessTracker();
 const store = createStore({ dir: path.join(HARNESS_DIR, 'state') });
-const usageCounters = createUsageCounters({ store, log: (...a) => console.log(...a) });      // invisible: which features get used (scripts/usage-report.js); above its users (canvasControl's emit)
+// Off in a host a probe or a test started (BACKLOG #97): only a person's own windows count.
+const usageCounters = createUsageCounters({ store, off: countingOff(process.env), log: (...a) => console.log(...a) });      // invisible: which features get used (scripts/usage-report.js); above its users (canvasControl's emit)
 // The Git panel's data. The branch ledger is the PROJECT's (every tab of it shares one), so it
 // lives in <project>\.claude-custom\ beside the look, behind the same `*` .gitignore, and never
 // through a linked folder (ledgerFileFor).
@@ -1025,6 +1027,9 @@ function handleDrop(msg, ws) {
     env: grantEnv(),
     onGranted: (dir) => { grantedDirs.push(dir); console.log('[host] drop requests :', dir); tell({ requested: [dir] }); },
     onFailed: (dir, why) => tell({ refused: [{ dir, why }] }),
+    // A draft the grant cleared that could not be typed back (not even late, when an unanswered dialog is answered: grant-sequence.js
+    // lateRetype) reaches the page as a notice that stays, with its full text and a Copy button (PR #246 D1, R2-2)
+    onDraftLeft: (draftText, why) => tell({ draftLeft: { text: draftText, why } }),
   })).catch((err) => console.log('[host] drop failed:', err && err.message));
   void ws;
 }
@@ -1952,21 +1957,12 @@ function startSession() {
     cwd: CWD,
     // The bundled ConPTY, so the CLI's OSC 7501 query reaches us and our answer reaches it (host/conpty-choice.js).
     ...PTY_BACKEND.options,
-    env: SHELL
-      // A5: an arbitrary program gets the person's environment and the worktree's, and none of the harness's own (host/launch-target.js shellEnv).
-      ? { ...shellEnv(cleanEnv()), TERM: 'xterm-256color', COLORTERM: 'truecolor', ...sessionEnv }
-      : {
-        ...cleanEnv(),
-        TERM: 'xterm-256color',
-        COLORTERM: 'truecolor',
-        // Marks this session as harness-hosted; the hook bridge keys off it later.
-        CLAUDE_CUSTOM_SESSION: '1',
-        // BACKLOG #119 A2: where the mod (loaded with --plugin-dir) posts, and the per-spawn token that authorises it. Only when the
-        // mod server is up; the window's session token never goes here.
-        ...(modPort === null ? {} : { CLAUDE_CUSTOM_MOD_PORT: String(modPort), CLAUDE_CUSTOM_MOD_TOKEN: MOD_TOKEN }),
-        ...sessionEnv,
-        ...providerEnv,
-      },
+    // host/pty-env.js: a shell tab (A5) gets the person's environment and the worktree's and none of the harness's own; a claude
+    // session is marked and gets the mod's and the provider's. Every kind gets PYTHON_BASIC_REPL=1 (BACKLOG #74 F (2)).
+    env: ptyEnv({ kind: SHELL ? 'shell' : SIDE ? 'side' : 'branch', base: cleanEnv(), shellEnv, sessionEnv, providerEnv,
+      // BACKLOG #119 A2: where the mod (loaded with --plugin-dir) posts, and the per-spawn token that authorises it. Only when the
+      // mod server is up; the window's session token never goes here.
+      modEnv: modPort === null ? {} : { CLAUDE_CUSTOM_MOD_PORT: String(modPort), CLAUDE_CUSTOM_MOD_TOKEN: MOD_TOKEN } }),
   });
   // The clock just before and just after the spawn: ConPTY creates the process inside pty.spawn, so its creation time falls between
   // the two, and the job guard can prove it holds our pty without the proc-start read (host/job-guard.js spawnWindowOf).

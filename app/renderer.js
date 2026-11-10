@@ -1337,6 +1337,7 @@ let shownModules = new Set();
 let usageGestureAt = -Infinity;
 const usageGesture = () => { usageGestureAt = Date.now(); };
 const usageGestureLive = () => layoutLoaded && helloSeen && Date.now() - usageGestureAt < 1500;
+let uncountedReveal = false;     // true only while canvasDock's reveal draws: whatever gesture came before, that show is Claude's, not a use
 let hostControls = null;         // the control types the attached host's hello lists; null until it has said (an old host lists no 'lean')
 let leanNight = false;           // a /bedtime night is going in any tab, main's word with the lean state: an animated background never plays then
 let windowFocused = null;        // main's word on whether this window has the keyboard focus; null until it has said (unknown holds still)
@@ -2048,7 +2049,10 @@ function canvasFetchIfNeeded() {
 
 // Claude was asked to build something: show the panel if it is hidden (as the Window menu does) and select it.
 function canvasDock() {
-  revealModule('canvas');
+  // The draw this reveal causes runs inside the call, so the flag covers it: a person's gesture a moment EARLIER (a tab click within
+  // 1.5 s) must not make Claude's render count as a use of the panel (PR #246 Dexter D5).
+  uncountedReveal = true;
+  try { revealModule('canvas', { gesture: false }); } finally { uncountedReveal = false; }
 }
 
 function canvasOnFrame(frame) {
@@ -2362,7 +2366,7 @@ function renderLayout({ userAction = false, refit = true, settle = false, quiet 
   changesView();                    // the Changes panel asks the host for the changeset only while it is on screen
   ensureFontList();                 // the installed fonts are listed only once the Style panel is on screen
   reportResourcesViewing();         // main samples faster while any page shows the Resources panel
-  for (const id of fx.newlyShown) { if (usageGestureLive()) usage('panel:' + id); onModuleShown(id); }
+  for (const id of fx.newlyShown) { if (usageGestureLive() && !uncountedReveal) usage('panel:' + id); onModuleShown(id); }
   syncCanvasView();                 // the dock moved or resized: the panel's native view follows (or goes, when it is hidden)
   syncPreviewView();                // and the Preview panel's, the same way
   paintSchedulesBadge();            // a rebuilt rail button has lost its count
@@ -2424,9 +2428,9 @@ function saveGlobalLayout(l) {
 // is about (a dropped or ticked panel): it shows in its group in THIS window.
 // `userAction: false` is for a change that is not a click or a key (a float's move or resize): it leaves keyboard
 // focus where it is, so a field focused inside the float keeps it (PR #102 Miguel S3).
-function commitPlacement(next, { justThisTab = false, select = null, userAction = true, refit = true } = {}) {
+function commitPlacement(next, { justThisTab = false, select = null, userAction = true, refit = true, gesture = true } = {}) {
   if (flushKeyBurst) flushKeyBurst();       // a burst's drawn sizes would hide this change until its own flush
-  usageGesture();
+  if (gesture) usageGesture();              // #97: a change the person didn't make (Claude's canvas render) shows its panel uncounted
   const l = DTm.normalize(next, MODULE_IDS);
   const toOwn = justThisTab || ownLayout !== null;
   railEvent({ type: 'gone' });              // any change of the placement closes a rail's popover
@@ -2499,13 +2503,14 @@ function togglePin(id, { justThisTab = false } = {}) {
 
 // "Show this panel" from somewhere other than its tab (the Resources link, Claude's panel asked to build something): a hidden
 // panel is docked, an unpinned one opens from the rail and stays open until closed, a docked one is selected (PR #168 Miguel Y3).
-function revealModule(id) {
-  usageGesture();
+// `gesture: false` (#97) when the reveal isn't the person's (Claude's canvas render): the panel shows, and isn't counted as used.
+function revealModule(id, { gesture = true } = {}) {
+  if (gesture) usageGesture();
   const l = placementLayout();
-  if (l.hidden.includes(id)) commitPlacement(DTm.show(settledLayout(), id), { select: id });
+  if (l.hidden.includes(id)) commitPlacement(DTm.show(settledLayout(), id), { select: id, gesture });
   else if ((l.rail || []).includes(id)) {
     if (railSt.module !== id) { railEvent({ type: 'click', module: id }); renderLayout({ refit: false }); }
-  } else selectModule(id);
+  } else selectModule(id, { gesture });
 }
 
 // A rail's button: its panel opens over the terminal, a second press (or Esc, or a press in the terminal) closes it. It changes no
@@ -2525,7 +2530,7 @@ function openPeek(id, byKeyboard) {
 }
 
 // A tab or a rail button: that module shows in its group, and Ctrl+B's fold is undone.
-function selectModule(id) { usageGesture(); commitSelection(DTm.selectTab(selection, placementLayout(), id)); }
+function selectModule(id, { gesture = true } = {}) { if (gesture) usageGesture(); commitSelection(DTm.selectTab(selection, placementLayout(), id)); }
 
 // --- moving modules: right-click, the layout menu, drag (layout pass L1) -----
 // Ways in (the Window menu's checks, a tab's right-click, dragging a tab), one
@@ -6563,7 +6568,10 @@ if (agentLogEl) {
 // Pure rules: app/medals-display.js and app/bubble-display.js. This is the wiring. The card shows only a count chip; the
 // medals with their reasons and dates are on the shelf under an agent's log. A bubble is a joke over a card: never information.
 // Usage counters (audit move 2): the host counts a feature use by key and ignores a key it doesn't know. Invisible, never an answer.
-function usage(key) { sendJson({ type: 'usage', key }); }
+// BACKLOG #97: a page main opened for a probe (?probe=1, its driver moves the dock through the same functions a click does) counts
+// nothing. The host and main also refuse a probe's or a test's counts (host/usage-counters.js countingOff); this is the page's half.
+const usageOff = new URLSearchParams(location.search).get('probe') === '1';
+function usage(key) { if (usageOff) return; sendJson({ type: 'usage', key }); }
 function sendJson(obj) {
   try { ws.send(JSON.stringify(obj)); } catch { /* not attached: the next hello brings the truth */ }
 }
@@ -6834,17 +6842,8 @@ function renderModels() {
     return;
   }
 
-  let rows = catalogue;
-  // Only the SESSION target restricts by tools: a model that cannot call one
-  // can still hold an opinion, and excluding it would shrink the very
-  // diversity the council exists for.
-  if (target === 'session') rows = rows.filter(m => m.tools);
-  if (search) {
-    const q = search.toLowerCase();
-    rows = rows.filter(m => m.id.toLowerCase().indexOf(q) !== -1 ||
-                            m.name.toLowerCase().indexOf(q) !== -1);
-  }
-  if (freeOnly) rows = rows.filter(m => m.free);
+  // Only the SESSION target restricts by tools (app/models-favourites.js filterCatalogue, tested)
+  let rows = filterCatalogue(catalogue, { target, search, freeOnly });
 
   if (!rows.length) {
     el.innerHTML = '<div class="none">nothing matches that filter</div>';
@@ -7033,43 +7032,9 @@ function wireModelPanel() {
   }
 }
 
-// --- project HP -------------------------------------------------------------
-// One bar, one meaning: pass rate. The label says so, because a composite
-// number gets quoted as though it included coverage and lint.
-const HP_STATES = ['healthy', 'hurt', 'critical', 'unknown'];
-
-let lastHealthKnown = null;      // { label, fraction } of the last finished run, shown (dimmed) while the next one runs
-function renderHealth(h) {
-  const el = document.getElementById('hp');
-  if (!el || !h) return;
-  el.classList.add('show');
-  el.classList.remove(...HP_STATES, 'running', 'stale');
-  el.classList.add(HP_STATES.includes(h.state) ? h.state : 'unknown');
-  if (h.running) el.classList.add('running');
-
-  // Chrome grammar A: a number or a dash, never a sentence. Running is the chip's shimmer, unknown its dashed border; the words
-  // ("no test suite", "no result yet") live in the hover text. The bar is the 28 px micro-bar (app/chip-model.js).
-  // While the suite runs the chip keeps its last known value and bar, dimmed (app/chip-model.js healthChip); a new result replaces it.
-  const view = chipModel.healthChip(h, lastHealthKnown);
-  if (view.known) lastHealthKnown = view.known;
-  el.classList.toggle('stale', view.stale);
-
-  el.innerHTML = `<span>HP</span><span class="track"><span class="fill"></span></span>` +
-                 `<span class="num">${escapeHtml(view.label)}</span>`;
-  el.querySelector('.fill').style.width = view.bar.px + 'px';
-
-  el.title = h.running ? 'Running the test suite…'
-    : h.state === 'unknown'
-      ? (h.runner ? 'No result yet. Click to run the suite.' : 'No recognisable test suite in this project')
-      : `Pass rate only — ${h.passed || 0} passed, ${h.failed || 0} failed` +
-        (h.tookMs ? ` in ${(h.tookMs / 1000).toFixed(1)}s` : '') +
-        '. Click to run the suite.';
-}
-
-document.addEventListener('click', (e) => {
-  if (!e.target.closest('#hp')) return;
-  try { ws.send(JSON.stringify({ type: 'health' })); } catch {}
-});
+// The project HP heart (the test pass rate) left the top bar: BACKLOG #163, Ricardo 2026-11-06 "Remove it". The host still
+// answers `health` (host/health.js, verify/probe-health.js) and app/chip-model.js keeps healthChip for a later game layer;
+// the page draws neither, and the `health` field of hello / the `health` broadcast are ignored here.
 
 // --- cooldowns ---------------------------------------------------------------
 // Advisory, never blocking. The point is to make a cost visible, not to
@@ -9612,7 +9577,6 @@ function handleControl(msg) {
     // May be null on a fast attach -- quotaDisplay draws "reading…" for that,
     // and the host sends a `quota` message as soon as the read lands.
     renderQuota(msg.quota || null);
-    renderHealth(msg.health);
     renderCooldowns(msg.cooldowns);
     renderBugVault(msg.vault);
     renderProcesses(msg.running);
@@ -9852,10 +9816,7 @@ function handleControl(msg) {
     flourish(msg.milestone);
     return;
   }
-  if (msg.type === 'health') {
-    renderHealth(msg.health);
-    return;
-  }
+  if (msg.type === 'health') return;   // #163: nothing in the page draws the pass rate now
   if (msg.type === 'turn') {
     sessionTurn = msg.turn === undefined ? null : msg.turn;
     agentPauses.turnIs(sessionTurn, Date.now());     // the busy -> idle edge is where an agent Pause's timeout starts counting
@@ -10257,32 +10218,88 @@ dropZone.addEventListener('drop', (e) => {
 
   const files = [...(e.dataTransfer.files || [])];
   if (!files.length) return;
+  sendDropFiles(files);
+});
 
-  // `File.path` WAS REMOVED IN ELECTRON 32 and this app is on 33: it is
-  // undefined here, with no error and no warning, which is how every
-  // drag-and-drop snippet still on the internet fails silently. The path comes
-  // across the preload bridge via webUtils.getPathForFile instead.
-  const entries = files
-    .map(f => ({
-      path: (window.harness && window.harness.pathForFile) ? window.harness.pathForFile(f) : '',
-      // A dropped folder arrives as a File with no type and a size the OS makes
-      // up. Sent as a HINT only -- the host stats the path rather than trusting
-      // either field.
-      isDirectory: !f.type && !(f.size > 0),
-    }))
-    .filter(x => x.path);
-
-  if (!entries.length) return;
+// The drop's own path, for a drop and for files pasted with Ctrl+V (BACKLOG #136 (1)). `File.path` WAS REMOVED IN ELECTRON 32 and
+// this app is on 33: the path comes across the preload bridge via webUtils.getPathForFile (app/paste-action.js fileEntries).
+function sendDropFiles(files) {
+  const entries = fileEntries(files, window.harness && window.harness.pathForFile);
+  if (!entries.length) return false;
   usage('terminal:drop');
   // Through the confirm, like typing and pasting: a dropped file types its path into the prompt, and that is
   // the person's own act in a worktree an agent may be writing in (PR #96 Miguel S5).
   userInput(JSON.stringify({ type: 'drop', entries }));
-});
+  return true;
+}
+
+// Ctrl+V with files copied in Explorer (#136 (1), Ricardo 2026-11-06: "Act like a drop"). The clipboard bridge says files are there;
+// main runs a native paste into this page (window.harness.pasteFiles, only when files are ALL the clipboard holds), and its paste
+// event carries every file as a File, which goes down the drop's path above. MEASURED 2026-11-07: main's own clipboard API sees only
+// the first of two copied files; the paste event sees both. Capture phase on the document, so xterm's textarea listener never gets it
+// (it would paste nothing, or raw text). What it does with each paste is app/paste-action.js pasteEventDecision (tested): files are taken,
+// an armed paste with nothing in it is taken and SAID, and an armed paste carrying someone else's text passes through (PR #246 Y2, D6).
+let filePasteArmedUntil = 0;
+document.addEventListener('paste', (e) => {
+  const cd = e.clipboardData;
+  const files = [...((cd && cd.files) || [])];
+  const d = pasteEventDecision({
+    armed: Date.now() < filePasteArmedUntil,
+    fileCount: files.length,
+    hasText: !!(cd && typeof cd.getData === 'function' && cd.getData('text/plain')),
+    inTerm: !!(e.target && e.target.closest && e.target.closest('#term')),
+  });
+  if (d.disarm) filePasteArmedUntil = 0;
+  if (d.act === 'ignore') return;
+  e.preventDefault();
+  e.stopImmediatePropagation();
+  if (d.act === 'files' && !sendDropFiles(files)) flourish(noUsablePathNote());
+  else if (d.notice) flourish(d.notice);
+}, true);
 
 // What the drop did, said out loud. A gesture that silently widens what the
 // session may read is exactly the thing that should not be silent.
+// A draft the grant cleared and that could not be typed back (PR #246 D1, Dexter R2-2). NOT the flourish: that one fades after 4 s, takes no
+// pointer events (nothing to select or copy) and cuts a long line off, and this notice is raised when the person was away. It stays until
+// dismissed, shows the whole text wrapped and selectable, and has a Copy button. One at a time: a second draft replaces the first one's text
+// below it, so nothing is lost silently (the first stays in host.log).
+let draftNoticeEl = null;
+function showDraftNotice(left) {
+  if (!left || typeof left.text !== 'string') return;
+  if (draftNoticeEl) { draftNoticeEl.remove(); draftNoticeEl = null; }
+  const el = document.createElement('div');
+  el.className = 'draft-notice';
+  el.setAttribute('role', 'alert');
+  const head = document.createElement('div');
+  head.className = 'dn-head';
+  head.textContent = '⛔ Your draft was not put back (' + (left.why || 'the prompt was not free') + '). It read:';
+  const body = document.createElement('div');
+  body.className = 'dn-body';
+  body.textContent = left.text;
+  const row = document.createElement('div');
+  row.className = 'dn-row';
+  const copy = document.createElement('button');
+  copy.type = 'button';
+  copy.textContent = 'Copy';
+  copy.addEventListener('click', async () => {
+    try {
+      const r = window.harness && window.harness.writeClipboard ? await window.harness.writeClipboard(left.text) : null;
+      copy.textContent = r && r.ok === true ? 'Copied' : 'Copy failed';
+    } catch { copy.textContent = 'Copy failed'; }
+  });
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.textContent = 'Dismiss';
+  close.addEventListener('click', () => { el.remove(); if (draftNoticeEl === el) draftNoticeEl = null; });
+  row.append(copy, close);
+  el.append(head, body, row);
+  document.body.appendChild(el);
+  draftNoticeEl = el;
+}
+
 function renderDropNote(note) {
   if (!note) return;
+  if (note.draftLeft && typeof note.draftLeft.text === 'string') showDraftNotice(note.draftLeft);
   const bits = [];
   if (note.requested && note.requested.length) {
     bits.push('requested read access to ' + note.requested.join(', '));
@@ -10422,6 +10439,13 @@ async function pasteFromClipboard() {
   } else if (action.kind === 'image') {
     logLine('Ctrl+V (image)', action.data);
     userInput(action.data);
+  } else if (action.kind === 'files' && typeof window.harness.pasteFiles === 'function') {
+    // #136 (1): the files come back in a paste event (the capture listener beside the drop handler), not in this answer
+    logLine('Ctrl+V (files)', '');
+    filePasteArmedUntil = Date.now() + 2000;
+    let r;
+    try { r = await window.harness.pasteFiles(); } catch (err) { r = { ok: false, error: err && err.message }; }
+    if (!r || r.ok !== true) { filePasteArmedUntil = 0; flourish({ icon: '⛔', name: 'Ctrl+V could not paste the copied file' + (r && r.error ? ': ' + r.error : '') }); }
   }
 }
 

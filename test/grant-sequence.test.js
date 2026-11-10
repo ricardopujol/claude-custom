@@ -33,6 +33,7 @@ function fakeCli({ rows = 24, draft = [''], dialog = null, ctrlUAtCol0 = 'crosse
       if (permissionAtRead && d.startsWith('/add-dir')) cli.permLeft = permissionAtRead;
       const last = cli.draft[cli.draft.length - 1];
       if (d === CTRL_E) return;
+      if (d === '\x1b\r') { cli.draft.push({ t: '', hard: true }); return; }          // Shift+Enter: a real line break, nothing submitted
       if (d === CTRL_U) {
         if (last.t) last.t = '';
         else if (cli.draft.length > 1 && ctrlUAtCol0 === 'crosses') cli.draft.pop();
@@ -83,16 +84,32 @@ test('Dexter 1: a Shift+Enter two-line draft (hello / world) is fully cleared, n
   noDraftSubmitted(cli);
 });
 
-test('Dexter 2 / Miguel I1: a 15-row draft in a 24-row pane (box capped at 7) is cleared by looping, not by a fixed count', async () => {
+// Since #136 (2) (Ricardo 2026-11-06: the grant keeps the draft) a draft whose head the box hides can't be read back, so it is never
+// cleared: these two used to pin "cleared by looping"; they now pin "left whole, nothing submitted, the folder reported".
+test('Dexter 2 / Miguel I1 / #136 (2): a 15-row draft in a 24-row pane (box capped at 7) is left whole: no clear, nothing submitted', async () => {
   const cli = fakeCli({ rows: 24, draft: Array.from({ length: 15 }, (_, i) => `r${i}`) });
-  await grant(cli);
-  assert.deepStrictEqual(cli.submitted, ['/add-dir C:\\outside\\docs']);
+  const r = await grant(cli);
+  assert.deepStrictEqual(cli.submitted, []);
+  assert.ok(!cli.writes.includes(CTRL_U));
+  assert.strictEqual(cli.draft.length, 15);
+  assert.deepStrictEqual(r.failed.map(f => f[0]), ['C:\\outside\\docs']);
 });
 
-test('Dexter 2b: a 10-row pane (box cap 0 rows -> shows 1) with a 6-row draft is still cleared', async () => {
+test('Dexter 2b / #136 (2): a 10-row pane (box cap 0 rows -> shows 1) with a 6-row draft is left whole, nothing submitted', async () => {
   const cli = fakeCli({ rows: 10, draft: Array.from({ length: 6 }, (_, i) => `r${i}`) });
-  await grant(cli);
-  assert.deepStrictEqual(cli.submitted, ['/add-dir C:\\outside\\docs']);
+  const r = await grant(cli);
+  assert.deepStrictEqual(cli.submitted, []);
+  assert.strictEqual(cli.draft.length, 6);
+  assert.strictEqual(r.failed.length, 1);
+});
+
+test('Dexter 2 (the loop still holds): clearBox loops until the box reads empty, however tall the draft, never a fixed count', async () => {
+  // runDrop no longer clears a draft it can't read back whole, but clearBox's guarantee is still what every clear rests on.
+  const { clearBox } = require('../host/grant-sequence');
+  const cli = fakeCli({ rows: 24, draft: Array.from({ length: 15 }, (_, i) => `r${i}`) });
+  assert.strictEqual(await clearBox(envFor(cli)), true);
+  assert.ok(boxEmpty(cli.lines(), 24));
+  assert.ok(cli.writes.filter(w => w === CTRL_U).length >= 15, 'one pass per row, not a fixed count');
 });
 
 test('Dexter 6: Ctrl-E comes before every Ctrl-U (a cursor mid-draft would leave its tail)', async () => {
@@ -127,12 +144,15 @@ test('fail closed: if the typed line does not read back as exactly the command, 
   assert.ok(!cli.writes.includes('\r'));
   assert.deepStrictEqual(cli.submitted, []);
   assert.strictEqual(r.failed.length, 1);
-  assert.ok(boxEmpty(cli.lines(), 24), 'what was typed is cleared again');
+  // what was typed is cleared again, and (#136 (2)) the person's draft is put back in its place, with none of the command left
+  assert.strictEqual(cli.draft.map(x => x.t).join('\n'), 'a');
 });
 
 test('Dexter 7 / Miguel S2: every key and the command and the Enter are separate writes (a join would fail this)', async () => {
   const cli = fakeCli({ draft: [{ t: 'one' }, { t: 'two', hard: true }] });
   await grant(cli, 'C:\\outside\\docs');
+  // up to the Enter: the grant's own writes. After it, only once the dialog is answered, the draft typed back (#136 (2)); here nobody
+  // answers it, so nothing follows the Enter.
   for (const w of cli.writes) assert.ok(w === CTRL_E || w === CTRL_U || w === '\r' || w === '/add-dir C:\\outside\\docs', `a write that mixes things: ${JSON.stringify(w)}`);
   assert.strictEqual(cli.writes[cli.writes.length - 1], '\r');
   assert.strictEqual(cli.writes[cli.writes.length - 2], '/add-dir C:\\outside\\docs');
@@ -265,4 +285,326 @@ test('a screen that lags the pty gets a few polls to show the typed command; the
   const r = await grant(cli);
   assert.deepStrictEqual(cli.submitted, ['/add-dir C:\\outside\\docs']);
   assert.strictEqual(r.granted.length, 1);
+});
+
+// ---- BACKLOG #136 residuals (Ricardo 2026-11-06, round 1) -------------------------------------------------------------------------
+// (2) A drop that needs a grant keeps the draft: it is read back BEFORE the clear, the grant runs, and it is typed back with the path
+// added. A draft that can't be read back whole (taller than the box, so its head is hidden, or holding a pasted block or an image the
+// CLI keeps only while it is in the box) is never cleared: the folder is not requested and the path goes after the draft.
+// (3) A drop with no grant puts a space before the path when the box already holds something, instead of gluing it on.
+
+const boxNow = (cli) => cli.draft.map(r => r.t).join('\n');
+// the person answers each Add-directory dialog a moment after it opens
+const answering = (cli) => envFor(cli, { sleep: async () => { if (cli.dialog) cli.dialog = null; } });
+
+test('#136 (2): a one-line draft survives a grant: only /add-dir is submitted, then the draft comes back with the path after it', async () => {
+  const cli = fakeCli({ draft: [{ t: 'fix the bug in' }] });
+  const granted = [];
+  await runDrop({ dirs: ['C:\\outside\\docs'], text: 'C:\\outside\\docs\\a.md ', env: answering(cli), onGranted: d => granted.push(d) });
+  assert.deepStrictEqual(cli.submitted, ['/add-dir C:\\outside\\docs']);
+  assert.deepStrictEqual(granted, ['C:\\outside\\docs']);
+  assert.strictEqual(boxNow(cli), 'fix the bug in C:\\outside\\docs\\a.md ');
+});
+
+test('#136 (2) / D4: a draft with real line breaks comes back WITH them, as Shift+Enter bytes, never a bare CR', async () => {
+  const cli = fakeCli({ draft: [{ t: 'look at this' }, { t: 'and that', hard: true }, { t: 'too' }] });
+  await runDrop({ dirs: ['C:\\a'], text: 'C:\\a\\x.md ', env: answering(cli) });
+  assert.deepStrictEqual(cli.submitted, ['/add-dir C:\\a']);
+  assert.strictEqual(boxNow(cli), 'look at this\nand that\ntoo C:\\a\\x.md ');
+  assert.ok(!cli.writes.some(w => /[\r\n]/.test(w) && w !== '\r' && w !== '\x1b\r'), 'no bare newline is ever typed back (a CR would submit)');
+});
+
+test('#136 (2): the empty-box placeholder is not a draft: the path is typed alone, with no space before it', async () => {
+  const cli = fakeCli();
+  await runDrop({ dirs: ['C:\\a'], text: 'C:\\a\\x.md ', env: answering(cli) });
+  assert.strictEqual(boxNow(cli), 'C:\\a\\x.md ');
+  assert.ok(!cli.writes.some(w => w.includes('Try "')), 'the placeholder is never typed');
+});
+
+test('#136 (2): a draft is put back even when the grant itself failed after the clear (read-back mismatch, no Enter)', async () => {
+  const cli = fakeCli({ draft: [{ t: 'keep me' }] });
+  const realWrite = cli.write.bind(cli);
+  cli.write = d => { realWrite(d); if (d.startsWith('/add-dir')) cli.draft[cli.draft.length - 1].t += ' STRAY'; };
+  const failed = [];
+  await runDrop({ dirs: ['C:\\a'], text: 'C:\\a\\x.md ', env: answering(cli), onFailed: d => failed.push(d) });
+  assert.deepStrictEqual(cli.submitted, []);
+  assert.deepStrictEqual(failed, ['C:\\a']);
+  assert.strictEqual(boxNow(cli), 'keep me C:\\a\\x.md ');
+});
+
+test('#136 (2): a draft taller than the box (its head hidden) is never cleared: no grant, a reason, and the path goes after it', async () => {
+  const draft = Array.from({ length: 15 }, (_, i) => ({ t: `r${i}` }));
+  const cli = fakeCli({ rows: 24, draft });
+  const failed = [];
+  await runDrop({ dirs: ['C:\\a'], text: 'C:\\a\\x.md ', env: answering(cli), onFailed: (d, why) => failed.push([d, why]) });
+  assert.ok(!cli.writes.includes(CTRL_U), 'nothing was cleared');
+  assert.deepStrictEqual(cli.submitted, []);
+  assert.strictEqual(failed.length, 1);
+  assert.strictEqual(failed[0][0], 'C:\\a');
+  assert.match(failed[0][1], /draft/);
+  assert.deepStrictEqual(cli.writes, [' C:\\a\\x.md '], 'only the path, with a space before it');
+  assert.strictEqual(cli.draft.length, 15);
+});
+
+test('#136 (2): a draft holding a pasted block or an image is never cleared (typing its label back would lose what it holds)', async () => {
+  for (const t of ['see [Pasted text #1 +12 lines] here', 'what is this [Image #1]']) {
+    const cli = fakeCli({ draft: [{ t }] });
+    const failed = [];
+    await runDrop({ dirs: ['C:\\a'], text: 'C:\\a\\x.md ', env: answering(cli), onFailed: d => failed.push(d) });
+    assert.ok(!cli.writes.includes(CTRL_U), t);
+    assert.deepStrictEqual(failed, ['C:\\a'], t);
+    assert.strictEqual(boxNow(cli), t + ' C:\\a\\x.md ', t);
+  }
+});
+
+test('#136 (2): a long draft is typed back in writes of at most 200 characters (one big write is taken for a paste)', async () => {
+  // five rows of 55 characters: with the 2-column prefix each is 57 of the 58 usable columns (60 less the CLI's 2-column right margin, measured) and the next word (3 letters) would not fit: soft wraps
+  const long = Array.from({ length: 5 }, (_, i) => `row ${i} ` + 'w'.repeat(49));
+  const cli = fakeCli({ draft: long.map(t => ({ t })) });
+  await runDrop({ dirs: ['C:\\a'], text: 'C:\\a\\x.md ', env: answering(cli) });
+  const after = cli.writes.slice(cli.writes.lastIndexOf('\r') + 1);
+  assert.ok(after.length > 1 && after.every(w => w.length <= 200), JSON.stringify(after.map(w => w.length)));
+  assert.strictEqual(boxNow(cli), long.join(' ') + ' C:\\a\\x.md ');
+});
+
+test('#136 (2): two folders, one draft: it comes back once, after the last grant', async () => {
+  const cli = fakeCli({ draft: [{ t: 'my draft' }] });
+  await runDrop({ dirs: ['C:\\a', 'C:\\b'], text: 'C:\\a\\x C:\\b\\y ', env: answering(cli) });
+  assert.deepStrictEqual(cli.submitted, ['/add-dir C:\\a', '/add-dir C:\\b']);
+  assert.strictEqual(boxNow(cli), 'my draft C:\\a\\x C:\\b\\y ');
+});
+
+test('#136 (3): a drop with no grant onto a box holding a draft puts a space before the path', async () => {
+  const cli = fakeCli({ draft: [{ t: 'look at' }] });
+  await runDrop({ dirs: [], text: 'C:\\proj\\a.md ', env: envFor(cli) });
+  assert.deepStrictEqual(cli.writes, [' C:\\proj\\a.md ']);
+  assert.strictEqual(boxNow(cli), 'look at C:\\proj\\a.md ');
+});
+
+test('#136 (3): a drop with no grant onto an empty box types the path alone', async () => {
+  const cli = fakeCli();
+  await runDrop({ dirs: [], text: 'C:\\proj\\a.md ', env: envFor(cli) });
+  assert.deepStrictEqual(cli.writes, ['C:\\proj\\a.md ']);
+});
+
+test('draftOf: the box as one line, or why it cannot be read back whole', () => {
+  const { draftOf } = require('../host/grant-sequence');
+  assert.strictEqual(typeof draftOf, 'function', 'draftOf is exported');
+  assert.deepStrictEqual(draftOf(['x', RULE, '❯ Try "edit foo"', RULE], 24), { ok: true, text: '' });
+  assert.deepStrictEqual(draftOf(['x', RULE, '❯ ', RULE], 24), { ok: true, text: '' });
+  assert.deepStrictEqual(draftOf(['x', RULE, '❯ hello  world', RULE], 24), { ok: true, text: 'hello  world' });
+  assert.deepStrictEqual(draftOf(['x', RULE, '❯ one', '  two', RULE], 24), { ok: true, text: 'one\ntwo' }, 'two short rows: the second word would have fit, so it is a line break');
+  assert.strictEqual(draftOf(['x', RULE, '❯ a', '  b', '  c', '  d', '  e', '  f', '  g', RULE], 24).ok, false, 'at the 7-row cap');
+  assert.strictEqual(draftOf(['x', RULE, '❯ hi', RULE], undefined).ok, false, 'an unknown height proves nothing');
+  assert.strictEqual(draftOf(['x', RULE, '❯ [Pasted text #2 +4 lines]', RULE], 24).ok, false);
+  assert.strictEqual(draftOf(['x', RULE, '❯ [Image #1]', RULE], 24).ok, false);
+  assert.strictEqual(draftOf(['no box'], 24).ok, false);
+  assert.strictEqual(draftOf(['x', RULE, '❯ 1. Yes', '  2. No', RULE], 24).ok, false, 'a menu is not a draft');
+});
+
+// ---- PR #246 review (Dexter D1-D4, Miguel Y3) ------------------------------------------------------------------------------------
+// The box is 60 columns wide in these (RULE) and the CLI uses 58 of them (measured: 132 of 134); a row's width is its text plus the 2-column prefix.
+
+test('D2: a token wider than the box wraps mid-word and comes back whole, with no space inside it', () => {
+  const { draftOf } = require('../host/grant-sequence');
+  const url = 'https://example.com/' + 'a'.repeat(80);                       // 100 characters
+  const rows = ['❯ ' + url.slice(0, 56), "  " + url.slice(56)];               // the first row fills the 58 usable columns
+  assert.deepStrictEqual(draftOf(['x', RULE, ...rows, RULE], 24), { ok: true, text: url });
+  // two full rows and a rest
+  const long = 'x'.repeat(150);
+  const three = ["❯ " + long.slice(0, 56), "  " + long.slice(56, 112), "  " + long.slice(112)];
+  assert.strictEqual(draftOf(['x', RULE, ...three, RULE], 24).text, long);
+});
+
+test('D2: words before a long path: the break before the path is a wrap at a space, the break inside it is not', () => {
+  const { draftOf } = require('../host/grant-sequence');
+  const p = 'C:\\Users\\ricar\\VibeCode\\claude-custom\\fix-quick-fixes-nov\\host\\grant-sequence.js';   // 78 characters, wider than the 56 left
+  const rows = ["❯ see", "  " + p.slice(0, 56), "  " + p.slice(56)];
+  assert.strictEqual(draftOf(['x', RULE, ...rows, RULE], 24).text, 'see ' + p);
+});
+
+test('D2: a row that ends exactly at the width continues without a space (the one reading the screen can give)', () => {
+  const { joinRows } = require('../host/grant-sequence');
+  assert.strictEqual(joinRows(['a'.repeat(56), 'bcd'], 60), 'a'.repeat(56) + 'bcd');
+  assert.strictEqual(joinRows(['a'.repeat(55), 'bcdefg'], 60), 'a'.repeat(55) + ' bcdefg', 'one column short: a wrap at a space');
+});
+
+test('R2-1: a word-wrapped row that ends EXACTLY at the usable width keeps its space (Dexter counterexamples), the mid-word one beside it does not', () => {
+  const { joinRows } = require('../host/grant-sequence');
+  // Dexter's, at the test file's 60 columns (limit 58): 'ab' ends at column 58, ' there' does not fit
+  assert.strictEqual(joinRows(['hello '.repeat(9) + 'ab', 'there'], 60), 'hello '.repeat(9) + 'ab there');
+  // ... and at the measured 134 (limit 132)
+  assert.strictEqual(joinRows(['hello '.repeat(21) + 'abcd', 'there'], 134), 'hello '.repeat(21) + 'abcd there');
+  // the mid-word case beside it: one token wider than a row's content, so the cut is inside it
+  assert.strictEqual(joinRows(['a'.repeat(56), 'bcd'], 60), 'a'.repeat(56) + 'bcd');
+  assert.strictEqual(joinRows(['see ' + 'a'.repeat(52), 'a'.repeat(30)], 60), 'see ' + 'a'.repeat(82), 'a token that starts mid-row and fills it');
+  assert.strictEqual(joinRows(['a'.repeat(56), 'a'.repeat(56), 'bc'], 60), 'a'.repeat(112) + 'bc', 'a middle row that is all token');
+});
+
+test('R2-1: joinRows counts display columns, not characters (a wide emoji is two)', () => {
+  const { joinRows } = require('../host/grant-sequence');
+  const row = '✅'.repeat(27) + 'aa';   // 29 characters, 56 columns: a full row at 60
+  assert.strictEqual(joinRows([row, 'a'.repeat(38)], 60), row + 'a'.repeat(38), 'a full row of wide characters is mid-word');
+  const words = '✅ '.repeat(18) + 'ab';  // 38 characters, 56 columns: a word wrap that ends at the limit
+  assert.strictEqual(joinRows([words, 'there'], 60), words + ' there');
+});
+
+test('D2: a row that ends in a space joins with the one space the wrap swallowed, not two', () => {
+  const { draftOf } = require('../host/grant-sequence');
+  const rows = ['❯ ' + 'word '.repeat(11) + '   ', '  ' + 'tail words here that go on and on'];   // 2 + 54 + trailing blanks (trimmed by the screen read)
+  assert.strictEqual(draftOf(['x', RULE, ...rows, RULE], 24).text, 'word '.repeat(10) + 'word' + ' tail words here that go on and on');
+});
+
+test('D4: a break after a short row is a real line break (the next word would have fit); a break after a nearly full row is a wrap', () => {
+  const { joinRows } = require('../host/grant-sequence');
+  assert.strictEqual(joinRows(['first line', 'second line'], 60), 'first line\nsecond line');
+  assert.strictEqual(joinRows(['a', '', 'b'], 60), 'a\n\nb', 'a blank line is a line break too');
+  assert.strictEqual(joinRows(['w '.repeat(28).trim(), 'next'], 60), 'w '.repeat(28).trim() + ' next', '2 + 55 columns of 58: "next" does not fit in the 1 left');
+  assert.strictEqual(joinRows(['one', 'two'], 0), 'one two', 'an unknown width never guesses a break');
+});
+
+test('D1: an Add-directory dialog never answered: the draft is handed back in a notice with its text, and logged in full', async () => {
+  const cli = fakeCli({ draft: [{ t: 'my important draft' }] });
+  const left = []; const logs = [];
+  const r = await runDrop({ dirs: ['C:\\a'], text: 'C:\\a\\x.md ', env: envFor(cli, { log: l => logs.push(l) }), onDraftLeft: (t, why) => left.push([t, why]) });
+  await r.late;   // the wait for the dialog runs out (the injected sleep is instant)
+  assert.strictEqual(left.length, 1);
+  assert.strictEqual(left[0][0], 'my important draft');
+  assert.match(left[0][1], /dialog/);
+  assert.ok(logs.some(l => l.includes('my important draft')), 'the host.log line carries the text, not just its length');
+});
+
+test('R2-2: the person is away past the timeout and answers the dialog LATER: the draft is typed back into the empty box, no notice', async () => {
+  const cli = fakeCli({ draft: [{ t: 'fix the bug in' }] });
+  const left = []; const logs = [];
+  let sleeps = 0;
+  const env = envFor(cli, { log: l => logs.push(l), sleep: async () => { if (cli.dialog && ++sleeps === 1000) cli.dialog = null; } });   // 480 polls = the 120 s timeout; 1000 is well after it
+  const r = await runDrop({ dirs: ['C:\\a'], text: 'C:\\a\\x.md ', env, onDraftLeft: (t) => left.push(t) });
+  assert.ok(cli.dialog, 'at the timeout the dialog is still open');
+  assert.strictEqual(boxNow(cli), '', 'nothing typed into the dialog');
+  const out = await r.late;
+  assert.deepStrictEqual(out, { restored: true });
+  assert.strictEqual(boxNow(cli), 'fix the bug in');
+  assert.deepStrictEqual(left, [], 'it went back, so no notice');
+  assert.ok(logs.some(l => /answered late/.test(l)));
+});
+
+test('R2-2: the late retype never blocks the drop queue: runDrop resolves while the dialog is still open', async () => {
+  const cli = fakeCli({ draft: [{ t: 'a draft' }] });
+  const r = await runDrop({ dirs: ['C:\\a'], text: '', env: envFor(cli), onDraftLeft: () => {} });
+  assert.ok(r && typeof r.late.then === 'function');
+  await r.late;
+});
+
+test('R2-2: the person typed into the emptied box before answering late: the draft goes after it, nothing is lost', async () => {
+  const cli = fakeCli({ draft: [{ t: 'my draft' }] });
+  let sleeps = 0;
+  const env = envFor(cli, { sleep: async () => { if (cli.dialog && ++sleeps === 1000) { cli.dialog = null; cli.draft = [{ t: 'typed meanwhile' }]; } } });
+  const left = [];
+  const r = await runDrop({ dirs: ['C:\\a'], text: '', env, onDraftLeft: (t) => left.push(t) });
+  await r.late;
+  assert.strictEqual(boxNow(cli), 'typed meanwhile my draft');
+  assert.deepStrictEqual(left, []);
+});
+
+test('R2-2: the dialog is never answered (30 minutes): the draft is handed back for the notice that stays, with its text, exactly once', async () => {
+  const { LATE_WAIT_MS } = require('../host/grant-sequence');
+  assert.ok(LATE_WAIT_MS >= 10 * 60 * 1000, 'a person who is away for longer than the old 4 s toast is still covered');
+  const cli = fakeCli({ draft: [{ t: 'keep me' }] });
+  const left = [];
+  const r = await runDrop({ dirs: ['C:\\a'], text: '', env: envFor(cli), onDraftLeft: (t, why) => left.push([t, why]) });
+  assert.deepStrictEqual(await r.late, { restored: false });
+  assert.deepStrictEqual(left.map(l => l[0]), ['keep me']);
+  assert.match(left[0][1], /minutes/);
+});
+
+test('R2 Medium: a prompt drawn between the draft read and the grant refuses with nothing cleared: no false notice, no doubled draft', async () => {
+  const cli = fakeCli({ draft: [{ t: 'still here' }] });
+  let reads = 0;
+  const base = envFor(cli);
+  const env = { ...base, lines: () => { reads += 1; return reads === 2 ? ['● out', RULE, 'Do you want to proceed?', '  ❯ 1. Yes', '    2. No', RULE, '  footer'] : cli.lines(); } };
+  const left = []; const failed = [];
+  await runDrop({ dirs: ['C:\\a'], text: 'C:\\a\\x.md ', env, onDraftLeft: t => left.push(t), onFailed: d => failed.push(d) });
+  assert.deepStrictEqual(failed, ['C:\\a']);
+  assert.deepStrictEqual(left, [], 'the draft never left the box, so nothing to hand back');
+  assert.strictEqual(boxNow(cli), 'still here C:\\a\\x.md ', 'typed once, the path after it');
+});
+
+test('R2-2: the notice for a draft left behind stays until dismissed, is selectable, wraps, and has a Copy button (never the 4 s flourish)', () => {
+  const fs = require('fs'); const path = require('path');
+  const page = fs.readFileSync(path.join(__dirname, '..', 'app', 'renderer.js'), 'utf8');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'app', 'renderer.html'), 'utf8');
+  const fn = page.slice(page.indexOf('function showDraftNotice'), page.indexOf('function renderDropNote'));
+  assert.ok(fn.length > 50, 'showDraftNotice exists');
+  assert.doesNotMatch(fn, /setTimeout/, 'no timer removes it');
+  assert.match(fn, /textContent/, 'the draft goes in as text, never as markup');
+  assert.match(fn, /writeClipboard/, 'the Copy button copies through the clipboard bridge');
+  const drop = page.slice(page.indexOf('function renderDropNote'), page.indexOf('// --- key handling'));
+  assert.match(drop, /showDraftNotice\(note\.draftLeft\)/);
+  assert.doesNotMatch(drop, /It read: /, 'the draft text is no longer a flourish line');
+  const css = html.slice(html.indexOf('.draft-notice {'));
+  assert.match(css.slice(0, 900), /user-select:\s*text/);
+  assert.match(css.slice(0, 900), /pre-wrap/);
+  assert.doesNotMatch(css.slice(0, 900), /pointer-events:\s*none/);
+});
+
+test('D1: the prompt not showing when the draft is to be typed back: handed back, nothing typed into the wrong place', async () => {
+  const cli = fakeCli({ draft: [{ t: 'keep this' }] });
+  let calls = 0;
+  const env = answering(cli);
+  const left = [];
+  await runDrop({ dirs: ['C:\\a'], text: 'C:\\a\\x.md ', onDraftLeft: (t, why) => left.push([t, why]),
+    env: { ...env, exclusive: async fn => { calls += 1; if (calls === 2) cli.dialog = ['Do you want to proceed?', '  ❯ 1. Yes', '    2. No']; return fn(); } } });
+  assert.deepStrictEqual(left.map(l => l[0]), ['keep this']);
+  assert.deepStrictEqual(cli.writes.filter(w => w.includes('keep this')), [], 'no text went into the permission prompt');
+});
+
+test('D1 / Y3: the person typed into the emptied box before the draft went back: nothing is lost, the draft follows what they typed, and it is logged', async () => {
+  const cli = fakeCli({ draft: [{ t: 'my draft' }] });
+  const logs = []; const left = [];
+  let calls = 0;
+  const env = answering(cli);
+  await runDrop({ dirs: ['C:\\a'], text: 'C:\\a\\x.md ', onDraftLeft: (t) => left.push(t),
+    env: { ...env, log: l => logs.push(l), exclusive: async fn => { calls += 1; if (calls === 2) cli.draft = [{ t: 'typed meanwhile' }]; return fn(); } } });
+  assert.strictEqual(boxNow(cli), 'typed meanwhile my draft C:\\a\\x.md ');
+  assert.deepStrictEqual(left, [], 'it went back, so no notice');
+  assert.ok(logs.some(l => /typed back/.test(l) && /after what the box held/.test(l)));
+});
+
+test('D3: two folders, the first refused (a dialog is showing), the second reaches the box: the draft is read THEN, and comes back', async () => {
+  const cli = fakeCli({ dialog: ['Do you want to proceed?', '  ❯ 1. Yes', '    2. No'] });
+  let calls = 0;
+  const env = answering(cli);
+  const failed = [];
+  await runDrop({ dirs: ['C:\\a', 'C:\\b'], text: 'C:\\a\\x C:\\b\\y ', onFailed: d => failed.push(d),
+    env: { ...env, exclusive: async fn => { calls += 1; if (calls === 2) { cli.dialog = null; cli.draft = [{ t: 'my draft' }]; } return fn(); } } });
+  assert.deepStrictEqual(failed, ['C:\\a']);
+  assert.deepStrictEqual(cli.submitted, ['/add-dir C:\\b']);
+  assert.strictEqual(boxNow(cli), 'my draft C:\\a\\x C:\\b\\y ');
+});
+
+test('D1 wiring: the host broadcasts a draft that was not put back, and the page shows its text', () => {
+  const fs = require('fs'); const path = require('path');
+  const host = fs.readFileSync(path.join(__dirname, '..', 'host', 'host.js'), 'utf8');
+  const page = fs.readFileSync(path.join(__dirname, '..', 'app', 'renderer.js'), 'utf8');
+  assert.match(host, /onDraftLeft:\s*\(draftText, why\) => tell\(\{ draftLeft: \{ text: draftText, why \} \}\)/);
+  assert.match(page, /note\.draftLeft\.text/);
+  assert.match(page, /Your draft was not put back/);
+});
+
+test('D3: a draft that cannot be read back whole reports every folder from the one it stopped at, once each', async () => {
+  const cli = fakeCli({ rows: 24, draft: Array.from({ length: 15 }, (_, i) => ({ t: `r${i}` })) });
+  const failed = [];
+  await runDrop({ dirs: ['C:\\a', 'C:\\b'], text: 'C:\\a\\x C:\\b\\y ', env: answering(cli), onFailed: d => failed.push(d) });
+  assert.deepStrictEqual(failed, ['C:\\a', 'C:\\b']);
+});
+
+test('measured on the real CLI (134 columns, claude 2.1.319): a mid-word wrap fills 132 columns; word wraps came out at 131 and 127; line breaks are short rows', () => {
+  const { joinRows } = require('../host/grant-sequence');
+  const token = 'T' + 'abcdefghij'.repeat(20);
+  // "❯ see Tabcde...": 132 columns on the first row, the rest on the second
+  const first = ('see ' + token).slice(0, 130);
+  assert.strictEqual(joinRows([first, ('see ' + token).slice(130)], 134), 'see ' + token, 'a 132-column row continues with no space');
+  assert.strictEqual(joinRows(['w'.repeat(129), 'w17xw17xw17x'], 134), 'w'.repeat(129) + ' w17xw17xw17x', 'a 131-column row whose next word does not fit is a wrap at a space');
+  assert.strictEqual(joinRows(['first line here', 'second line', 'third'], 134), 'first line here\nsecond line\nthird');
 });

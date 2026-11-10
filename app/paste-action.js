@@ -34,7 +34,24 @@ function pasteAction(clip) {
   // image. Real text is pasted with its whitespace intact.
   if (text.trim()) return { kind: 'text', text };
   if (clip && clip.hasImage === true) return { kind: 'image', data: IMAGE_PASTE_BYTES };
+  // Files copied in Explorer (BACKLOG #136 (1), Ricardo 2026-11-06: "Act like a drop"): the renderer takes them from a native paste
+  // and sends them down the drop's own path. Last, so a text or image paste is exactly what it was.
+  if (clip && clip.hasFiles === true) return { kind: 'files' };
   return { kind: 'none' };
+}
+
+// Files (from a drop or a pasted file list) -> the drop frame's entries. `pathFor` is the preload's pathForFile
+// (webUtils.getPathForFile: File.path was removed in Electron 32). A folder arrives as a File with no type and a size the OS makes
+// up, so isDirectory is a HINT only: the host stats the path. Files with no path are left out.
+function fileEntries(files, pathFor) {
+  if (typeof pathFor !== 'function' || !files || typeof files.length !== 'number') return [];
+  const out = [];
+  for (const f of Array.from(files)) {
+    let p = '';
+    try { p = pathFor(f) || ''; } catch { p = ''; }
+    if (typeof p === 'string' && p) out.push({ path: p, isDirectory: !(f && f.type) && !(f && f.size > 0) });
+  }
+  return out;
 }
 
 // Plain Ctrl+V on keydown only -- keyup as well would paste twice. Any extra
@@ -106,10 +123,35 @@ function pasteFailureNote(why) {
   return { icon: '⛔', name: 'Ctrl+V could not read the clipboard' + reason };
 }
 
+// What the page's capture-phase `paste` listener does with one paste event (BACKLOG #136 (1); PR #246 Miguel Y2, Dexter D6).
+//   armed      the page asked main for a native paste of copied files in the last 2 s (a files-only clipboard)
+//   fileCount  files on the event; hasText: the event carries plain text; inTerm: the event's target is inside the terminal
+// Answers { act, disarm, notice }:
+//   'ignore'  not ours: the normal paste runs (a text paste is never swallowed, armed or not)
+//   'files'   take it and send the files down the drop's path (the caller says so too when none has a usable path)
+//   'empty'   armed, nothing came back (no files, no text): take it, and SAY so (never silent)
+// An armed paste that carries text and no files is somebody else's text paste: it passes through, and disarms.
+function pasteEventDecision({ armed = false, fileCount = 0, hasText = false, inTerm = false } = {}) {
+  if (fileCount > 0 && (armed || inTerm)) return { act: 'files', disarm: true, notice: null };
+  if (armed && fileCount === 0) {
+    if (hasText) return { act: 'ignore', disarm: true, notice: null };
+    return { act: 'empty', disarm: true, notice: { icon: '⛔', name: 'Ctrl+V found no copied file to paste' } };
+  }
+  return { act: 'ignore', disarm: false, notice: null };
+}
+
+// The note for files that arrived but none of them has a path the drop can use (the preload could not name them).
+function noUsablePathNote() {
+  return { icon: '⛔', name: 'Ctrl+V could not read where the copied file is, so nothing was pasted' };
+}
+
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { pasteAction, isPasteKey, copyKeyAction, selectionVisible, pasteFrame, pasteFailureNote, IMAGE_PASTE_BYTES };
+  module.exports = { pasteAction, fileEntries, isPasteKey, copyKeyAction, selectionVisible, pasteFrame, pasteFailureNote, pasteEventDecision, noUsablePathNote, IMAGE_PASTE_BYTES };
 } else {
+  root.pasteEventDecision = pasteEventDecision;
+  root.noUsablePathNote = noUsablePathNote;
   root.pasteAction = pasteAction;
+  root.fileEntries = fileEntries;
   root.isPasteKey = isPasteKey;
   root.copyKeyAction = copyKeyAction;
   root.selectionVisible = selectionVisible;

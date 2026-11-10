@@ -8,10 +8,11 @@
  *   - every chip is the one shape: the same height (24 px), an icon, a value; the micro-bars are 28 px wide
  *   - no header text is under 12 px
  *   - IBM Plex Sans and JetBrains Mono really load from app/ (document.fonts), and nothing breaks the CSP
- *   - the warnings are ONE chip with a count, and the loading state (HP running) is a dashed chip with no sentence
+ *   - the warnings are ONE chip with a count, and the loading state (the quota reading) is a shimmering dashed chip with no sentence
+ *   - there is no HP heart in the bar (BACKLOG #163, Ricardo 2026-11-06: "Remove it")
  *   - nothing in the header clips at 1280 and up
  *   - the rail is regrouped Work / Repo / Me with two separators between the groups
- * Screenshots: header-<width>.png (the header, with the warnings), header-loading-<width>.png (HP loading), rail-<width>.png (the rail),
+ * Screenshots: header-<width>.png (the header, with the warnings), header-loading-<width>.png (quota reading), rail-<width>.png (the rail),
  * under the output folder.
  *
  * Loads app/renderer.html alone (no host, no claude, no profile). Same two traps as probe-quota-header.js: ELECTRON_RUN_AS_NODE is
@@ -41,7 +42,7 @@ const WIDTHS = [640, 900, 1024, 1280, 1600, 1920];
 const COMPACT_BELOW = 1400;     // under this the chips drop their micro-bars and labels (renderer.html, round 2 of Ricardo's look)
 const heightFor = (width) => (width <= 640 ? 480 : 640);
 // Every chip and button the header must keep showing, however narrow: only the CLI session chips (#status-fields) and the folder (it ellipsizes) may give way.
-const MUST_SHOW = ['#hdr-warn', '.chip-hp', '#tb-resources', '.chip-model', '.chip-effort', '.chip-ctx', '#mode', '#usage', '#quota', '#layout-btn', '#focus-btn', '#shortcuts-btn'];
+const MUST_SHOW = ['#hdr-warn', '#tb-resources', '.chip-model', '.chip-effort', '.chip-ctx', '#mode', '#usage', '#quota', '#layout-btn', '#focus-btn', '#shortcuts-btn'];
 // The two children built to give way (probe-header-fit.js): the folder ellipsizes, and the CLI status chips (opt-in, #27) shrink first.
 const MAY_CLIP = new Set(['title', 'cwd', 'status-fields']);
 // The rail in the dock hides Claude's panel until it is used (app/dock-tree.js HIDDEN_UNTIL_USED), so it is not in the order.
@@ -70,7 +71,6 @@ const FIXTURE = `(() => {
     renderStatusFields({ costUsd: 12.34, linesAdded: 214, linesRemoved: 38, durationMs: 3900000, over200k: false });
   }
   if (typeof renderMode === 'function') renderMode('acceptEdits');
-  renderHealth({ state: 'healthy', fraction: 0.93, passed: 1840, failed: 3, total: 1843, runner: 'node', running: false, tookMs: 52000 });
   const wl = document.getElementById('wt-lock'); wl.hidden = false; wl.textContent = '!'; wl.title = 'No session lock (EPERM): a second window on this worktree would not be stopped';
   const wh = document.getElementById('wt-health'); wh.hidden = false; wh.textContent = '3 behind develop'; wh.title = 'This branch is 3 commits behind develop';
   renderWarnings();
@@ -112,14 +112,15 @@ const MEASURE = `(async () => {
     const px = parseFloat(getComputedStyle(el).fontSize);
     if (px < 12) small.push((el.id || el.className || el.tagName) + ' ' + px);
   }
-  const bars = [...header.querySelectorAll('#hp .track, #quota .meter .track, #usage .milestone .track')].filter(el => el.offsetParent !== null)
+  const noHp = !document.getElementById('hp') && !header.querySelector('.chip-hp, [data-chip-icon="heart-pulse"]') && !/\\bHP\\b/.test(header.textContent);
+  const bars = [...header.querySelectorAll('#quota .meter .track, #usage .milestone .track')].filter(el => el.offsetParent !== null)
     .map(el => Math.round(el.getBoundingClientRect().width));
   const fonts = {
     loaded: [...document.fonts].filter(f => f.status === 'loaded').map(f => f.family.replace(/"/g, '') + ' ' + f.weight) };
   const warn = document.getElementById('hdr-warn');
   const sfChips = [...document.querySelectorAll('#status-fields .sf-chip')].map(c => c.textContent.trim());
   return JSON.stringify({ vw, must, resSvg, usageTitle: document.getElementById('usage').title, grpTitles: [...document.querySelectorAll('#usage .grp')].map(g => g.title), kids, chips, widths, small, bars, fonts,
-    dollar: header.textContent.includes('$'), sfChips,
+    dollar: header.textContent.includes('$'), sfChips, noHp,
     warn: { hidden: warn.hidden, text: document.getElementById('hdr-warn-n').textContent, title: warn.title },
     uiFont: getComputedStyle(document.body).fontFamily, csp: window.__csp });
 })()`;
@@ -184,6 +185,7 @@ app.on('ready', async () => {
       check(m.grpTitles.length > 0 && m.grpTitles.every(t => /Every session/.test(t)), "each usage group's own hover carries the project total");
       check(m.resSvg === 0, 'the resources chip draws no graphs in the header (figures only)');
       check(!m.dollar, 'no "$" anywhere in the header');
+      check(m.noHp === true, 'no HP heart in the bar: no #hp, no heart icon, no "HP" text (#163)');
       check(m.sfChips.length === 2 && m.sfChips.every(t => !t.includes('$')), `session chips are lines and time: ${JSON.stringify(m.sfChips)}`);
       check(m.chips.length >= 8 && new Set(m.chips).size === 1 && m.chips[0] === 24, `${m.chips.length} chips, all ${[...new Set(m.chips)].join('/')} px tall`);
       if (width >= COMPACT_BELOW) check(m.bars.length > 0 && m.bars.every(w => w === 28), `micro-bars are 28 px: ${JSON.stringify(m.bars)}`);
@@ -217,16 +219,11 @@ app.on('ready', async () => {
       check(await win.webContents.executeJavaScript('window.__resPaint(null, null, null)') === '—|—|—', 'the DOM shows the fixture (null, null, null) before the capture'); await sleep(150);
       check((await resOf()).text.replace(/[^—]/g, '') === '———', 'a missing reading is a dash for each metric, never 0');
       check(await win.webContents.executeJavaScript('window.__resPaint(23, 52, 8)') === '23%|52%|8%', 'the DOM shows the fixture (23, 52, 8) before the capture'); await sleep(150);
-      // Loading and unknown: a dashed chip, never a sentence.
-      await win.webContents.executeJavaScript(`renderHealth({ state: 'unknown', fraction: null, runner: 'node', running: true }); true`);
+      // Loading: a shimmering dashed chip with a dash, never a sentence. The quota chip reading is the bar's loading state now that the HP heart is gone (#163).
+      await win.webContents.executeJavaScript(`renderQuota(null); true`);
       await sleep(200);
-      const hp = JSON.parse(await win.webContents.executeJavaScript(`JSON.stringify({ text: document.getElementById('hp').textContent.trim(), dashed: getComputedStyle(document.querySelector('.chip-hp')).borderStyle, shimmer: getComputedStyle(document.querySelector('.chip-hp')).animationName, stale: document.getElementById('hp').classList.contains('stale') })`));
-      check(hp.dashed === 'dashed' && hp.shimmer === 'chip-shimmer' && !/[a-z]{4,}/i.test(hp.text.replace(/^HP/, '')), `running HP is a shimmering dashed chip with no sentence: ${JSON.stringify(hp)}`);
-      check(hp.stale && hp.text.includes('1840/1843'), 'a running HP keeps its last known value, dimmed');
-      await win.webContents.executeJavaScript(`renderHealth({ state: 'unknown', fraction: null, runner: 'node', running: false }); true`);
-      const hu = JSON.parse(await win.webContents.executeJavaScript(`JSON.stringify({ dashed: getComputedStyle(document.querySelector('.chip-hp')).borderStyle, shimmer: getComputedStyle(document.querySelector('.chip-hp')).animationName })`));
-      check(hu.dashed === 'dashed' && hu.shimmer === 'none', `an unknown HP is dashed and still: ${JSON.stringify(hu)}`);
-      await win.webContents.executeJavaScript(`renderHealth({ state: 'unknown', fraction: null, runner: 'node', running: true }); true`);
+      const ql = JSON.parse(await win.webContents.executeJavaScript(`JSON.stringify({ text: document.getElementById('quota').textContent.trim(), loading: document.getElementById('quota').classList.contains('is-loading'), dashed: getComputedStyle(document.getElementById('quota')).borderStyle, shimmer: getComputedStyle(document.getElementById('quota')).animationName })`));
+      check(ql.loading && ql.dashed === 'dashed' && ql.shimmer === 'chip-shimmer' && ql.text === '—', `a reading quota is a shimmering dashed chip with a dash and no sentence: ${JSON.stringify(ql)}`);
       await shot(win, { x: 0, y: 0, width, height: 44 }, path.join(OUT_DIR, `header-loading-${width}.png`));
       const rail = JSON.parse(await win.webContents.executeJavaScript(RAIL));
       check(rail.found && rail.seps === 2 && rail.sepRoles, `the rail has two separators: ${rail.found ? rail.order.join(' ') : 'no rail'}`);

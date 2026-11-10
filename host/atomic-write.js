@@ -61,11 +61,6 @@
 // cannot be extended from the outside.
 const TRANSIENT = new Set(['EPERM', 'EACCES', 'EBUSY']);
 
-// A frozen snapshot for anyone who needs to SEE the policy (tests, reports)
-// without being able to change it. An array copy, so mutating it affects
-// nothing.
-const TRANSIENT_CODES = Object.freeze([...TRANSIENT]);
-
 const fs = require('fs');
 const fsp = require('fs/promises');
 
@@ -228,5 +223,5 @@ function writeFileAtomic(file, data, {
 // `sleepSync` is, because verify/probe-atomic-sleep.js measures it directly.
 module.exports = {
   renameWithRetry, renameWithRetryAsync, writeFileAtomic, sleepSync,
-  isTransient, nextWait, TRANSIENT_CODES, ATTEMPTS, FIRST_WAIT_MS,
+  isTransient, nextWait, ATTEMPTS, FIRST_WAIT_MS,
 };

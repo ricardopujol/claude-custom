@@ -95,17 +95,6 @@ function placeholderFor(agent) {
   return { kind: 'placeholder', tier: 'text', agent: name, initials, hue: hashString(name) % 360 };
 }
 
-function listStates({ portraitsDir } = {}) {
-  if (portraitsDir) {
-    try {
-      const raw = fs.readFileSync(path.join(portraitsDir, 'states.json'), 'utf8');
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.length) return parsed;
-    } catch { /* unconfigured is the normal case */ }
-  }
-  return [...BUILTIN_STATES];
-}
-
 // The one filesystem probe every tier does: does `<dir>/<base>.<ext>` exist,
 // for some ext in the allow-list above? Returns { path, ext } or null so a
 // tier can tell "found nothing" from "found something", without re-deciding
@@ -224,6 +213,6 @@ function portraitFor(agent, state, { portraitsDir, uploadsDir, shippedDir, globa
 }
 
 module.exports = {
-  portraitFor, placeholderFor, listStates, BUILTIN_STATES, NEAREST_STATE, EXTRA_STATES,
+  portraitFor, placeholderFor, BUILTIN_STATES, NEAREST_STATE, EXTRA_STATES,
   safeSegment, MEDIA_EXTENSIONS, GLOBAL_AGENT, globalPortrait, isReservedAgent,
 };

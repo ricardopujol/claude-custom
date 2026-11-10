@@ -74,7 +74,7 @@ const tabMarks = require('./tab-marks');
 const { marksFileFor, loadMarks, saveMarks } = require('../host/tab-marks-store');
 const { sanitizeDim } = require('../host/look');
 const { createStore } = require('../host/store');
-const { createUsageCounters } = require('../host/usage-counters');
+const { createUsageCounters, countingOff } = require('../host/usage-counters');
 const { hostEnv } = require('../host/tab-env');
 const { isSideKey, sideHostsOf, laneHostsOf, readerSessionIds } = require('../host/side-session');
 // BACKLOG #119 A5: a tab's plain shell is a host of its own, looked for as a shell host and never as the folder's own.
@@ -176,7 +176,8 @@ const { createIndexingBridge } = require('./indexing-bridge');
 // A probe seam (host/probe-seams.js, uiStateDir) moves these records into the probe's own folder; unset in real use.
 const UI_STATE_DIR = readSeams(process.env).uiStateDir || path.join(__dirname, '..', '.harness', 'state');
 const uiStore = createStore({ dir: UI_STATE_DIR });
-const usageCounters = createUsageCounters({ store: uiStore });       // invisible feature-use counts (host/usage-counters.js); same file the hosts write
+// Invisible feature-use counts (host/usage-counters.js); same file the hosts write. Off when a probe or a test started this main (#97).
+const usageCounters = createUsageCounters({ store: uiStore, off: countingOff(process.env) });
 const UI_KEY = 'look-global';
 const resourceChip = createChipStore(uiStore);
 const gameScores = createScoreStore(uiStore);   // #41: the wait games' bests, install-wide

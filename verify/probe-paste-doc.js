@@ -1,12 +1,14 @@
 'use strict';
 /* BACKLOG #136: pasting a document sends what was typed before it. Real window, real `claude`.
 
-     node verify/probe-paste-doc.js [long] [midturn] [menu] [file] [drop] [grant] [redraw]     (no argument = all)
+     node verify/probe-paste-doc.js [long] [midturn] [menu] [file] [file-idle] [drop] [grant] [draft-rows] [redraw]     (no argument = all)
 
    Types a draft ("DRAFT-BEFORE") into the prompt without Enter, pastes or drops a document, then reads the screen:
    did the draft stay in the prompt (good), or was it submitted (a "> DRAFT-BEFORE" turn above an empty prompt, or the
    spinner)? Exits 1 and prints FAILED: <cases> if any case submitted the draft, sent a raw-CR paste, or (grant cases)
    never reached the CLI's "Add directory" dialog. A submit is interrupted with Esc so it spends next to nothing.
+   `file-idle` is #136 (1): a file copied in Explorer and pasted with Ctrl+V must send ONE drop frame naming it, and its path must end
+   up in the box after the draft (a space between, #136 (3)).
    `grant` is the #136 regression: a drop from outside the project onto a short, 3-row, 6-row, taller-than-the-box,
    hard-newline and cursor-mid-draft draft (PR #223, host/grant-sequence.js).
 
@@ -157,9 +159,15 @@ app.on('ready', async () => {
       // A verdict, not just a printout: nothing the person typed may have reached the model, and a grant must have got as far as the
       // CLI's own "Add directory" dialog (the Enter went out on a read-back that matched).
       const dialogSeen = /Add directory to workspace/.test(scr);
-      const ok = !submitted && !rawCr && (expect !== 'dialog' || dialogSeen);
+      // #136 (1) (Ricardo 2026-11-06: "Act like a drop"): a file copied in Explorer and pasted with Ctrl+V goes down the drop's own path:
+      // the page sends ONE {type:'drop'} frame naming the file, and its path ends up in the box after the draft (with a space, #136 (3)).
+      const dropFrames = f.filter(x => { try { const m = JSON.parse(x); return m.type === 'drop'; } catch { return false; } });
+      const dropNamesFile = !!file && dropFrames.length === 1 && JSON.parse(dropFrames[0]).entries.some(en => en.path === file);
+      const boxText = box.slice(1).join(' ').replace(/\s+/g, ' ');
+      const pathInBox = !!file && boxText.includes(path.basename(file)) && /DRAFT-BEFORE \S/.test(boxText);
+      const ok = !submitted && !rawCr && (expect !== 'dialog' || dialogSeen) && (expect !== 'path' || (dropNamesFile && pathInBox));
       if (!ok) failures.push(name);
-      results[name] = { ok, bracketedModeWas: bracketed, frameCount: f.length, rawCr, draftInBox, dialogSeen,
+      results[name] = { ok, bracketedModeWas: bracketed, frameCount: f.length, rawCr, draftInBox, dialogSeen, ...(file ? { dropNamesFile, pathInBox } : {}),
         frames: f.map(esc), submitted, tail: lines.slice(-14) };
       console.log(`[${at()}] ${ok ? 'PASS' : 'FAIL'} ${name} bracketed=${bracketed} frames=${f.length} rawCr=${rawCr} draftInBox=${draftInBox} dialog=${dialogSeen} submitted=${submitted}`);
       if (after) await after();
@@ -190,16 +198,15 @@ app.on('ready', async () => {
         pre: async () => { await typeRaw('/config'); await sleep(600); await typeRaw('\r'); await sleep(2500); } });
     }
     // A document from outside the project (Explorer copy / drag-drop), onto a tab with a draft: BACKLOG #136.
-    if (want('file') || want('drop')) {
+    if (want('file') || want('drop') || only.includes('file-idle')) {
       const dir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'paste-doc-'));
       const docFile = path.join(dir, 'notes.md');
       fs.writeFileSync(docFile, '# Notes\n\nA document.\n');
       const longDraft = 'DRAFT-BEFORE ' + 'word '.repeat(70);   // wraps onto three rows
       const busy = async () => { await typeRaw('Count from 1 to 300, one number per line, no other words.'); await sleep(500); await typeRaw('\r'); await sleep(3500); };
-      if (want('file')) {
-        await pasteCase('file-idle', 'DRAFT-BEFORE', '', { file: docFile });
-        await pasteCase('file-midturn', 'DRAFT-BEFORE', '', { file: docFile, pre: busy, settle: 500 });
-      }
+      // `file-idle` alone is zero-spend (nothing is submitted); `file-midturn` starts a real turn
+      if (want('file') || only.includes('file-idle')) await pasteCase('file-idle', 'DRAFT-BEFORE', '', { file: docFile, expect: 'path' });
+      if (want('file')) await pasteCase('file-midturn', 'DRAFT-BEFORE', '', { file: docFile, pre: busy, settle: 500 });
       if (want('drop')) {
         await pasteCase('drop-idle-short-draft', 'DRAFT-BEFORE', '', { dropFile: docFile });
         await pasteCase('drop-idle-wrapped-draft', longDraft, '', { dropFile: docFile });
@@ -233,6 +240,46 @@ app.on('ready', async () => {
       // The cursor moved back into the draft before the drop.
       if (gwant('grant-cursor-mid-draft')) await pasteCase('grant-cursor-mid-draft', 'DRAFT-BEFORE', '', { dropFile: outsideOf('grant-cursor-mid-draft'), expect: 'dialog',
         typeDraft: async () => { await typeRaw('DRAFT-BEFORE the rest of a sentence'); await sleep(300); await typeRaw('\x1b[D'.repeat(12)); } });
+    }
+    // PR #246 Dexter D2/D4: what the box shows for a soft wrap, a token wider than the box and a real line break (Shift+Enter's bytes), and
+    // whether host/grant-sequence.js draftOf reads each back as what was typed. Types nothing it would submit; the draft is cleared after.
+    if (want('draft-rows')) {
+      const { draftOf } = require(path.join(REPO, 'host', 'grant-sequence'));
+      const cols = await js('term.cols');
+      const termRows = await js('term.rows');
+      // words whose last one ends at content column cols - 4 (the box row is `❯ ` + this = cols - 2 columns)
+      const exactLimitWords = (c) => { const n = Math.floor((c - 4 - 4) / 6); return 'hello '.repeat(n) + 'a'.repeat(c - 4 - 6 * n); };
+      const words = Array.from({ length: 40 }, (_, i) => `w${i}x`.repeat(1 + (i % 3))).join(' ');
+      const token = 'T' + 'abcdefghij'.repeat(Math.ceil((cols * 1.6) / 10));
+      const cases = [
+        ['soft-wrap-words', [words], words],
+        ['token-wider-than-box', ['see ' + token], 'see ' + token],
+        // PR #246 Dexter R2-1: a word that ends EXACTLY at the usable width (cols - 2, prefix included), then a word that does not fit; and a
+        // token that fills the same row mid-word. Do the two next rows differ (a leading blank for the swallowed space)?
+        ['exact-limit-word-wrap', [exactLimitWords(cols) + ' there'], exactLimitWords(cols) + ' there'],
+        ['exact-limit-mid-word', ['z'.repeat(cols - 4 + 20)], 'z'.repeat(cols - 4 + 20)],
+        // joinRows' rule rests on this: a word wider than what is left but narrower than a whole row moves to the next row whole
+        ['word-moves-to-next-row', ['hello '.repeat(10) + 'y'.repeat(cols - 4 - 14) + ' end', ], 'hello '.repeat(10) + 'y'.repeat(cols - 4 - 14) + ' end'],
+        ['hard-breaks',['first line here', '\x1b\r', 'second line', '\x1b\r', 'third'], 'first line here\nsecond line\nthird'],
+      ];
+      for (const [name, parts, typed] of cases) {
+        win.focus(); win.webContents.focus(); await js(`term.focus(); true`);
+        await typeRaw('\x7f'.repeat(600)); await sleep(800);
+        for (const part of parts) { await typeRaw(part); await sleep(250); }
+        await sleep(1200);
+        const lines = (await screen()).split('\n');
+        const rules = lines.map((l, i) => /^─{10,}/.test(l.trim()) ? i : -1).filter(i => i >= 0);
+        const boxRows = rules.length >= 2 ? lines.slice(rules[rules.length - 2] + 1, rules[rules.length - 1]) : [];
+        const ruleLen = rules.length ? lines[rules[rules.length - 1]].trim().length : 0;
+        const got = draftOf(lines, termRows);
+        const ok = got.ok && got.text === typed;
+        console.log(`   [${name}] cols=${cols} ruleLen=${ruleLen} row lengths (prefix included, trailing blanks off)=${JSON.stringify(boxRows.map(r => r.replace(/\s+$/, '').length))} rows=${JSON.stringify(boxRows)}`);
+        console.log(`   [${name}] draftOf=${JSON.stringify(got)}`);
+        results[name] = { ok, cols, ruleLen, rowLengths: boxRows.map(r => r.replace(/\s+$/, '').length), draftOf: got, typed };
+        console.log(`[${at()}] ${ok ? 'PASS' : 'FAIL'} ${name}`);
+        if (!ok) failures.push(name);
+      }
+      await typeRaw('\x7f'.repeat(600)); await sleep(800);
     }
     if (want('redraw')) {
       await pasteCase('after-resize', 'DRAFT-BEFORE', doc(5), { draftFirst: true,
