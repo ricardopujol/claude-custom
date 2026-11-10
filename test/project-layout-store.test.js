@@ -107,16 +107,40 @@ test('the watcher follows the project\'s own file only: another project\'s chang
   const dirA = tmp();
   const a = window_(globalStore, dirA);
   const b = window_(globalStore, tmp());
-  const listeners = [];
+  // A fake file watcher that behaves like fs.watchFile: a change to a file fires only the listeners registered FOR THAT FILE.
+  const watched = new Map();
+  const watchFile = (f, _o, fn) => { watched.set(f, [...(watched.get(f) || []), fn]); };
+  const touch = (f) => { for (const fn of watched.get(f) || []) fn(); };
   const sentToA = [];
-  watchLayout({
+  const stop = watchLayout({
     store: a.store, sync: a.sync, names: TREE_NAMES, send: (ch, v) => sentToA.push([ch, v]),
-    file: a.store.pathOf(TREE_NAMES.key), watchFile: (_f, _o, fn) => listeners.push(fn), unwatchFile: () => {},
+    file: a.store.pathOf(TREE_NAMES.key), watchFile, unwatchFile: (f, fn) => { watched.set(f, (watched.get(f) || []).filter(x => x !== fn)); },
   });
-  b.store.write(TREE_NAMES.key, TREE_B);          // another project's window saves
-  listeners[0]();
-  assert.deepStrictEqual(sentToA, [], 'A\'s window was not told');
+  assert.notStrictEqual(a.store.pathOf(TREE_NAMES.key), b.store.pathOf(TREE_NAMES.key), 'two projects, two files');
+  assert.ok(a.store.pathOf(TREE_NAMES.key).startsWith(dirA), "A's watched file is inside A's own folder");
+  b.store.write(TREE_NAMES.key, TREE_B);          // another project's window saves its own file, and the OS reports that file
+  touch(b.store.pathOf(TREE_NAMES.key));
+  assert.deepStrictEqual(sentToA, [], "A's window was not told");
   a.store.write(TREE_NAMES.key, TREE_A);          // another window of THIS project saves
-  listeners[0]();
+  touch(a.store.pathOf(TREE_NAMES.key));
   assert.deepStrictEqual(sentToA, [[TREE_NAMES.push, TREE_A]]);
+  stop();
+  assert.deepStrictEqual(watched.get(a.store.pathOf(TREE_NAMES.key)), [], 'stopping takes the listener off');
+});
+
+test('a .claude-custom that is a link elsewhere is not read through: the page is told unreadable and the install-wide default does not stand in (Miguel G5)', async () => {
+  const globalStore = createStore({ dir: tmp() });
+  globalStore.write(TREE_NAMES.key, GLOBAL_TREE);
+  const logs = [];
+  const store = createProjectLayoutStore({ project: createStore({ dir: tmp() }), fallback: globalStore, usable: () => false, log: (m) => logs.push(m) });
+  assert.strictEqual(store.readState(TREE_NAMES.key).status, 'unreadable');
+  assert.strictEqual(store.read(TREE_NAMES.key, 'dflt'), 'dflt');
+  assert.ok(logs.length > 0 && /link/.test(logs[0]), 'and says why');
+  const fine = createProjectLayoutStore({ project: createStore({ dir: tmp() }), fallback: globalStore, usable: () => true });
+  assert.strictEqual(fine.readState(TREE_NAMES.key).status, 'ok', 'a usable folder reads as before');
+});
+
+test('main.js gives the store the same foreign-folder guard for reading that prepare gives for writing', () => {
+  const MAIN = fs.readFileSync(path.join(__dirname, '..', 'app', 'main.js'), 'utf8');
+  assert.match(MAIN, /createProjectLayoutStore\(\{[\s\S]{0,300}usable: \(\) => lookDirState\(STATE_ROOT, fs\) !== 'foreign'/);
 });

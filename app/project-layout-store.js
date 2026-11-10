@@ -17,8 +17,14 @@
  * `prepare()` runs before every write: main passes the look folder's guard (a `.claude-custom` that is a link
  * elsewhere is never written through; a fresh one gets its .gitignore). If it throws, nothing is saved.
  */
-function createProjectLayoutStore({ project, fallback, prepare }) {
+function createProjectLayoutStore({ project, fallback, prepare, usable, log = () => {} }) {
+  // `usable()` is the read side of `prepare` (PR #251 Miguel G5): a `.claude-custom` that is a link elsewhere is refused on every
+  // write, so it is not read through either; the page is told "unreadable" (and saves nothing) rather than shown a layout it can't keep.
   function readState(name) {
+    if (typeof usable === 'function' && !usable()) {
+      log(`[layout] ${name}: the project's .claude-custom is a link to somewhere else; its layout is not read`);
+      return { status: 'unreadable', value: null, error: new Error('.claude-custom is a link to somewhere else') };
+    }
     const own = project.readState(name);
     if (own.status !== 'missing') return own;
     return fallback.readState(name);

@@ -1702,13 +1702,12 @@ function registerIpc() {
     pushFaces: (list) => { if (win && !win.isDestroyed()) win.webContents.send(LEAN_FACES_PUSH, list); },
   });
 
-  // The global dock layout (layout pass L1): install-wide like the toggle above,
-  // and followed across project windows the same way -- see layout-bridge.js.
-  // A tab's OWN layout is its host's business, not main's.
+  // The dock layout (layout pass L1, see layout-bridge.js). A tab's OWN layout is its host's business, not main's.
   // BACKLOG #211: the layout is each PROJECT's own, in its `.claude-custom\` (the install-wide file only seeds a project
   // that has none yet), so another project's window is never moved by this one. Presets below stay install-wide.
   const layoutStore = createProjectLayoutStore({
     project: createStore({ dir: lookDir(STATE_ROOT) }), fallback: uiStore,
+    usable: () => lookDirState(STATE_ROOT, fs) !== 'foreign', log: (...a) => console.warn(...a),
     prepare: () => {
       if (lookDirState(STATE_ROOT, fs) === 'foreign') throw new Error('.claude-custom is a link to somewhere else');
       ensureLookDir(STATE_ROOT, fs);

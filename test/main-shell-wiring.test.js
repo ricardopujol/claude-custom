@@ -515,7 +515,7 @@ test('Miguel #4: the tab:raise handler keeps its own comment', () => {
 
 // --- layout pass L1 ----------------------------------------------------------
 
-test('L1: the global layout is served to this window\'s tab views and pushed to all of them', () => {
+test("L1: the project's own layout is served to this window's tab views and pushed to them", () => {
   assert.match(MAIN, /const \{ registerLayoutHandlers, watchLayout, LAYOUT_KEY, TREE_NAMES, PRESET_NAMES \} = require\('\.\/layout-bridge'\);/);
   const at = MAIN.indexOf('registerLayoutHandlers({');
   assert.ok(at !== -1, 'registerLayoutHandlers is called');
