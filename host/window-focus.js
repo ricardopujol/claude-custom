@@ -23,6 +23,7 @@ const path = require('path');
 
 const MAX_LINE = 4096;
 const MAX_CWD = 1024;
+const DEFAULT_IDLE_MS = 5000;
 const DEFAULT_SEND_TIMEOUT_MS = 10_000;
 
 const isPid = (n) => Number.isInteger(n) && n > 0;
@@ -52,13 +53,15 @@ function cleanMessage(raw) {
  * Listen for launches. Resolves { close() } once the pipe is up; rejects when it can't be (the name is taken): the caller then
  * publishes no owner file. `onFocus(msg)` runs AFTER the launch was answered ok, and may wait for the window to be ready.
  */
-function listen({ pid, onFocus, log = () => {} } = {}) {
+function listen({ pid, onFocus, accepting = () => true, idleMs = DEFAULT_IDLE_MS, log = () => {} } = {}) {
   return new Promise((resolve, reject) => {
     const sockets = new Set();
     const server = net.createServer((sock) => {
       sockets.add(sock);
       sock.on('close', () => sockets.delete(sock));
       sock.on('error', () => {});
+      // A connection that goes quiet (never finishes a line) is dropped: it holds a socket for nothing.
+      sock.setTimeout(idleMs, () => { try { sock.destroy(); } catch { /* gone */ } });
       let buf = '';
       let answered = false;
       const reply = (obj) => {
@@ -76,6 +79,10 @@ function listen({ pid, onFocus, log = () => {} } = {}) {
         let msg = null;
         try { msg = cleanMessage(JSON.parse(buf.slice(0, i))); } catch { msg = null; }
         if (!msg) return reply({ ok: false, error: 'not a focus request' });
+        // An owner that is quitting, or whose start never finished, says no: the launch then opens its own window (host/window-claim.js).
+        let open = false;
+        try { open = accepting() === true; } catch { open = false; }
+        if (!open) return reply({ ok: false, error: 'closing' });
         // ACCEPT, THEN ACT. The launch is answered the moment the message is understood; it never waits for this window to finish starting
         // (a window that takes longer than the launch's wait would make the launch open a second one).
         reply({ ok: true });
@@ -87,7 +94,6 @@ function listen({ pid, onFocus, log = () => {} } = {}) {
       server.removeListener('error', reject);
       server.on('error', (err) => log(`[window-focus] ${err && err.message}`));
       resolve({
-        path: pipeNameFor(pid),
         close: () => new Promise((done) => {
           for (const s of sockets) { try { s.destroy(); } catch { /* gone */ } }
           server.close(() => done());
@@ -119,7 +125,11 @@ function send({ pid, msg = {}, timeoutMs = DEFAULT_SEND_TIMEOUT_MS } = {}) {
       buf += d;
       const i = buf.indexOf('\n');
       if (i < 0) return;
-      try { finish(JSON.parse(buf.slice(0, i))); } catch { finish({ ok: false, error: 'unparseable answer' }); }
+      let v;
+      try { v = JSON.parse(buf.slice(0, i)); } catch { return finish({ ok: false, error: 'unparseable answer' }); }
+      // Only the exact { ok: true } is an acceptance; null, arrays and a truthy non-true ok are not (PR #247 Miguel I3).
+      if (v && typeof v === 'object' && !Array.isArray(v) && v.ok === true) finish({ ok: true });
+      else finish({ ok: false, error: (v && typeof v === 'object' && typeof v.error === 'string' && v.error) || 'refused' });
     });
     sock.on('error', (err) => finish({ ok: false, error: `socket error: ${err && err.code || err && err.message}` }));
     sock.on('close', () => finish({ ok: false, error: 'closed before answer' }));
