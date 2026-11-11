@@ -121,7 +121,8 @@ test('nothing compares a sender to the window\'s own webContents except the stri
   assert.strictEqual(uses.length, 1, `only fromStrip may: ${uses.join(' | ')}`);
   assert.match(MAIN, /const isStrip = \(sender\) => [^\n]*sender === win\.webContents/);
   assert.match(MAIN, /const fromStrip = \(event\) => stripOwner\(event\) !== null;/);
-  assert.match(MAIN, /for \(const p of projectWindows\.values\(\)\) if \(p\.isStrip\(event && event\.sender\)\) return p;/);
+  assert.match(MAIN, /function stripOwner\(event\) \{ return registry\.stripOwner\(event\); \}/);
+  assert.match(require('fs').readFileSync(require('path').join(__dirname, '..', 'app', 'project-registry.js'), 'utf8'), /find\(\(p\) => p\.isStrip\(s\)\)/);
   assert.match(MAIN, /const isTabView = \(sender\) => viewOwner\(sender\) !== null;/, 'the gates stay boolean: every bridge requires isSender(...) === true');
 });
 

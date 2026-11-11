@@ -100,18 +100,19 @@ test('every ipcMain handler in main reaches window state through stripOwner(e) /
   }
   assert.deepStrictEqual(leaks, [], 'a handler that names the window directly is a handler a second window breaks');
   // and the two resolvers exist, with gates that stay boolean (every bridge requires isSender(...) === true)
-  assert.match(MAIN, /function stripOwner\(event\) \{/);
-  assert.match(MAIN, /function viewOwner\(sender\) \{/);
+  assert.match(MAIN, /function stripOwner\(event\) \{ return registry\.stripOwner\(event\); \}/);
+  assert.match(MAIN, /function viewOwner\(sender\) \{ return registry\.viewOwner\(sender\); \}/);
   assert.match(MAIN, /const fromStrip = \(event\) => stripOwner\(event\) !== null;/);
   assert.match(MAIN, /const isTabView = \(sender\) => viewOwner\(sender\) !== null;/);
 });
 
-test('projectWindows is the one registry of project windows, with one window made from the launch', () => {
-  assert.strictEqual((MAIN.match(/\bnew Map\(\[\[launchWindow\.root, launchWindow\]\]\)/g) || []).length, 1);
-  assert.strictEqual((MAIN.match(/\bconst projectWindows = /g) || []).length, 1);
-  assert.strictEqual((MAIN.match(/\bcreateProjectWindow\(/g) || []).length, 1, 'main makes one window from the launch');
-  // every place main walks the windows goes through the Map
-  assert.match(MAIN, /function forEachProject\(fn\) \{ for \(const p of projectWindows\.values\(\)\) fn\(p\); \}/);
+test('registry is the one registry of project windows (app/project-registry.js), with the launch window added to it', () => {
+  assert.strictEqual((MAIN.match(/\bconst registry = createProjectRegistry\(\);/g) || []).length, 1);
+  assert.strictEqual((MAIN.match(/^registry\.add\(launchWindow\);/gm) || []).length, 1);
+  assert.doesNotMatch(MAIN, /\bprojectWindows\b/, 'the old Map is gone');
+  assert.strictEqual((MAIN.match(/\bcreateProjectWindow\(/g) || []).length, 1, 'main makes one window from the launch (startProject makes the rest in step 6)');
+  // every place main walks the windows goes through the registry
+  assert.match(MAIN, /function forEachProject\(fn\) \{ registry\.forEach\(fn\); \}/);
   assert.doesNotMatch(MAIN, /\blaunchWindow\b[^;\n]*=\s*null/, 'launchWindow is a const');
 });
 

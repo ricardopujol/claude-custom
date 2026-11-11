@@ -15,6 +15,7 @@
 const { app, BrowserWindow, WebContentsView, Menu, Notification, Tray, clipboard, dialog, ipcMain, nativeImage, safeStorage, session, shell, powerMonitor } = require('electron');
 const { createToastHolder } = require('./toast-holder');
 const { createProjectWindow } = require('./project-window');
+const { createProjectRegistry } = require('./project-registry');
 const { armQuitWatchdog } = require('./quit-watchdog');
 const { createQuitLog, wireQuitLog, markWillQuitEnd } = require('./quit-log');
 // BACKLOG #74 A: the quit's timeline, only when CLAUDE_CUSTOM_QUIT_LOG names a file (verify/probe-quit-linger.js); a no-op otherwise.
@@ -264,18 +265,13 @@ let resources = null;              // the Resources panel's service (#63), built
 let resourceSampler = null;
 const indexingPages = new Set();       // the indexing overlay's pages (toast, list): they get the interface font like the strip does
 
-// Which project window a sender belongs to, or null (single-instance PR 1: the Map has one entry, so these are one lookup; the next lane
-// changes only these bodies). A gate is BOOLEAN, because every bridge requires `isSender(sender) === true` and an object-returning gate
-// would make each of them refuse silently; the owner comes from the resolver, after the gate.
-function stripOwner(event) {
-  for (const p of projectWindows.values()) if (p.isStrip(event && event.sender)) return p;
-  return null;
-}
-function viewOwner(sender) {
-  for (const p of projectWindows.values()) if (p.isTabView(sender)) return p;
-  return null;
-}
-function forEachProject(fn) { for (const p of projectWindows.values()) fn(p); }
+// Which project window a sender belongs to, or null: the resolvers are app/project-registry.js's. A gate is BOOLEAN, because every
+// bridge requires `isSender(sender) === true` and an object-returning gate would make each of them refuse silently; the owner comes
+// from the resolver, after the gate.
+const registry = createProjectRegistry();
+function stripOwner(event) { return registry.stripOwner(event); }
+function viewOwner(sender) { return registry.viewOwner(sender); }
+function forEachProject(fn) { registry.forEach(fn); }
 const fromStrip = (event) => stripOwner(event) !== null;
 const isTabView = (sender) => viewOwner(sender) !== null;
 // Holds each OS toast until it's clicked or closed, so its click can't be lost to garbage collection (#145).
@@ -1069,8 +1065,7 @@ const launchWindow = createProjectWindow({
     setQuitting: (v) => { quitting = v; },
   },
 });
-// root -> project window: exactly one entry today, so exactly one project per process. stripOwner / viewOwner / forEachProject read it.
-const projectWindows = new Map([[launchWindow.root, launchWindow]]);
+registry.add(launchWindow);
 
 app.whenReady().then(async () => {
   console.log('[main] project       :', launchWindow.root, `(${launchWindow.mode})`);
