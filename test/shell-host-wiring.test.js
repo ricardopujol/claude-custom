@@ -22,7 +22,7 @@ test('host.js: a shell host takes no session lock', () => {
 
 test('host.js: the pty runs the picked shell with its (empty) arguments, not claude with claude\'s', () => {
   assert.match(HOST, /const SHELL_TARGET = SHELL \? pickShell\(process\.env\) : null;/);
-  assert.match(HOST, /const spawnPty = \(\) => pty\.spawn\(SHELL \? SHELL_TARGET\.bin : CLAUDE_BIN, SHELL \? SHELL_TARGET\.args : claudeArgs\(\), \{/);     // #166: claudeArgs() is ARGS, plus --continue for a lane's main session (host/continue-flag.js)
+  assert.match(HOST, /const spawnPty = \(\) => pty\.spawn\(SHELL \? SHELL_TARGET\.bin : liveClaudeBin\(\), SHELL \? SHELL_TARGET\.args : claudeArgs\(\), \{/);     // #166: claudeArgs() is ARGS, plus --continue for a lane's main session (host/continue-flag.js)
 });
 
 test('host.js: a shell\'s environment goes through shellEnv and gets no provider, no mod token and no harness session marker', () => {

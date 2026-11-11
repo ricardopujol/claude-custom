@@ -42,6 +42,18 @@ test('prepareMod says whether the version was unreadable (and only then)', () =>
   assert.match(host, /let modVersionUnreadable = false;/);
 });
 
-test('CLAUDE_BIN_EXISTED is read once, at boot, from the resolved path', () => {
-  assert.match(host, /const CLAUDE_BIN_EXISTED = fs\.existsSync\(CLAUDE_BIN\);/);
+test('CLAUDE_BIN_EXISTED is read once, at boot, and an exe missing at boot still counts when the CLI is installed (an update has it gone)', () => {
+  assert.match(host, /const CLAUDE_BIN_EXISTED = claudeLooksInstalled\(\{\s*bin: CLAUDE_BIN, explicit: Boolean\(process\.env\.CLAUDE_CUSTOM_BIN\), exists: fs\.existsSync, home: os\.homedir\(\)/);
+});
+
+test('the pty, the version read and Ask all take the path from the one live function (Dexter 1, Miguel Y1/Y2)', () => {
+  assert.match(host, /const liveClaudeBin = createLiveBin\(\{ initial: CLAUDE_BIN, exists: fs\.existsSync, resolve: resolveClaude, log: \(line\) => console\.log\('\[host\]', line\) \}\);/);
+  const at = host.indexOf('const spawnPty = () =>');
+  const upto = host.indexOf('// The clock just before and just after the spawn');
+  assert.ok(at > 0 && upto > at, 'the spawn markers are still there');
+  assert.match(host.slice(at, upto), /SHELL \? SHELL_TARGET\.bin : liveClaudeBin\(\)/);
+  assert.match(host, /readCliVersion\(liveClaudeBin\(\)\)/, 'prepareMod reads the version from the live path');
+  assert.match(host, /createClaudeAnswerer\(\{ claudeBin: liveClaudeBin, /, 'Ask is handed the function, not a copy of the boot value');
+  assert.ok(host.indexOf('const liveClaudeBin') < host.indexOf('createClaudeAnswerer({ claudeBin'), 'defined before Ask is built');
+  assert.doesNotMatch(host, /readCliVersion\(CLAUDE_BIN\)/);
 });

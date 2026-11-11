@@ -154,7 +154,7 @@ const { createSelfStartTime, isAlive: procAlive, startTimes } = require('./proc-
 const { isSideEnv, siblingSessions } = require('./side-session');
 // BACKLOG #119 A5: a tab's plain shell is a host of its own too (host/shell-tab.js): its pty runs the person's shell, not claude.
 const { isShellEnv, startShellPty, identityFields, FAILED_START_LINGER_MS } = require('./shell-tab');
-const { createBootRetry, settleVersion } = require('./boot-retry');
+const { createBootRetry, settleVersion, claudeLooksInstalled, createLiveBin } = require('./boot-retry');
 const { identitiesIn } = require('./background-hosts');
 // Worktree occupancy (backlog #44 + #47): which worktree each of this session's subagents is working in,
 // as claim files the other windows read. See host/occupancy-producer.js.
@@ -199,8 +199,14 @@ function resolveClaude() {
 }
 
 const CLAUDE_BIN = resolveClaude();
-// Whether the exe was there at boot (BACKLOG #217): only then is a later "not found" an update in progress, not a claude that isn't installed.
-const CLAUDE_BIN_EXISTED = fs.existsSync(CLAUDE_BIN);
+// Whether a claude is installed here at boot (BACKLOG #217): only then is a later "not found" an update in progress, not a claude that
+// isn't installed. The exe alone is not proof: an update has it deleted for a moment, and a tab opened then boots with the bare PATH
+// fallback (measured 2026-11-11), so the CLI's own folders count too (host/boot-retry.js claudeLooksInstalled).
+const CLAUDE_BIN_EXISTED = claudeLooksInstalled({
+  bin: CLAUDE_BIN, explicit: Boolean(process.env.CLAUDE_CUSTOM_BIN), exists: fs.existsSync, home: os.homedir(),
+});
+// The path to run, for the pty, the version read and Ask alike. A boot with no exe left the bare name; once the update has put the exe back, it is found again.
+const liveClaudeBin = createLiveBin({ initial: CLAUDE_BIN, exists: fs.existsSync, resolve: resolveClaude, log: (line) => console.log('[host]', line) });
 const CWD = process.env.CLAUDE_CUSTOM_CWD || process.cwd();
 // A relative CLAUDE_CONFIG_DIR means a folder under THIS tab's cwd (where its `claude` runs), not the host process's.
 setConfigAnchor(CWD);
@@ -516,7 +522,7 @@ const changesNotifier = createChangesNotifier({ announce: (msg) => broadcastCont
 // person's plan (host/ask-claude.js: no tools, no API key in its environment). The index is per worktree, kept under the harness state.
 const askOllama = createAskOllama({ baseUrl: seams.ollamaUrl || undefined });
 const askIndex = createAskIndex({ dir: seams.askIndexDir || path.join(HARNESS_DIR, 'state', 'ask-index'), embed: (t) => askOllama.embed(t), embedModel: askOllama.embedModel });
-const askClaude = createClaudeAnswerer({ claudeBin: CLAUDE_BIN, anchor: CWD });
+const askClaude = createClaudeAnswerer({ claudeBin: liveClaudeBin, anchor: CWD });
 // The explainer joins the roster (BACKLOG #33 gamification): its live state (host/ask-explainer.js, told by the service what happened) and its
 // two counts (host/ask-counts.js, install-wide like the medals). Every window of this host gets them as an `explainer` frame; the page puts it
 // on the roster only once the person has named it.
@@ -1990,7 +1996,7 @@ function startSession() {
   // arrived while blocked or booting only reached termState, which starts at
   // 120x30 and follows every validated resize since.
   const { cols, rows } = termState.size();
-  const spawnPty = () => pty.spawn(SHELL ? SHELL_TARGET.bin : CLAUDE_BIN, SHELL ? SHELL_TARGET.args : claudeArgs(), {
+  const spawnPty = () => pty.spawn(SHELL ? SHELL_TARGET.bin : liveClaudeBin(), SHELL ? SHELL_TARGET.args : claudeArgs(), {
     name: 'xterm-256color',
     cols,
     rows,
@@ -3466,7 +3472,7 @@ async function prepareMod() {
     const enabled = modEnabled({ env: process.env, stateDir: path.join(HARNESS_DIR, 'state') });
     // A stand-in binary asked for with CLAUDE_CUSTOM_MOD=1 has no version worth reading.
     const forced = !!process.env.CLAUDE_CUSTOM_BIN;
-    const version = enabled && !forced ? await readCliVersion(CLAUDE_BIN) : null;
+    const version = enabled && !forced ? await readCliVersion(liveClaudeBin()) : null;
     // Only a read that GAVE NOTHING (an exe half-written by an update) can change on a second look; an old CLI or a mod switched off can't.
     modVersionUnreadable = enabled && !forced && !Array.isArray(version);
     const why = modOffReason({ enabled, version, dir: MOD_DIR, forced });

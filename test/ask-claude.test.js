@@ -284,3 +284,14 @@ test('S9: the child runs in a folder of its own unless one is given', async () =
   await createClaudeAnswerer({ spawn: g.spawn, claudeBin: 'c', env: {}, cwd: 'C:\\mine', killFn: () => true }).generate({ model: 'haiku', system: 's', prompt: 'p' });
   assert.strictEqual(g.calls[0].opts.cwd, 'C:\\mine');
 });
+
+// Dexter 1 / Miguel Y2 (PR #253): claudeBin may be a function, read at each spawn, so an Ask in a tab that booted mid-update follows the live path.
+test('claudeBin as a function is called at every spawn', async () => {
+  const f = fakeSpawn((child) => finish(child, 0, okJson('x')));
+  let bin = 'claude.exe';
+  const a = createClaudeAnswerer({ spawn: f.spawn, claudeBin: () => bin, env: {}, killFn: () => true });
+  await a.generate({ model: 'haiku', system: 's', prompt: 'p' });
+  bin = 'C:\full\claude.exe';
+  await a.generate({ model: 'haiku', system: 's', prompt: 'p' });
+  assert.deepStrictEqual(f.calls.map((c) => c.bin), ['claude.exe', 'C:\full\claude.exe']);
+});

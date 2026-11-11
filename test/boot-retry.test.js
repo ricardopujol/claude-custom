@@ -291,3 +291,73 @@ test('settleVersion: a version that never reads is tried twice more, no more; a 
   assert.strictEqual(prepared, 0);
   assert.strictEqual(slept, 0);
 });
+
+// --- the exe is missing at BOOT (an update has it deleted for a moment): that is an install mid-update, not "never installed" ------
+const path = require('node:path');
+const { claudeLooksInstalled, createLiveBin } = require('../host/boot-retry');
+const HOME = path.join('C:', 'Users', 'u');
+const DATA = path.join(HOME, '.local/share/claude');
+const looks = (existing, over = {}) => claudeLooksInstalled({
+  bin: 'claude.exe', explicit: false, home: HOME,
+  exists: (p) => existing.includes(p), ...over,
+});
+
+test('claudeLooksInstalled: the exe itself being there is enough', () => {
+  assert.strictEqual(looks(['claude.exe']), true);
+});
+
+test("claudeLooksInstalled: the exe missing but the CLI's own data folder there is an update in progress (measured 2026-11-11)", () => {
+  assert.strictEqual(looks([DATA]), true);
+});
+
+test('claudeLooksInstalled: the npm package folder is not a marker (npm moves it aside in the same update that removes the exe)', () => {
+  const seen = [];
+  claudeLooksInstalled({ bin: 'claude.exe', explicit: false, home: HOME, exists: (p) => { seen.push(p); return false; } });
+  assert.deepStrictEqual(seen, ['claude.exe', DATA]);
+});
+
+test('claudeLooksInstalled: nothing of an install anywhere is not installed, so a missing claude still fails at once', () => {
+  assert.strictEqual(looks([]), false);
+});
+
+test('claudeLooksInstalled: a CLAUDE_CUSTOM_BIN that is not there stays a typo, whatever else is installed', () => {
+  const typo = path.join('C:', 'typo', 'claude.exe');
+  const ok = path.join('C:', 'ok', 'claude.exe');
+  assert.strictEqual(looks([DATA], { explicit: true, bin: typo }), false);
+  assert.strictEqual(looks([ok], { explicit: true, bin: ok }), true);
+});
+
+// --- Dexter 1 / Miguel Y1, Y2: every reader of the path (the pty, the version read, Ask) gets the same, live one ----------------------
+const FULL = path.join('C:', 'Users', 'u', '.local', 'bin', 'claude.exe');
+function liveBin({ present = [], resolved = FULL, initial = 'claude.exe' } = {}) {
+  const logs = []; let resolves = 0;
+  const f = createLiveBin({ initial, exists: (p) => present.includes(p), resolve: () => { resolves++; return resolved; }, log: (l) => logs.push(l) });
+  return { f, logs, resolves: () => resolves, present };
+}
+
+test('createLiveBin: a bare boot name that is not there resolves to the real path, once, and says so', () => {
+  const b = liveBin();
+  assert.strictEqual(b.f(), FULL);
+  assert.strictEqual(b.f(), FULL);
+  assert.strictEqual(b.logs.length, 1, 'said once');
+  assert.match(b.logs[0], /claude\.exe/);
+  assert.ok(b.logs[0].includes(FULL));
+});
+
+test('createLiveBin: a path that is there is returned as it is, with no resolving and no line', () => {
+  const b = liveBin({ initial: FULL, present: [FULL] });
+  assert.strictEqual(b.f(), FULL);
+  assert.strictEqual(b.resolves(), 0);
+  assert.deepStrictEqual(b.logs, []);
+});
+
+test('createLiveBin: still nothing to find keeps the name and says nothing', () => {
+  const b = liveBin({ resolved: 'claude.exe' });
+  assert.strictEqual(b.f(), 'claude.exe');
+  assert.deepStrictEqual(b.logs, []);
+});
+
+test('createLiveBin: the version read and Ask share it: one function, one answer (the wiring is pinned in boot-retry-wiring.test.js)', () => {
+  const b = liveBin();
+  assert.strictEqual(b.f(), b.f());
+});

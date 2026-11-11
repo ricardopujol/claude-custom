@@ -1,4 +1,5 @@
 'use strict';
+const path = require('path');
 /**
  * BACKLOG #217: Claude Code's auto-update rewrites claude.exe in place, and a spawn that lands in that window fails (node-pty: "Cannot
  * create process, error code: 216", a truncated exe) and left the tab empty for good. This is the decision (is the failure the "binary
@@ -20,6 +21,39 @@ const PTY_CODE = /error code: (?:216|193|32)\b/;
 const PTY_NOT_FOUND = /^File not found\b/;
 const ALWAYS_CODES = new Set(['EBUSY']);
 const IF_IT_EXISTED_CODES = new Set(['ENOENT', 'EACCES', 'EPERM']);
+
+/**
+ * Is a claude installed here, even if its exe is not on disk this second? An update deletes claude.exe and writes it again, so a tab
+ * opened in that window boots with no exe (measured 2026-11-11: "claude binary : claude.exe", the bare PATH fallback, then "File not
+ * found" and a blank tab for good). The exe being there is the strongest proof; failing that, the CLI's own data folder is (the native
+ * installer keeps it through an update). The npm package folder is not a marker: npm moves it aside in the same update that removes the
+ * exe, so it would vanish together with it (PR #253 Dexter 2). A CLAUDE_CUSTOM_BIN that isn't there is a typo and stays one. All the
+ * filesystem reads are the injected `exists`.
+ */
+function claudeLooksInstalled({ bin, explicit, exists, home }) {
+  if (exists(bin)) return true;
+  if (explicit) return false;
+  return exists(path.join(home, '.local/share/claude'));
+}
+
+/**
+ * The one answer to "which claude do I run": the boot's path while it is there, else resolved again (a boot in an update's gap holds the
+ * bare PATH name, which may not even resolve from the host's environment). The pty spawn, the version read and Ask all call it, so none
+ * of them keeps the boot value (PR #253 Dexter 1, Miguel Y1/Y2). A path that changes is said once.
+ */
+function createLiveBin({ initial, exists, resolve, log }) {
+  let current = initial;
+  return function liveBin() {
+    if (!exists(current)) {
+      const found = resolve();
+      if (found !== current) {
+        log(`claude binary : ${found} (was ${current}, which is not there)`);
+        current = found;
+      }
+    }
+    return current;
+  };
+}
 
 function messageOf(err) {
   if (typeof err === 'string') return err;
@@ -142,6 +176,6 @@ async function settleVersion({ prepare, unreadable, sleep, retries = VERSION_RET
 }
 
 module.exports = {
-  isRetryableSpawnError, nextStep, giveUpLine, createBootRetry, settleVersion,
+  isRetryableSpawnError, nextStep, giveUpLine, createBootRetry, settleVersion, claudeLooksInstalled, createLiveBin,
   RETRY_EVERY_MS, GIVE_UP_AFTER_MS, RETRY_LINE,
 };
