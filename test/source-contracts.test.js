@@ -392,7 +392,7 @@ test('#50 (PR #155 Miguel I3): the reader\'s probe hooks (type, confirmAnswer...
   assert.match(renderer, /case 'repoProbe': \{\s*const r = repoBrowser\.probe\(a\.what, a\);/);
   // that case is inside the view-action switch, which only the probe driver's `view` command reaches, behind a whitelist
   assert.match(read('app', 'tab-shell.js'), /VIEW_PROBE_ACTIONS = new Set\(\[[^\]]*'repoProbe'/);
-  assert.match(read('app', 'main.js').replace(/\r\n/g, '\n'), /if \(PROBE_PORT\) launchWindow\.startProbeDriver\(PROBE_PORT\)/);
+  assert.match(read('app', 'main.js').replace(/\r\n/g, '\n'), /if \(PROBE_PORT\) \{\s*startProbeServer\(\{/);   // single-instance PR 2: one server for the process (app/probe-driver.js)
   // the answer hook is read in exactly one place besides probe(): confirmLeave
   const reader = read('app', 'repo-reader.js');
   const uses = (reader.match(/probeAnswer/g) || []).length;

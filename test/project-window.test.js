@@ -16,7 +16,7 @@ const noop = () => {};
 // Everything main hands a window, as stubs. canvasProbeResolve is deliberately absent: it is undefined in a normal run.
 const stubs = (config = {}) => ({
   electron: { app: {}, BrowserWindow: {}, WebContentsView: {}, Menu: {}, dialog: {}, session: {} },
-  config: { EXPLICIT_PORT: null, STRIP_HEIGHT: 34, POLL_MS: 3000, PROBE_PORT: 0, PROBE_TOKEN: null, PROBE_LINE_MAX: 65536, TRAY_ON: false, ONE_WINDOW_ON: false, ...config },
+  config: { EXPLICIT_PORT: null, STRIP_HEIGHT: 34, POLL_MS: 3000, PROBE_PORT: 0, TRAY_ON: false, ONE_WINDOW_ON: false, ...config },
   services: {
     uiStore: {}, readDim: noop, usageCounters: {}, forProbe: (o) => o, openInBrowser: noop, probeConfirms: [], logShellError: noop,
     canvasAsks: new Map(), nextCanvasAskId: noop, previewProbeProxy: noop, stopHostByPid: noop, occupantAt: noop, tokenFileFor: noop,

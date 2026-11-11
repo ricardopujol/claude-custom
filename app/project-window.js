@@ -1,26 +1,31 @@
 'use strict';
 /**
- * claude-custom :: one project's window, as an object (single-instance PR 1).
+ * claude-custom :: one project's window, as an object (single-instance PR 1; several of them in one process since PR 2).
  *
  * Everything that belongs to ONE project's window used to be a module-level `let` or `const` in app/main.js, because there was
  * exactly one project per Electron process: the launch folder and what it makes of itself (PROJECT, MODE, ...), the BrowserWindow,
  * its tab shell, marks, strip layout, occupancy and transcript scanners, issues, canvas and preview views, dev servers, focus mode,
- * cue and focus state, the close question and the one-window claim. They live here now, in a closure made by
- * createProjectWindow(); main.js keeps a Map of them (projectWindows) with one entry for now, so the next lane can make a second.
- * Behaviour is unchanged: still one project per process.
+ * cue and focus state, the close question and the one-window claim. They live here, in a closure made by createProjectWindow() and
+ * started by its own start(); main.js keeps them in a registry (app/project-registry.js), one per project open in the process.
  *
  * WHAT STAYS IN main.js: every ipcMain registration (ipcMain.handle throws on a second one, so a window never touches ipcMain), the
- * app-wide services (the UI store, the tray, the Resources service and sampler, the secret vault, the indexing bridge, the quit
- * handlers) and the per-process constants. A window is HANDED what it needs:
+ * app-wide services (the UI store, the tray, the Resources service and sampler, the quit handlers), the per-project records and units
+ * it makes for each window (secrets, layout; lean, the indexing overlay) and the per-process constants. A window is HANDED what it needs:
  *
  *   electron   { app, BrowserWindow, WebContentsView, Menu, dialog, session }: this module never requires 'electron', so it loads
  *              under plain `node --test`, and the moved code keeps its text (`win = new BrowserWindow(...)`)
- *   config     per-process constants (EXPLICIT_PORT, STRIP_HEIGHT, POLL_MS, PROBE_PORT, PROBE_TOKEN, ...)
- *   services   app-wide effects the window calls (uiStore, forProbe, openInBrowser, the host helpers, isQuitting / setQuitting, ...)
- *   attach()   the app-wide services that come into being later (resources, trayController, leanBridge, indexing), handed over the
- *              moment main assigns its own binding, so the window sees each become non-null at the same moment main does
+ *   config     per-process constants (EXPLICIT_PORT, STRIP_HEIGHT, POLL_MS, PROBE_PORT, ...); a window that is not the process's own
+ *              launch window is handed EXPLICIT_PORT null (a port-named launch is its own process)
+ *   services   app-wide effects the window calls (uiStore, forProbe, openInBrowser, the host helpers, isQuitting / setQuitting, and
+ *              getResources / getTray / seenChanged / onWindowCreated / onClosed, which it reads live), plus `launch`: true for the
+ *              process's own launch window, which alone holds the one-window claim (the claim pipe is named per pid)
+ *   attach()   this window's OWN lean unit and indexing overlay, handed over before start()
  *
  * Every handed value is required: a missing electron member, config value or service throws at construction, naming itself.
+ *
+ * start() runs the window's phases in the one order they can run: services (the shell), dev servers, the window, the dev servers'
+ * sampling, the first open. startPoll() follows once the window stayed up; dispose() stops what the window runs on its own (its
+ * timers, dev servers, occupancy watchers, claim), and main calls it when a window closes while another stays.
  *
  * MODES (what a launch folder makes of itself; the window's `mode`)
  *   tabs    the launch folder is inside a container project (`<root>dev` + sibling worktrees) and CLAUDE_CUSTOM_PORT is unset:
@@ -31,17 +36,17 @@
  *           keeps working unchanged.
  *
  * main.js reads window state live through getters (win, tabShell, focused, ...): never cache one across an await, because the
- * window's 'closed' handler sets `win = null`. (The launch's constants -- identity, root, mode -- never change and may be read once.) Anything in a handler that needs a window's state reaches it through
- * stripOwner(e) / viewOwner(sender) in main.js, which find the owner in the Map: the seam the next lane widens.
+ * window's 'closed' handler sets `win = null`. (The window's constants -- root, mode, stateRoot -- never change and may be read once.)
+ * Anything in a handler that needs a window's state reaches it through stripOwner(e) / viewOwner(sender) / registry.panelOwner(sender)
+ * in main.js, which find the owner in the registry.
  */
 
 const { tabViewWebPreferences } = require('./tab-view-prefs');
 const { cueFlash } = require('./cue-flash');
 const { readChromeSettings, ensureStatusDefault, viewTop } = require('./window-chrome-bridge');
 const { PUSH_CHANNEL: LEAN_PUSH, FACES_PUSH: LEAN_FACES_PUSH } = require('./lean-bridge');
-const { createShell, handleProbeCommand, probeLineReader, shortcutFor, shortcutWillAct, focusStep, menuText, lanesMenuTemplate, plusMenuTemplate } = require('./tab-shell');
+const { createShell, shortcutFor, shortcutWillAct, focusStep, menuText, lanesMenuTemplate, plusMenuTemplate } = require('./tab-shell');
 const { spawn, execFile } = require('child_process');
-const net = require('net');
 const fs = require('fs');
 const path = require('path');
 const { projectLabel } = require('../host/project-path');
@@ -97,7 +102,7 @@ const { createWindowTimers } = require('./window-timers');
 // instead change behaviour far away (a hidden-to-tray window that never closes on a real quit). canvasProbeResolve is the one
 // service that is legitimately undefined (it's the probe seam, absent in a normal run), so it isn't listed.
 const REQUIRED_ELECTRON = ['app', 'BrowserWindow', 'WebContentsView', 'Menu', 'dialog', 'session'];
-const REQUIRED_CONFIG = ['EXPLICIT_PORT', 'STRIP_HEIGHT', 'POLL_MS', 'PROBE_PORT', 'PROBE_TOKEN', 'PROBE_LINE_MAX', 'TRAY_ON', 'ONE_WINDOW_ON'];
+const REQUIRED_CONFIG = ['EXPLICIT_PORT', 'STRIP_HEIGHT', 'POLL_MS', 'PROBE_PORT', 'TRAY_ON', 'ONE_WINDOW_ON'];
 const REQUIRED_SERVICES = ['uiStore', 'readDim', 'usageCounters', 'forProbe', 'openInBrowser', 'probeConfirms', 'logShellError', 'canvasAsks',
   'nextCanvasAskId', 'previewProbeProxy', 'stopHostByPid', 'occupantAt', 'tokenFileFor', 'ownIdentities', 'ownStartTime', 'waitForHost',
   'HARNESS_DIR', 'INSTALL_DIR', 'listBackground', 'capture', 'stripFileFor', 'isQuitting', 'setQuitting', 'onWindowCreated', 'onClosed', 'getResources', 'getTray', 'seenChanged'];
@@ -117,7 +122,7 @@ function createProjectWindow({ launchCwd, electron, config, services, launch }) 
   // second launch) must not, so a silent default would flip one of them.
   if (typeof launch !== 'boolean') throw new Error('createProjectWindow: launch must be true (this process\'s own launch window) or false');
   const { app, BrowserWindow, WebContentsView, Menu, dialog, session } = electron;
-  const { EXPLICIT_PORT, STRIP_HEIGHT, POLL_MS, PROBE_PORT, PROBE_TOKEN, PROBE_LINE_MAX, TRAY_ON, ONE_WINDOW_ON } = config;
+  const { EXPLICIT_PORT, STRIP_HEIGHT, POLL_MS, PROBE_PORT, TRAY_ON, ONE_WINDOW_ON } = config;
   const {
     uiStore, readDim, usageCounters, forProbe, openInBrowser, probeConfirms, logShellError, canvasProbeResolve, canvasAsks,
     nextCanvasAskId, previewProbeProxy, stopHostByPid, occupantAt, tokenFileFor, ownIdentities, ownStartTime, waitForHost,
@@ -1077,10 +1082,11 @@ function createProjectWindow({ launchCwd, electron, config, services, launch }) 
     }, waitMs);
   }
 
-  // The tab probe's driver (verify/probe-worktree-tabs.js). Does NOTHING unless
-  // CLAUDE_CUSTOM_TABS_PROBE names a port. Newline-JSON over 127.0.0.1 only; the
-  // commands are app/tab-shell.js's handleProbeCommand's and nothing else.
-  function startProbeDriver(port) {
+  // This window's half of the tab probe's driver (verify/probe-worktree-tabs.js): the api handleProbeCommand's commands call. The SERVER is the
+  // process's, one for every window (app/probe-driver.js): several windows can't each listen on PROBE_PORT. Built once, on first use.
+  let probeApiBuilt = null;
+  function probeApi() {
+    if (probeApiBuilt !== null) return probeApiBuilt;
     const labelKey = (label) => {
       const e = tabShell.model().find((x) => x.label === label);
       return e ? e.key : null;
@@ -1169,6 +1175,10 @@ function createProjectWindow({ launchCwd, electron, config, services, launch }) 
         return {
           // verify/probe-one-window.js: how many windows this Electron process has made (one window per project: it must stay 1)
           windows: BrowserWindow.getAllWindows().length,
+          // single-instance PR 2: this window's own focus mode and lean state, so a probe can tell two windows' apart
+          focusMode, lean: leanBridge ? leanBridge.view() : null,
+          // the interface font the strip page was given (an install-wide setting main pushes to EVERY window's strip): verify/probe-two-projects.js
+          fontUi: await win.webContents.executeJavaScript("document.documentElement.style.getPropertyValue('--font-ui')").catch(() => null),
           mode: MODE, selectedKey: snap.selectedKey, tabs: model, hosts, stripDom, stripOccupancy, stripChrome, stripLayout, viewDom, noMenuBar, windowFrame,
           // 1B: the keys main says have a tab, and the Lanes menu's rows (Not started / Merged, with the ones closed by hand)
           stripKeys: snap.strip.map(e => e.key), lanes: snap.lanes,
@@ -1501,21 +1511,8 @@ function createProjectWindow({ launchCwd, electron, config, services, launch }) 
           results: (r.results || []).map(x => ({ port: x.row.port, outcome: x.outcome })) };
       },
     };
-    const server = net.createServer((sock) => {
-      // Capped (Miguel, PR #75 M4): a peer that never sends a newline is cut off.
-      const reader = probeLineReader(PROBE_LINE_MAX);
-      sock.on('data', (d) => {
-        const { lines, overflow } = reader.push(String(d));
-        if (overflow) { sock.destroy(); return; }
-        for (const line of lines) {
-          handleProbeCommand(line, api, PROBE_TOKEN)
-            .then((r) => { try { sock.write(JSON.stringify(r) + '\n'); } catch { /* probe went away */ } });
-        }
-      });
-      sock.on('error', () => {});
-    });
-    server.on('error', (err) => console.error('[main] probe driver:', err.message));
-    server.listen(port, '127.0.0.1', () => console.log(`[main] probe driver listening on ${port}`));
+    probeApiBuilt = api;
+    return api;
   }
 
   // The owner side: a launch came in (and was already answered "accepted": it never waits for this window to start). Once the window is
@@ -1778,7 +1775,7 @@ function createProjectWindow({ launchCwd, electron, config, services, launch }) 
     isUnseen,
     startPoll,
     runScreenshotPath,
-    startProbeDriver,
+    probeApi,
     stopDevServers,
     closeOccupancy,
     dispose,

@@ -91,8 +91,8 @@ test('main.js: a shell tab\'s menu has its shell item and a Close shell that goe
 });
 
 test('main.js: the probe driver clicks the menu a person gets, and a tab\'s x with a real click (Ricardo\'s look, 2026-10-26)', () => {
-  const drv = MAIN.slice(MAIN.indexOf('function startProbeDriver('), MAIN.indexOf('async mouseMove('));
-  assert.match(drv, /Menu\.buildFromTemplate\(tabMenuTemplate\(key\)\)\.items/, 'the popup\'s own template, built by Electron');
+  const drv = MAIN.slice(MAIN.indexOf('function probeApi('), MAIN.indexOf('async mouseMove('));   // the window's half of the probe driver (the server is app/probe-driver.js)
+  assert.match(drv, /Menu\.buildFromTemplate\(tabMenuTemplate\(key\)\)\.items/,'the popup\'s own template, built by Electron');
   assert.match(drv, /if \(!hit\.enabled\) return \{ ok: false, error: `\$\{item\} is disabled`, items \};\s*hit\.click\(\);/, 'a disabled item is not clicked');
   assert.match(drv, /async xClick\(label\) \{ return stripClick\(label, true, \[\]\); \}/);
   assert.match(drv, /async ctrlClick\(label\) \{ return stripClick\(label, false, \['control'\]\); \}/);
@@ -100,7 +100,7 @@ test('main.js: the probe driver clicks the menu a person gets, and a tab\'s x wi
 });
 
 test('main.js: the probe driver clicks the strip alert\'s Stop button with a real input event, and the state says whether it is drawn (#129)', () => {
-  const drv = MAIN.slice(MAIN.indexOf('function startProbeDriver('), MAIN.indexOf('async mouseMove('));
+  const drv = MAIN.slice(MAIN.indexOf('function probeApi('), MAIN.indexOf('async mouseMove('));
   assert.match(drv, /async stopClick\(\) \{ return stripStopClick\(\); \}/);
   assert.match(drv, /const stripStopClick = async \(\) => \{[\s\S]*?querySelector\('#strip-alert \.stop'\)[\s\S]*?sendInputEvent\(\{ type: 'mouseDown', \.\.\.base \}\)/);
   assert.match(drv, /stop: !!document\.querySelector\('#strip-alert \.stop'\)/, 'stripChrome says if the offer is drawn');

@@ -216,8 +216,9 @@ test('the poller runs every 3 s', () => {
 
 test('the probe driver does nothing without its env var, and only listens locally', () => {
   assert.match(MAIN, /const PROBE_PORT = Number\(process\.env\.CLAUDE_CUSTOM_TABS_PROBE\) \|\| 0/);
-  assert.match(MAIN, /if \(PROBE_PORT\) launchWindow\.startProbeDriver\(PROBE_PORT\)/);
-  assert.match(MAIN, /server\.listen\(port, '127\.0\.0\.1'/);
+  // single-instance PR 2: one server for the process (app/probe-driver.js), started only under a probe port; the window offers its api
+  assert.match(MAIN, /if \(PROBE_PORT\) \{\s*startProbeServer\(\{/);
+  assert.match(fs.readFileSync(path.join(__dirname, '..', 'app', 'probe-driver.js'), 'utf8'), /server\.listen\(port, '127\.0\.0\.1'/);
   assert.match(MAIN, /if \(PROBE_PORT\) \{\r?\n\s+probeConfirms\.push\(\{ label: tab\.branch \|\| projectLabel\(tab\.cwd\), reason, unsaved \}\);\r?\n\s+return reason === '';/,
     'the confirm is auto-yes only under the driver, and only for a close that had no reason to ask');
 });

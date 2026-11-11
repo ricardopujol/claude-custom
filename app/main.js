@@ -2,14 +2,17 @@
 /**
  * claude-custom :: Electron main  -- the app-wide half of the tab shell
  *
- * One Electron process, one project window today (one entry in the projectWindows Map). Everything that belongs to ONE project's
- * window (its BrowserWindow, tab shell, marks, occupancy, views, dev servers, focus and cue state, the one-window claim, the
- * launch folder's MODE) lives in app/project-window.js, made by createProjectWindow(); the tabs/single modes are described there.
+ * One Electron process, any number of project windows (single-instance PR 2; one launch is still one process, the app lock is PR 3).
+ * Everything that belongs to ONE project's window (its BrowserWindow, tab shell, marks, occupancy, views, dev servers, focus and cue
+ * state, the one-window claim, the launch folder's MODE) lives in app/project-window.js, made by createProjectWindow() and started by
+ * its own start(); the tabs/single modes are described there. app/project-registry.js is the registry of the windows.
  *
  * This file keeps what is app-wide and what must be registered once per process: every ipcMain handler (each reaches a window
- * through stripOwner(e) / viewOwner(sender), never by naming "the" window), the UI store, the tray, the Resources service and
- * sampler, the secret vault, the indexing bridge, the launch order in whenReady and the quit handlers. The decisions themselves
- * are pure and tested elsewhere (host/tab-lifecycle.js, app/tab-model.js, app/tab-shell.js).
+ * through stripOwner(e) / viewOwner(sender) / registry.panelOwner(sender), or a per-window unit or record found the same way, never by
+ * naming "the" window), the UI store, the tray (it speaks for the first window), the Resources service and sampler (over every window),
+ * the per-project records (secrets, layout: app/project-records.js) and units (lean, indexing overlay), startProject (open a project in
+ * this process), the launch order in whenReady and the quit handlers. The decisions themselves are pure and tested elsewhere
+ * (host/tab-lifecycle.js, app/tab-model.js, app/tab-shell.js).
  */
 
 const { app, BrowserWindow, WebContentsView, Menu, Notification, Tray, clipboard, dialog, ipcMain, nativeImage, safeStorage, session, shell, powerMonitor } = require('electron');
@@ -19,6 +22,7 @@ const { createProjectRegistry } = require('./project-registry');
 const { createPushers } = require('./push-targets');
 const { createBusyGate } = require('./busy-gate');
 const { createSeenGate } = require('./seen-gate');
+const { createAppApi, startProbeServer } = require('./probe-driver');
 const { createProjectRecords } = require('./project-records');
 const { armQuitWatchdog } = require('./quit-watchdog');
 const { createQuitLog, wireQuitLog, markWillQuitEnd } = require('./quit-log');
@@ -1246,7 +1250,7 @@ function makeWindow(cwd, launch) {
     launchCwd: cwd,
     launch,
     electron: { app, BrowserWindow, WebContentsView, Menu, dialog, session },
-    config: { EXPLICIT_PORT: launch ? EXPLICIT_PORT : null, STRIP_HEIGHT, POLL_MS, PROBE_PORT, PROBE_TOKEN, PROBE_LINE_MAX, TRAY_ON, ONE_WINDOW_ON },
+    config: { EXPLICIT_PORT: launch ? EXPLICIT_PORT : null, STRIP_HEIGHT, POLL_MS, PROBE_PORT, TRAY_ON, ONE_WINDOW_ON },
     services: windowServices,
   });
 }
@@ -1344,7 +1348,14 @@ app.whenReady().then(async () => {
 
   // Headless verification path.
   if (process.env.CLAUDE_CUSTOM_SCREENSHOT) launchWindow.runScreenshotPath();
-  if (PROBE_PORT) launchWindow.startProbeDriver(PROBE_PORT);
+  // One probe server for the process (app/probe-driver.js): every command names its window by project root (the launch window when it names none).
+  if (PROBE_PORT) {
+    startProbeServer({
+      port: PROBE_PORT, token: PROBE_TOKEN, lineMax: PROBE_LINE_MAX,
+      appApi: createAppApi({ probePort: PROBE_PORT, token: PROBE_TOKEN, tempRoot: os.tmpdir(), registry, launchWindow, startProject }),
+      windowApi: (root) => { const pw = root === undefined ? registry.get(launchWindow.root) : registry.get(root); return pw ? pw.probeApi() : null; },
+    });
+  }
 }).catch((err) => {
   // A start that threw must not stay the project's owner: every later launch would be handed to a window that never comes up.
   console.error('[main] startup failed:', (err && err.stack) || err);

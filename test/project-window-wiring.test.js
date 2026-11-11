@@ -9,8 +9,10 @@
  *   - main.js keeps no per-project state of its own: its top-level `let`s are an ALLOW-LIST, so a new one has to be argued for
  *   - every ipcMain handler in main reaches a window's state only through stripOwner(e) / viewOwner(sender), never by a bare
  *     `win` / `tabShell` / ... nor through `launchWindow.` (that is "the" window, which is the thing a second window breaks)
- *   - each late service is attached in the statement right after main assigns it
- *   - projectWindows is the one registry, and whenReady runs the window's phases in the order they ran before the move
+ *   - the window's own units (lean, indexing overlay) are attached before it starts; the Resources service and the tray are read live
+ *   - `registry` (app/project-registry.js) is the one registry; whenReady runs the launch in a fixed order and the window's own phases
+ *     are its start() (single-instance PR 2: several windows in one process, so "the" window is named only where it must be)
+ *   - `launchWindow` (the process's own launch window) is named only where the launch is the point: an allow-list of functions below
  *
  * Repo-scanning, so deliberately NOT in Stryker's command.
  */
@@ -132,7 +134,7 @@ test('whenReady runs the launch in this order (single-instance PR 2: the window\
   const ready = MAIN.slice(MAIN.indexOf('app.whenReady().then('));
   const order = ['launchWindow.claim.run()', 'await startResources(seams)', 'Menu.setApplicationMenu(null)', 'registerIpc()', 'startIndexing(seams)', 'startTray()',
     'await startProject(LAUNCH_CWD, { launch: true })', 'launchWindow.claim.markReady()', 'launchWindow.attachOnlyRefusal',
-    'launchWindow.startPoll()', 'launchWindow.runScreenshotPath()', 'launchWindow.startProbeDriver('];
+    'launchWindow.startPoll()', 'launchWindow.runScreenshotPath()', 'startProbeServer({'];
   let from = -1;
   for (const step of order) {
     const at = ready.indexOf(step);
