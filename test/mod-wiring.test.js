@@ -28,7 +28,7 @@ test('the mod is decided by the switch, the CLI\'s version and the directory, be
   assert.match(CODE, /const \[processStartedAt, excluded\] = await Promise\.all\(\[createSelfStartTime\(\)\(\), excludedRanges\(\), prepareMod\(\)\]\);/);
   const prep = CODE.slice(CODE.indexOf('async function prepareMod()'), CODE.indexOf('async function prepareMod()') + 2200);
   assert.match(prep, /modEnabled\(\{ env: process\.env, stateDir: path\.join\(HARNESS_DIR, 'state'\) \}\)/);
-  assert.match(prep, /readCliVersion\(CLAUDE_BIN\)/);
+  assert.match(prep, /readCliVersion\(liveClaudeBin\(\)\)/);
   assert.match(prep, /modOffReason\(\{ enabled, version, dir: MOD_DIR, forced \}\)/);
   assert.match(prep, /modPort = await modServer\.listen\(\);/);
   assert.match(prep, /catch \(err\) \{\s*modPort = null;/, 'a failure leaves the session without the mod, never without a session');
