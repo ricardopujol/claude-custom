@@ -70,7 +70,7 @@ test('open in the browser goes through the one rule links follow (openInBrowser 
 test('the listener sampler is started minimised-aware, stopped and its shell closed at quit', () => {
   assert.match(CODE, /devServers = createDevServersService\(\{\s*exec: devServersExec,/);
   // What the window shows decides it: minimise, restore AND hide/show (the tray), through the pure rule in host/dev-servers.js.
-  assert.match(CODE, /for \(const ev of \['minimize', 'restore', 'hide', 'show'\]\) win\.on\(ev, syncDevServersSampling\);/);
+  assert.match(CODE, /for \(const ev of \['minimize', 'restore', 'hide', 'show'\]\) win\.on\(ev, timers\.guard\('dev-servers sampling', syncDevServersSampling\)\);/);
   // single-instance PR 2: "unseen" is the window's own fact (isUnseen), shared by this sampler and main's Resources gate (seen-gate)
   assert.match(CODE, /return devServersHost\.unseen\(\{ visible: gone \? false : win\.isVisible\(\), minimized: gone \? true : win\.isMinimized\(\) \}\);/);
   assert.match(CODE, /devServers\.setMinimised\(isUnseen\(\)\);/);

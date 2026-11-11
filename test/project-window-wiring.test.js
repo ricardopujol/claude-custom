@@ -168,11 +168,39 @@ test('startProject: the launch window is the process\'s own; any other project i
   assert.match(sp, /const pw = launch \? launchWindow : makeWindow\(cwd, false\);/);
   assert.match(sp, /registry\.get\(pw\.root\);\s*if \(open !== null\) \{ open\.focusWindow\(\); return \{ pw: open, existing: true, first: null \}; \}\s*registry\.add\(pw\);/,
     'a project that already has a window is brought forward, not opened twice');
-  assert.match(sp, /projectRecords\.make\(pw\);\s*makeWindowUnits\(pw\);\s*const first = await pw\.start\(appStart\);/, 'its record and units exist before its window starts');
+  assert.match(sp, /projectRecords\.make\(pw\);\s*makeWindowUnits\(pw\);\s*let first;\s*try \{\s*first = await pw\.start\(appStart\);/, 'its record and units exist before its window starts');
   assert.match(sp, /if \(!launch\) pw\.startPoll\(\);/, 'the launch window\'s poll starts after the claim\'s ready and the launch exits (whenReady)');
   assert.strictEqual((MAIN.match(/\bcreateProjectWindow\(/g) || []).length, 1, 'one maker');
   // per-launch env (plan risk 6): the token and the side-tab switch are only a port-named launch's, and that launch never gets a second window
   assert.match(WINDOW, /process\.env\.CLAUDE_CUSTOM_TOKEN/);
+});
+
+test('close vs quit (P3 at the wiring level): a closed window tells main; main disposes it only when another stays, and drops everything it holds for it', () => {
+  assert.match(WINDOW, /win\.on\('closed', \(\) => \{ win = null; if \(tabShell\) tabShell\.destroy\(\); onClosed\(self\); \}\);/);
+  assert.match(MAIN, /onClosed: \(pw\) => projectClosed\(pw\),/);
+  const closed = bodyAt(MAIN, MAIN.search(/function projectClosed\(/));
+  assert.match(closed, /if \(registry\.closed\(pw\)\) \{\s*projectRecords\.stop\(pw\);\s*windowUnits\.delete\(pw\);/, 'the registry decides (it keeps the last window); main drops the record and units only for a disposed one');
+  assert.match(closed, /unwatch\(\);/, 'its playback watch goes');
+  assert.match(closed, /trayController\.sync\(\)/);
+  assert.match(closed, /windowServices\.seenChanged\(\)/, 'the Resources sampler asks again who is looking');
+  assert.doesNotMatch(closed, /quitting/, 'a quit cancelled by one window\'s prompt has already closed another: it must not stay registered with no window');
+  // the quit path is the last window\'s and is unchanged: window-all-closed quits, the quit handlers stop each window
+  assert.match(MAIN, /app\.on\('window-all-closed', \(\) => \{\s*app\.quit\(\);\s*\}\);/);
+});
+
+test('dispose() stops what a window runs on its own, and the poll and the issue warm-up are guarded timers', () => {
+  const dispose = bodyAt(WINDOW, WINDOW.search(/function dispose\(\)/));
+  for (const piece of ['timers.dispose();', 'stopDevServers();', 'closeOccupancy();', 'windowClaim.stop();']) assert.ok(dispose.includes(piece), `dispose runs ${piece}`);
+  assert.match(WINDOW, /timers\.startPoll\(POLL_MS, \(\) => \{ reloadMarks\(\); tabShell\.poll\(\); \}\);/);
+  assert.match(WINDOW, /timers\.later\('issue list warm-up', 20_000,/);
+  assert.match(WINDOW, /win\.on\(ev, timers\.guard\('dev-servers sampling', syncDevServersSampling\)\);/);
+  assert.doesNotMatch(WINDOW, /\bsetInterval\(/, 'no bare interval: a timer that outlives its window ticks a dead shell');
+});
+
+test('the crash guard: a non-launch project that fails to start costs its own window only; the launch window\'s failure is whenReady\'s', () => {
+  const sp = bodyAt(MAIN, MAIN.search(/async function startProject\(/));
+  assert.match(sp, /\} catch \(err\) \{[\s\S]*?if \(launch\) throw err;[\s\S]*?registry\.remove\(pw\);\s*projectRecords\.stop\(pw\);\s*windowUnits\.delete\(pw\);\s*pw\.dispose\(\);/);
+  assert.match(sp, /return \{ pw: null, existing: false, first: null, error:/);
 });
 
 test('the project window is made after every app-wide constant it is handed (a const read before its line is a TDZ error)', () => {

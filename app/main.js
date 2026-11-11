@@ -1107,11 +1107,10 @@ function giveUiFont(pw) {
     try { w.webContents.executeJavaScript(uiFontScript(readFontSettings(uiStore))).catch(() => {}); } catch { /* the page is going away */ }
   });
 }
-const playbackWatched = new WeakSet();
+const playbackWatched = new Map();      // window -> the function that stops watching it
 function watchPlayback(pw) {
   if (playback === null || !pw.win || playbackWatched.has(pw)) return;
-  playbackWatched.add(pw);
-  playback.watch(pw.win, pushToProject(pw));
+  playbackWatched.set(pw, playback.watch(pw.win, pushToProject(pw)));
 }
 function windowCreated(pw) { giveUiFont(pw); watchPlayback(pw); }
 
@@ -1216,6 +1215,7 @@ const windowServices = {
   isQuitting: () => quitting,
   setQuitting: (v) => { quitting = v; },
   onWindowCreated: (pw) => windowCreated(pw),
+  onClosed: (pw) => projectClosed(pw),
   getResources: () => resources,
   getTray: () => trayController,
   seenChanged: createSeenGate({ registry, getResources: () => resources }),
@@ -1224,6 +1224,23 @@ const windowServices = {
 // The project window (app/project-window.js): everything that is one project's. Made HERE, after every app-wide constant it is handed (a
 // const read before its line is a TDZ error). Construction has no side effects: the claim hooks `exit` inside run(), and the window itself
 // is made by start(). `launch` is this process's own launch window (the one-window claim and an explicit port are its alone, §3.1).
+/**
+ * A window closed. When another window stays, this one is taken out of the registry and disposed (its poll, timers, dev servers, occupancy
+ * watchers and claim stop) and everything main holds for it goes (its record and watchers, its units, its playback watch). The LAST window is
+ * left registered: `window-all-closed` and the quit handlers tear it down exactly as they did when a process held one window. Ignores `quitting`
+ * on purpose: a quit cancelled by one window's unsaved prompt has already closed another, which must not stay registered with no window.
+ */
+function projectClosed(pw) {
+  if (registry.closed(pw)) {
+    projectRecords.stop(pw);
+    windowUnits.delete(pw);
+    const unwatch = playbackWatched.get(pw);
+    if (unwatch) { playbackWatched.delete(pw); unwatch(); }
+  }
+  if (trayController) trayController.sync();     // the count and the tooltip speak for the first window that is left
+  windowServices.seenChanged();                  // ...and the Resources sampler asks again who is looking
+}
+
 function makeWindow(cwd, launch) {
   return createProjectWindow({
     launchCwd: cwd,
@@ -1253,7 +1270,22 @@ async function startProject(cwd, { launch = false } = {}) {
   }
   projectRecords.make(pw);
   makeWindowUnits(pw);
-  const first = await pw.start(appStart);
+  let first;
+  try {
+    first = await pw.start(appStart);
+  } catch (err) {
+    // The crash guard (DESIGN_SINGLE_INSTANCE.md 3.2): a project that fails to start costs ITS window, never the process or the others. The launch
+    // window is the process's own: its failure is whenReady's (it exits), so it is rethrown there.
+    if (launch) throw err;
+    console.error(`[main] ${pw.label}: start failed:`, (err && err.stack) || err);
+    const w = pw.win;
+    registry.remove(pw);
+    projectRecords.stop(pw);
+    windowUnits.delete(pw);
+    pw.dispose();
+    try { if (w && !w.isDestroyed()) w.destroy(); } catch { /* already gone */ }
+    return { pw: null, existing: false, first: null, error: String((err && err.message) || err) };
+  }
   // Started hidden but no icon could be made (no tray area): a window nobody can reach is worse than a visible one.
   const w = pw.win;
   if (trayController && !trayController.state().exists && w && !w.isDestroyed() && !w.isVisible()) pw.focusWindow();

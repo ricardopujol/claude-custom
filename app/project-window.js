@@ -91,6 +91,7 @@ const { menuModel } = require('./background-menu');
 const { menuTemplate, createBackgroundActions, popupUntilClosed, stopAllDetail } = require('./background-actions');
 const { hidesOnClose, startsHidden } = require('./tray-model');
 const { readTraySettings, writeTraySetting } = require('./tray-settings');
+const { createWindowTimers } = require('./window-timers');
 
 // What main must hand a window. A missing one throws AT CONSTRUCTION, naming itself: a silent default (isQuitting () => false) would
 // instead change behaviour far away (a hidden-to-tray window that never closes on a real quit). canvasProbeResolve is the one
@@ -99,7 +100,7 @@ const REQUIRED_ELECTRON = ['app', 'BrowserWindow', 'WebContentsView', 'Menu', 'd
 const REQUIRED_CONFIG = ['EXPLICIT_PORT', 'STRIP_HEIGHT', 'POLL_MS', 'PROBE_PORT', 'PROBE_TOKEN', 'PROBE_LINE_MAX', 'TRAY_ON', 'ONE_WINDOW_ON'];
 const REQUIRED_SERVICES = ['uiStore', 'readDim', 'usageCounters', 'forProbe', 'openInBrowser', 'probeConfirms', 'logShellError', 'canvasAsks',
   'nextCanvasAskId', 'previewProbeProxy', 'stopHostByPid', 'occupantAt', 'tokenFileFor', 'ownIdentities', 'ownStartTime', 'waitForHost',
-  'HARNESS_DIR', 'INSTALL_DIR', 'listBackground', 'capture', 'stripFileFor', 'isQuitting', 'setQuitting', 'onWindowCreated', 'getResources', 'getTray', 'seenChanged'];
+  'HARNESS_DIR', 'INSTALL_DIR', 'listBackground', 'capture', 'stripFileFor', 'isQuitting', 'setQuitting', 'onWindowCreated', 'onClosed', 'getResources', 'getTray', 'seenChanged'];
 
 function requireAll(kind, bag, names) {
   for (const name of names) {
@@ -120,7 +121,7 @@ function createProjectWindow({ launchCwd, electron, config, services, launch }) 
   const {
     uiStore, readDim, usageCounters, forProbe, openInBrowser, probeConfirms, logShellError, canvasProbeResolve, canvasAsks,
     nextCanvasAskId, previewProbeProxy, stopHostByPid, occupantAt, tokenFileFor, ownIdentities, ownStartTime, waitForHost,
-    HARNESS_DIR, INSTALL_DIR, listBackground, capture, stripFileFor, isQuitting, setQuitting, onWindowCreated, getResources, getTray, seenChanged,
+    HARNESS_DIR, INSTALL_DIR, listBackground, capture, stripFileFor, isQuitting, setQuitting, onWindowCreated, onClosed, getResources, getTray, seenChanged,
   } = services;
 
   // --- what this window is ----------------------------------------------------------
@@ -135,6 +136,8 @@ function createProjectWindow({ launchCwd, electron, config, services, launch }) 
   // The name on the window and on every tab's header: the same source the host
   // labels itself from (its PROJECT_ROOT).
   const WINDOW_LABEL = projectLabel(PROJECT_ROOT);
+  // This window's timers (the poll, the issue-list warm-up) and its crash guard: dispose() stops them (app/window-timers.js).
+  const timers = createWindowTimers({ label: WINDOW_LABEL, log: (m) => console.error(m) });
 
   // The app-wide services that exist before any window and are read live: getResources() (the Resources panel's service, #63) and
   // getTray() (the tray icon's one controller) answer null until main has made them. This window's OWN lean unit and indexing overlay come
@@ -481,7 +484,7 @@ function createProjectWindow({ launchCwd, electron, config, services, launch }) 
     win.on('hide', () => { focused = false; seenChanged(); });
     win.on('show', () => { seenChanged(); });
     // The Dev servers sampler follows what the window shows: minimise, restore, and hide/show (the tray) alike (#119 A4).
-    for (const ev of ['minimize', 'restore', 'hide', 'show']) win.on(ev, syncDevServersSampling);
+    for (const ev of ['minimize', 'restore', 'hide', 'show']) win.on(ev, timers.guard('dev-servers sampling', syncDevServersSampling));
     // Windows asks to end the session (log off, shut down): a hidden-to-tray window must not stand in its way.
     win.on('session-end', () => { setQuitting(true); });
     for (const ev of ['resize', 'maximize', 'unmaximize', 'enter-full-screen', 'leave-full-screen']) {
@@ -541,7 +544,9 @@ function createProjectWindow({ launchCwd, electron, config, services, launch }) 
         }
       }).catch(logShellError('window close guard')).finally(() => { closeAsking = false; });
     });
-    win.on('closed', () => { win = null; if (tabShell) tabShell.destroy(); });
+    // Closed: this window has no page left. Main decides what that means for the process (a closed window of several is disposed; the last
+    // one is left for window-all-closed and the quit handlers, which tear it down).
+    win.on('closed', () => { win = null; if (tabShell) tabShell.destroy(); onClosed(self); });
     // The window's own pages are loading (this tick): what main hands each new window at once (the interface font, the playback watch).
     onWindowCreated(self);
     return win;
@@ -1691,16 +1696,27 @@ function createProjectWindow({ launchCwd, electron, config, services, launch }) 
 
   /** The poll and the issue-list warm-up that follow a window which stayed up. */
   function startPoll() {
-    if (MODE === 'tabs') setInterval(() => { reloadMarks(); tabShell.poll(); }, POLL_MS);
+    if (MODE === 'tabs') timers.startPoll(POLL_MS, () => { reloadMarks(); tabShell.poll(); });
     // #119 A6: read the repo's open issues once, a little after the window is up, so a tab whose branch came from an
     // issue already shows its link. Fire and forget: no gh, no login or no network is one dim line later, never a dialog.
     // Not under the probe driver, whose fake gh counts its calls.
-    if (MODE === 'tabs' && !PROBE_PORT) setTimeout(() => { issueService.list(HOST_PROJECT.dev).catch(() => {}); }, 20_000).unref();
+    if (MODE === 'tabs' && !PROBE_PORT) timers.later('issue list warm-up', 20_000, () => issueService.list(HOST_PROJECT.dev).catch(() => {}));
   }
 
   // What the quit handlers ask of every window (main.js forEachProject), each safe to run twice: will-quit fires twice when a quit is held.
   function stopDevServers() { if (devServers) devServers.stop(); if (devServersExec) devServersExec.close(); }
   function closeOccupancy() { if (transcriptOccupancy) transcriptOccupancy.close(); if (occupancyService) occupancyService.close(); }
+
+  /**
+   * Everything this window runs on its own, stopped: its poll and pending timers, the dev servers, the occupancy watchers, its claim. Idempotent.
+   * Main calls it for a window that closed while another stays (the last window is left for the quit handlers, which do the same pieces).
+   */
+  function dispose() {
+    timers.dispose();
+    stopDevServers();
+    closeOccupancy();
+    windowClaim.stop();
+  }
 
   /** Hand over this window's own lean unit and indexing overlay, before start(). An unknown key throws: a typo must not be a silent no-op. */
   function attach(parts) {
@@ -1731,6 +1747,7 @@ function createProjectWindow({ launchCwd, electron, config, services, launch }) 
     get focusMode() { return focusMode; },
     get attachOnlyRefusal() { return attachOnlyRefusal; },
     get devServers() { return devServers; },
+    get pollActive() { return timers.pollActive(); },
     canvasViews,
     previewViews,
     readerUnsaved,
@@ -1764,6 +1781,7 @@ function createProjectWindow({ launchCwd, electron, config, services, launch }) 
     startProbeDriver,
     stopDevServers,
     closeOccupancy,
+    dispose,
   };
   return self;
 }

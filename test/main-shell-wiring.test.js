@@ -196,7 +196,7 @@ test('explicitPort, occupantAt, isHostListening and waitForHost survive', () => 
 
 test('CLAUDE_CUSTOM_PORT keeps a window single-tab, so every existing probe works unchanged', () => {
   assert.match(MAIN, /const MODE = \(PROJECT && PROJECT\.kind === 'container' && EXPLICIT_PORT === null\) \? 'tabs' : 'single'/);
-  assert.match(MAIN, /if \(MODE === 'tabs'\) setInterval\(/);
+  assert.match(MAIN, /if \(MODE === 'tabs'\) timers\.startPoll\(/);   // the window's own guarded timer (app/window-timers.js), cleared by dispose()
 });
 
 test('the worktree list runs with LC_ALL=C and a 5 s timeout, from dev', () => {
@@ -211,7 +211,7 @@ test('the worktree list runs with LC_ALL=C and a 5 s timeout, from dev', () => {
 test('the poller runs every 3 s', () => {
   assert.match(MAIN, /const POLL_MS = 3000/);
   // #40: each poll re-reads the tab marks first, so another window's mark shows by the next one.
-  assert.match(MAIN, /setInterval\(\(\) => \{ reloadMarks\(\); tabShell\.poll\(\); \}, POLL_MS\)/);
+  assert.match(MAIN, /timers\.startPoll\(POLL_MS, \(\) => \{ reloadMarks\(\); tabShell\.poll\(\); \}\)/);
 });
 
 test('the probe driver does nothing without its env var, and only listens locally', () => {

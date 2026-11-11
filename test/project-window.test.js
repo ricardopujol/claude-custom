@@ -21,7 +21,7 @@ const stubs = (config = {}) => ({
     uiStore: {}, readDim: noop, usageCounters: {}, forProbe: (o) => o, openInBrowser: noop, probeConfirms: [], logShellError: noop,
     canvasAsks: new Map(), nextCanvasAskId: noop, previewProbeProxy: noop, stopHostByPid: noop, occupantAt: noop, tokenFileFor: noop,
     ownIdentities: noop, ownStartTime: noop, waitForHost: noop, HARNESS_DIR: 'h', INSTALL_DIR: 'i', listBackground: noop, capture: noop,
-    stripFileFor: noop, isQuitting: () => false, setQuitting: noop, onWindowCreated: noop,
+    stripFileFor: noop, isQuitting: () => false, setQuitting: noop, onWindowCreated: noop, onClosed: noop,
     getResources: () => null, getTray: () => null, seenChanged: noop,
   },
 });
@@ -145,6 +145,19 @@ test('only the launch window holds the claim: a window made for another project 
   // with the rule off for everyone (a probe), the launch window's claim is off too
   const off = make(tmpDir('pw-'), { ONE_WINDOW_ON: false }, true);
   assert.strictEqual(await off.claim.run(), 'proceed');
+});
+
+test('dispose() is idempotent and leaves no poll running (single-instance PR 2, step 7)', () => {
+  const pw = make(tmpDir('pw-'));
+  assert.strictEqual(pw.pollActive, false);
+  assert.doesNotThrow(() => pw.dispose());
+  assert.doesNotThrow(() => pw.dispose());
+  assert.strictEqual(pw.pollActive, false);
+});
+
+test('onClosed is a required service: a closed window must tell main (a silent default would leave a dead window registered)', () => {
+  const d = stubs(); delete d.services.onClosed;
+  assert.throws(() => createProjectWindow({ launchCwd: tmpDir('pw-'), launch: true, ...d }), /missing service "onClosed"/);
 });
 
 test('a window\'s phases are one start(): its parts are not callable from outside', () => {
