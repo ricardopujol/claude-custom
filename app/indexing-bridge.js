@@ -53,9 +53,11 @@ function overlayBounds(part, { width, height, top }, reported) {
   return { x: width - w - 10, y, width: w, height: h };
 }
 
-function createIndexingBridge({
-  ipcMain, Menu, shell, copyText = () => {}, makeView, overlayFile, getWin, isStrip, service, project: initialProject, docsFor, projects,
-  viewTop, focusSelected = () => {}, setFieldFocused = () => {}, journalStamp = () => null, now = Date.now,
+// ONE window's overlay: the state (project, toast, list, views, sizes, lastStamp) and what each channel does to it. It touches no ipcMain:
+// registerIndexingHandlers registers the channels once and hands each message to the overlay of the window it came from.
+function createIndexingOverlay({
+  Menu, shell, copyText = () => {}, makeView, overlayFile, getWin, service, project: initialProject, docsFor, projects,
+  viewTop, focusSelected = () => {}, setFieldFocused = () => {}, now = Date.now,
 }) {
   let project = { ...initialProject };
   let toast = null;              // { id, seq, result }
@@ -70,10 +72,8 @@ function createIndexingBridge({
   let lastStrip = null;
   const lastOverlay = { toast: null, list: null };
   let lastStamp = null;
-  let timer = null;
 
   const win = () => { const w = getWin(); return w && !w.isDestroyed() ? w : null; };
-  const fromStrip = (e) => !!e && isStrip(e.sender) === true;
   const partOf = (e) => {
     if (!e) return null;
     for (const p of ['toast', 'list']) if (views[p] && views[p].webContents === e.sender) return p;
@@ -165,35 +165,31 @@ function createIndexingBridge({
 
   // --- the strip -----------------------------------------------------------------------------------------------------
 
-  ipcMain.handle('strip:indexSubmit', (e, text) => {
-    if (!fromStrip(e)) return null;
+  function submit(text) {
     if (typeof text !== 'string') return { ok: false, reason: 'bad-note' };
     if (text.length > NOTE_MAX) return { ok: false, reason: 'too-long' };
     const r = service.submit(project.root, text);
     if (r && r.ok) { showToast(r.id); push(true); kick(); }
     return r;
-  });
+  }
 
-  ipcMain.on('strip:indexFocus', (e, on) => {
-    if (!fromStrip(e) || typeof on !== 'boolean') return;
+  function focus(on) {
+    if (typeof on !== 'boolean') return;
     setFieldFocused(on);
-  });
+  }
 
-  ipcMain.on('strip:indexLeave', (e) => {
-    if (!fromStrip(e)) return;
+  function leave() {
     focusSelected();
-  });
+  }
 
-  ipcMain.on('strip:indexList', (e) => {
-    if (!fromStrip(e)) return;
+  function toggleList() {
     // A click on the counter while the list is open first blurs the list (closing it); that click must not reopen it.
     if (!listOpen && now() - listClosedByBlurAt < BLUR_REOPEN_MS) return;
     listOpen = !listOpen;
     push(true);
-  });
+  }
 
-  ipcMain.on('strip:indexChip', async (e) => {
-    if (!fromStrip(e)) return;
+  async function chip() {
     let list;
     try { list = await projects(project.root); } catch { list = null; }
     const choices = Array.isArray(list) && list.length ? list : [{ ...project, current: true }];
@@ -205,7 +201,7 @@ function createIndexingBridge({
       checked: samePath(c.root, project.root),
       click: () => { project = { root: c.root, label: c.label }; toast = null; push(true); },
     }))).popup({ window: w });
-  });
+  }
 
   // --- the overlay ---------------------------------------------------------------------------------------------------
 
@@ -219,55 +215,58 @@ function createIndexingBridge({
   };
 
   // Always for the selected project: the service re-derives the backlog from it (Miguel I4, PR #121).
-  ipcMain.handle('indexing:undo', (e, id) => act(e, id, () => service.undo(id, project.root)));
+  const undo = (e, id) => act(e, id, () => service.undo(id, project.root));
 
   // A note's own words onto the clipboard (a note that wasn't filed lives only in the journal), for a note of this
   // project's list only.
-  ipcMain.on('indexing:copy', (e, id) => {
+  const copy = (e, id) => {
     if (partOf(e) === null || !isId(id)) return;
     let row = null;
     try { row = (service.snapshot(project.root).list || []).find(n => n.id === id) || null; } catch { row = null; }
     if (row && typeof row.text === 'string') { try { copyText(row.text); } catch { /* the clipboard is busy */ } }
-  });
+  };
 
-  ipcMain.on('indexing:open', (e, file) => {
+  const open = (e, file) => {
     if (partOf(e) === null || typeof file !== 'string') return;
     const docs = docsFor(project.root);
     if (!docs || docs.ok !== true || !samePath(file, docs.backlog)) return;
     Promise.resolve(shell.openPath(file)).catch(() => {});
-  });
+  };
 
-  ipcMain.on('indexing:dismiss', (e, shownSeq) => {
+  const dismiss = (e, shownSeq) => {
     if (partOf(e) !== 'toast' || !toast || toast.seq !== shownSeq) return;
     let row = null;
     try { row = (service.snapshot(project.root).list || []).find(n => n.id === toast.id) || null; } catch { row = null; }
     if (!toast.result && row && row.state === 'unfiled') toast.hiddenWhileUnfiled = true;
     else toast = null;
     push(true);
-  });
+  };
 
-  ipcMain.on('indexing:size', (e, part, h) => {
+  const size = (e, part, h) => {
     if (partOf(e) !== part || typeof h !== 'number' || !Number.isFinite(h) || h < 0) return;
     sizes[part] = h;
     layout();
-  });
+  };
 
-  ipcMain.on('indexing:closeList', (e) => {
+  const closeList = (e) => {
     if (partOf(e) !== 'list' || !listOpen) return;
     listOpen = false;
     push(true);
     focusSelected();
-  });
+  };
 
-  ipcMain.on('indexing:ready', (e) => {
+  const ready = (e) => {
     const part = partOf(e);
     if (part === null) return;
     lastOverlay[part] = null;
     push(true);
-  });
+  };
 
   return {
     push,
+    partOf,
+    strip: { submit, focus, leave, list: toggleList, chip },
+    page: { undo, copy, open, dismiss, size, closeList, ready },
     raise() {
       const w = win();
       if (!w) return;
@@ -283,14 +282,48 @@ function createIndexingBridge({
     },
     setAccent(hex) { accent = typeof hex === 'string' ? hex : null; push(); },
     relayout: layout,
+    // After the app-wide timer ticked the service: a snapshot reads the journal and the backlog, so only when something may have changed.
+    // lastStamp is THIS overlay's: a second window must still see a change the first one already saw.
+    tick(stamp) {
+      if (stamp === null || stamp !== lastStamp || toast !== null || listOpen) { lastStamp = stamp; push(); }
+    },
+  };
+}
+
+// The twelve channels, registered ONCE for the process. `overlayOfStrip(sender)` is the overlay of the window whose strip page sent it, and
+// `overlayOfPage(sender)` the overlay one of whose own views (toast, list) did; either is null for a page that is not one of ours.
+function registerIndexingHandlers({ ipcMain, overlayOfStrip, overlayOfPage }) {
+  const ofStrip = (e) => (e ? overlayOfStrip(e.sender) : null);
+  const ofPage = (e) => (e ? overlayOfPage(e.sender) : null);
+  ipcMain.handle('strip:indexSubmit', (e, text) => { const o = ofStrip(e); return o ? o.strip.submit(text) : null; });
+  ipcMain.on('strip:indexFocus', (e, on) => { const o = ofStrip(e); if (o) o.strip.focus(on); });
+  ipcMain.on('strip:indexLeave', (e) => { const o = ofStrip(e); if (o) o.strip.leave(); });
+  ipcMain.on('strip:indexList', (e) => { const o = ofStrip(e); if (o) o.strip.list(); });
+  ipcMain.on('strip:indexChip', async (e) => { const o = ofStrip(e); if (o) await o.strip.chip(); });
+  ipcMain.handle('indexing:undo', (e, id) => { const o = ofPage(e); return o ? o.page.undo(e, id) : null; });
+  ipcMain.on('indexing:copy', (e, id) => { const o = ofPage(e); if (o) o.page.copy(e, id); });
+  ipcMain.on('indexing:open', (e, file) => { const o = ofPage(e); if (o) o.page.open(e, file); });
+  ipcMain.on('indexing:dismiss', (e, shownSeq) => { const o = ofPage(e); if (o) o.page.dismiss(e, shownSeq); });
+  ipcMain.on('indexing:size', (e, part, h) => { const o = ofPage(e); if (o) o.page.size(e, part, h); });
+  ipcMain.on('indexing:closeList', (e) => { const o = ofPage(e); if (o) o.page.closeList(e); });
+  ipcMain.on('indexing:ready', (e) => { const o = ofPage(e); if (o) o.page.ready(e); });
+}
+
+// One window, one overlay: the single form (and what test/indexing-bridge.test.js drives). main.js uses the two halves directly.
+function createIndexingBridge({ ipcMain, isStrip, journalStamp = () => null, ...rest }) {
+  const overlay = createIndexingOverlay(rest);
+  let timer = null;
+  registerIndexingHandlers({
+    ipcMain,
+    overlayOfStrip: (sender) => (isStrip(sender) === true ? overlay : null),
+    overlayOfPage: (sender) => (overlay.partOf({ sender }) !== null ? overlay : null),
+  });
+  return {
+    push: overlay.push, raise: overlay.raise, focusField: overlay.focusField, setAccent: overlay.setAccent, relayout: overlay.relayout,
     start(ms = 3000) {
       if (timer) return;
       timer = setInterval(() => {
-        Promise.resolve(service.tick()).catch(() => {}).then(() => {
-          // A snapshot reads the journal and the backlog: only when something may have changed.
-          const stamp = journalStamp();
-          if (stamp === null || stamp !== lastStamp || toast !== null || listOpen) { lastStamp = stamp; push(); }
-        });
+        Promise.resolve(rest.service.tick()).catch(() => {}).then(() => overlay.tick(journalStamp()));
       }, ms);
       if (typeof timer.unref === 'function') timer.unref();
     },
@@ -298,4 +331,4 @@ function createIndexingBridge({
   };
 }
 
-module.exports = { createIndexingBridge, overlayBounds, NOTE_MAX };
+module.exports = { createIndexingBridge, createIndexingOverlay, registerIndexingHandlers, overlayBounds, NOTE_MAX };

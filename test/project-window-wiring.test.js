@@ -27,10 +27,10 @@ const PROJECT_LETS = ['attachOnlyRefusal', 'marks', 'win', 'tabShell', 'issueSer
   'stripWasBusy', 'lastStripAccent', 'closeAsking'];
 const PROJECT_CONSTS = ['readerUnsaved', 'liveViews', 'canvasViews', 'previewViews', 'previewKeyOf', 'stripAccent', 'backgroundActions', 'windowClaim'];
 // The ONLY top-level `let`s main may have: app-wide, one per process. A new one fails here until someone says why it isn't a window's.
-const APP_LETS = ['repoDragIcon', 'resources', 'resourceSampler', 'indexing', 'trayController', 'quitting', 'canvasAskSeq', 'pausedWoken'];
-// The late services a window is handed by attach(), and the statement in main that makes each.
-const LATE = [['trayController', 'trayController = createTrayController({'], ['leanBridge', 'const leanBridge = registerLeanHandlers({'],
-  ['indexing', 'indexing = createIndexingBridge({'], ['resources', 'resources = createResourcesService({']];
+const APP_LETS = ['repoDragIcon', 'resources', 'resourceSampler', 'indexingApp', 'playback', 'trayController', 'quitting', 'canvasAskSeq', 'pausedWoken'];
+// The late app-wide services a window is handed by attach(), and the statement in main that makes each. (A window's OWN lean unit and
+// indexing overlay are made by makeWindowUnits and attached together: pinned in the next test.)
+const LATE = [['trayController', 'trayController = createTrayController({'], ['resources', 'resources = createResourcesService({']];
 
 // The end of the call whose `(` is the first one at or after `at`: string-aware.
 function callEnd(src, at) {
@@ -78,6 +78,17 @@ test('what is app-wide stays in main; a late service is attached in the very nex
     const rest = MAIN.slice(callEnd(MAIN, at));
     assert.match(rest, new RegExp(`^;\\s*launchWindow\\.attach\\(\\{ ${name} \\}\\);`), `nothing may sit between main's ${name} and its attach: the window must see it become non-null at the same moment main does`);
   }
+});
+
+test('a window\'s own lean unit and indexing overlay are made per window and attached together, before the window opens', () => {
+  const body = bodyAt(MAIN, MAIN.indexOf('function makeWindowUnits('));
+  assert.match(body, /const lean = createLeanUnit\(\{/);
+  assert.match(body, /const overlay = makeIndexingOverlay\(pw\);/);
+  assert.match(body, /windowUnits\.set\(pw, \{ lean, overlay \}\);\s*pw\.attach\(\{ leanBridge: lean, indexing: overlay \}\);/, 'the window sees both the moment main has them');
+  const ready = MAIN.slice(MAIN.indexOf('app.whenReady().then('));
+  assert.match(ready, /startIndexing\(seams\);\s*makeWindowUnits\(launchWindow\);/, 'the service exists before the first overlay');
+  assert.ok(ready.search(/makeWindowUnits\(launchWindow\)/) < ready.search(/await launchWindow\.open\(\)/), 'attached before the window opens');
+  assert.match(MAIN, /onWindowCreated: \(pw\) => windowCreated\(pw\),/);
 });
 
 test('main hands the window its quit state as live callbacks, never as a copy', () => {

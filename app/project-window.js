@@ -99,7 +99,7 @@ const REQUIRED_ELECTRON = ['app', 'BrowserWindow', 'WebContentsView', 'Menu', 'd
 const REQUIRED_CONFIG = ['EXPLICIT_PORT', 'STRIP_HEIGHT', 'POLL_MS', 'PROBE_PORT', 'PROBE_TOKEN', 'PROBE_LINE_MAX', 'TRAY_ON', 'ONE_WINDOW_ON'];
 const REQUIRED_SERVICES = ['uiStore', 'readDim', 'usageCounters', 'forProbe', 'openInBrowser', 'probeConfirms', 'logShellError', 'canvasAsks',
   'nextCanvasAskId', 'previewProbeProxy', 'stopHostByPid', 'occupantAt', 'tokenFileFor', 'ownIdentities', 'ownStartTime', 'waitForHost',
-  'HARNESS_DIR', 'INSTALL_DIR', 'listBackground', 'capture', 'stripFileFor', 'isQuitting', 'setQuitting'];
+  'HARNESS_DIR', 'INSTALL_DIR', 'listBackground', 'capture', 'stripFileFor', 'isQuitting', 'setQuitting', 'onWindowCreated'];
 
 function requireAll(kind, bag, names) {
   for (const name of names) {
@@ -117,7 +117,7 @@ function createProjectWindow({ launchCwd, electron, config, services }) {
   const {
     uiStore, readDim, usageCounters, forProbe, openInBrowser, probeConfirms, logShellError, canvasProbeResolve, canvasAsks,
     nextCanvasAskId, previewProbeProxy, stopHostByPid, occupantAt, tokenFileFor, ownIdentities, ownStartTime, waitForHost,
-    HARNESS_DIR, INSTALL_DIR, listBackground, capture, stripFileFor, isQuitting, setQuitting,
+    HARNESS_DIR, INSTALL_DIR, listBackground, capture, stripFileFor, isQuitting, setQuitting, onWindowCreated,
   } = services;
 
   // --- what this window is ----------------------------------------------------------
@@ -462,11 +462,6 @@ function createProjectWindow({ launchCwd, electron, config, services }) {
       const payload = focusPayload();
       forEachView((v) => v.webContents.send('window-focus', payload));
     };
-    const focusSelected = () => {
-      if (indexFieldFocused) return;          // #66: coming back to the window keeps a half-typed note's keyboard
-      const sel = selectedView();
-      if (sel && !sel.webContents.isDestroyed()) { sel.webContents.focus(); lastFocusedView = sel; }
-    };
     win.on('focus', () => {
       focused = true;
       sendFocus();
@@ -542,7 +537,17 @@ function createProjectWindow({ launchCwd, electron, config, services }) {
       }).catch(logShellError('window close guard')).finally(() => { closeAsking = false; });
     });
     win.on('closed', () => { win = null; if (tabShell) tabShell.destroy(); });
+    // The window's own pages are loading (this tick): what main hands each new window at once (the interface font, the playback watch).
+    onWindowCreated(self);
     return win;
+  }
+
+  // Give the selected tab's view the keyboard. Coming back to the window keeps a half-typed indexing note's keyboard (#66) unless
+  // `evenWithField`: the indexing overlay's own leave / close-list say the person is done with the field.
+  function focusSelected({ evenWithField = false } = {}) {
+    if (indexFieldFocused && !evenWithField) return;
+    const sel = selectedView();
+    if (sel && !sel.webContents.isDestroyed()) { sel.webContents.focus(); lastFocusedView = sel; }
   }
 
   // Attention raised from main, not from the page. The renderer's own
@@ -1679,13 +1684,9 @@ function createProjectWindow({ launchCwd, electron, config, services }) {
 
   // What the indexing assistant's overlay asks of this window (its bridge is registered once, in main.js).
   const currentViewTop = () => viewTop({ focusMode, frameless: windowFrameless, stripHeight: STRIP_HEIGHT });
-  function focusSelectedView() {
-    const sel = selectedView();
-    if (sel && !sel.webContents.isDestroyed()) { sel.webContents.focus(); lastFocusedView = sel; }
-  }
   function setIndexFieldFocused(on) { indexFieldFocused = on; }
 
-  return {
+  const self = {
     launchCwd: LAUNCH_CWD,
     project: PROJECT,
     mode: MODE,
@@ -1723,7 +1724,7 @@ function createProjectWindow({ launchCwd, electron, config, services }) {
     showBackgroundMenu,
     focusWindow,
     viewTop: currentViewTop,
-    focusSelected: focusSelectedView,
+    focusSelected,
     setIndexFieldFocused,
     // the phases of the launch, in the order whenReady runs them
     attach,
@@ -1738,6 +1739,7 @@ function createProjectWindow({ launchCwd, electron, config, services }) {
     stopDevServers,
     closeOccupancy,
   };
+  return self;
 }
 
 module.exports = { createProjectWindow };

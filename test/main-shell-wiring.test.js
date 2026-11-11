@@ -137,7 +137,9 @@ test('the bridges that took `win` are handed the tab-view predicate', () => {
   assert.match(MAIN, /registerChromeHandlers\(\{[^}]*isSender: isTabView[^}]*send: pushToAll[^}]*\}\)/);
   assert.match(MAIN, /watchChromeSettings\(\{[\s\S]*?send: pushToAll[\s\S]*?`\$\{CHROME_KEY\}\.json`/);
   // #34: the background video's play inputs (minimised, hidden, on battery), pushed to every view.
-  assert.match(MAIN, /registerPlaybackHandlers\(\{[^}]*powerMonitor[^}]*isSender: isTabView[^}]*send: pushToViews[^}]*\}\)/);
+  // single-instance PR 2: registered once; each window is watched (`playback.watch(pw.win, pushToProject(pw))`), the channel answers the asking page's own window
+  assert.match(MAIN, /playback = registerPlaybackHandlers\(\{ ipcMain, powerMonitor, isSender: isTabView, winOf: /);
+  assert.match(MAIN, /playback\.watch\(pw\.win, pushToProject\(pw\)\)/);
 });
 
 test('the window-wide broadcasts reach EVERY tab view', () => {
@@ -349,10 +351,15 @@ test('R2-4 (Dexter, PR #75): the strip page taking focus means no view has the k
 });
 
 test('F4: the window-focus path records which view it focused, so applySelection does not repeat it', () => {
-  const i = MAIN.indexOf('const focusSelected = ()');
+  // single-instance PR 2 (S3): ONE focusSelected({ evenWithField }) serves the window's focus event and the indexing overlay's leave / close-list
+  const i = MAIN.indexOf('function focusSelected({ evenWithField = false } = {})');
   assert.ok(i !== -1);
-  const body = sliceTo(i, '};');
+  const body = bodyAt(MAIN, i);
   assert.ok(/lastFocusedView\s*=/.test(body));
+  assert.match(body, /if \(indexFieldFocused && !evenWithField\) return;/, 'coming back to the window keeps a half-typed note\'s keyboard, unless the field is being left');
+  assert.match(MAIN, /win\.on\('focus', \(\) => \{[\s\S]*?focusSelected\(\);/, 'the window\'s focus event asks plainly');
+  assert.match(MAIN, /focusSelected: \(\) => pw\.focusSelected\(\{ evenWithField: true \}\)/, 'the overlay\'s leave and close-list ask with evenWithField');
+  assert.doesNotMatch(MAIN, /focusSelectedView/, 'the second copy is gone');
 });
 
 // --- PR 3 -------------------------------------------------------------------------

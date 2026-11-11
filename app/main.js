@@ -34,7 +34,7 @@ const { registerLayoutHandlers, watchLayout, LAYOUT_KEY, TREE_NAMES, PRESET_NAME
 const { registerFontHandlers, FONT_NAMES, uiFontScript, readFontSettings } = require('./fonts-bridge');
 const { registerChromeHandlers, watchChromeSettings, CHROME_KEY } = require('./window-chrome-bridge');
 const { registerPlaybackHandlers } = require('./playback-bridge');
-const { registerLeanHandlers, PUSH_CHANNEL: LEAN_PUSH, FACES_PUSH: LEAN_FACES_PUSH } = require('./lean-bridge');
+const { registerLeanHandlers, createLeanUnit, PUSH_CHANNEL: LEAN_PUSH, FACES_PUSH: LEAN_FACES_PUSH } = require('./lean-bridge');
 const { createLean, unionDismissed } = require('./lean-state');
 const { NO_PORT_ERROR } = require('./tab-shell');
 const fs = require('fs');
@@ -118,7 +118,7 @@ const { createIndexingService } = require('../host/indexing-service');
 const { createJournal } = require('../host/indexing-journal');
 const indexWriter = require('../host/indexing-writer');
 const { projectChoices, readRecentsOffThread } = require('../host/indexing-projects');
-const { createIndexingBridge } = require('./indexing-bridge');
+const { createIndexingOverlay, registerIndexingHandlers } = require('./indexing-bridge');
 
 // Install-wide UI state that belongs to no one project: today only how dark an
 // unfocused window gets. The same .harness/state the host's store uses, under
@@ -285,9 +285,14 @@ const toasts = createToastHolder({
   log: (m) => console.log(m),
 });
 
-// The indexing assistant (#66): main's half (startIndexing); the window gets it through attach(). Whether its field has the
-// keyboard is the window's (indexFieldFocused).
-let indexing = null;
+// The indexing assistant (#66): the app-wide half (startIndexing: the service, the chip's project list, the journal stamp). Each window's own
+// overlay is made with its units (makeWindowUnits) and handed to the window through attach(). Whether its field has the keyboard is the
+// window's (indexFieldFocused).
+let indexingApp = null;
+// The per-window units main makes for a window: its lean state and its indexing overlay. Window -> { lean, overlay }.
+const windowUnits = new Map();
+// Backlog #34's playback bridge: one registration, watched per window (watchPlayback).
+let playback = null;
 
 // The tray icon's one controller (created in whenReady), and whether the app is really quitting: a close then goes through
 // even with "Minimise to tray on close" on.
@@ -845,8 +850,6 @@ function registerIpc() {
   // install-wide "show agent images" toggle, persisted GLOBALLY next to
   // look-global -- see avatar-bridge.js. A push goes to EVERY tab view.
   const avatarSync = {};
-  // One window's views, until the per-project units of steps 4-5 replace each user of it (the layout, the tree, lean, playback).
-  const pushToViews = pushToProject(launchWindow);
   const windowOf = (sender) => { const p = viewOwner(sender); return p ? p.win : null; };   // the asking page's own window (a dialog's parent)
   registerAvatarHandlers({ ipcMain, store: uiStore, dialog, sync: avatarSync, isSender: isTabView, send: pushToAll, parentFor: windowOf });
   // Other project windows are other mains sharing this store: follow their toggle.
@@ -868,28 +871,22 @@ function registerIpc() {
   });
 
   // Backlog #34: the background video plays only while the window is on screen and on mains.
-  // Main reports the facts only it knows (minimised, hidden, on battery); the page decides.
-  registerPlaybackHandlers({ ipcMain, win: launchWindow.win, powerMonitor, isSender: isTabView, send: pushToViews });
+  // Main reports the facts only it knows (minimised, hidden, on battery); the page decides. One registration; each window is watched.
+  playback = registerPlaybackHandlers({ ipcMain, powerMonitor, isSender: isTabView, winOf: (sender) => { const p = viewOwner(sender); return p ? p.win : null; } });
+  registry.forEach(watchPlayback);      // a window made before this ran (every later one is watched from its onWindowCreated)
 
-  // Lean mode (BACKLOG #62): one window-level state, told to every tab page and to the strip. The ☾ button and a
-  // /bedtime night (reported by the tab pages from their host's word) drive it; see app/lean-state.js for the rules.
-  // The nights the person sent Back to normal are kept across a restart (PR #140 Dexter F2), in the same install-wide record as the dim.
-  const leanKept = (uiStore.read(UI_KEY, {}) || {}).leanDismissed;
-  // Lean mode's bridge (app/lean-bridge.js): only the window reads it, through attach().
-  const leanBridge = registerLeanHandlers({
-    lean: createLean({
-      dismissed: Array.isArray(leanKept) ? leanKept : [],
-      onDismissed: (list) => {
-        try { uiStore.update(UI_KEY, {}, (prev) => ({ ...(prev && typeof prev === 'object' ? prev : {}), leanDismissed: unionDismissed(prev && prev.leanDismissed, list) })); }
-        catch (err) { console.error('[main] could not save the dismissed nights:', err && err.message); }
-      },
-    }),
-    ipcMain, isView: isTabView, isStrip: (sender) => fromStrip({ sender }),
-    push: (state) => { pushToViews(LEAN_PUSH, state); const w = launchWindow.win; if (w && !w.isDestroyed()) w.webContents.send(LEAN_PUSH, state); },
-    // the working agents' portraits go to the strip only (it draws them next to the lean chip)
-    pushFaces: (list) => { const w = launchWindow.win; if (w && !w.isDestroyed()) w.webContents.send(LEAN_FACES_PUSH, list); },
+  // Lean mode (BACKLOG #62): each window's own state, told to that window's tab pages and strip (app/lean-bridge.js createLeanUnit, made
+  // by makeWindowUnits). The channels are registered once and each message goes to the unit of the window it came from.
+  registerLeanHandlers({
+    ipcMain,
+    unitOf: (sender) => {
+      const v = viewOwner(sender);
+      if (v !== null) { const u = windowUnits.get(v); return u ? { unit: u.lean, isView: true } : null; }
+      const st = registry.stripOwner({ sender });
+      if (st !== null) { const u = windowUnits.get(st); return u ? { unit: u.lean, isView: false } : null; }
+      return null;
+    },
   });
-  launchWindow.attach({ leanBridge });
 
   // The dock layout and the split tree are each PROJECT's own: registered once, served from the asking page's window's own store
   // (app/project-records.js; the watchers that follow the files are started with the window's record).
@@ -915,10 +912,7 @@ function registerIpc() {
       try { if (wc && !wc.isDestroyed()) wc.executeJavaScript(script).catch(() => {}); } catch { /* the page is going away */ }
     }
   };
-  const giveUiFont = (wc) => wc.on('did-finish-load', () => {
-    try { wc.executeJavaScript(uiFontScript(readFontSettings(uiStore))).catch(() => {}); } catch { /* the page is going away */ }
-  });
-  giveUiFont(launchWindow.win.webContents);
+  registry.forEach(giveUiFont);     // a window made before this ran (every later one gets it from its onWindowCreated)
   registerFontHandlers({ ipcMain, store: uiStore, sync: fontsSync, isSender: isTabView, send: pushFonts });
   watchLayout({
     store: uiStore, sync: fontsSync, names: FONT_NAMES, send: pushFonts,
@@ -1003,7 +997,8 @@ async function capture(wc, file) {
 const stripFileFor = (file) => file.replace(/(\.png)?$/i, '.strip.png');
 
 // --- the indexing assistant (#66) ----------------------------------------------------------
-// One per window, sharing one install-wide journal with the others. The probe seam points it at a throwaway journal.
+// The service and the journal are shared by every window; each window has its own overlay (project, toast, list, views). The probe seam points
+// the journal at a throwaway one.
 function startIndexing(seams) {
   const journalFile = seams.indexingJournal || path.join(HARNESS_DIR, 'state', 'indexing-notes.jsonl');
   const docsFor = (root) => { const p = projectOf(root); return indexWriter.docsOf(p || { root, dev: root }); };
@@ -1025,8 +1020,30 @@ function startIndexing(seams) {
       hasBacklog: (p) => { const d = indexWriter.docsOf(p); return d.ok === true && fs.existsSync(d.backlog); },
     });
   };
-  indexing = createIndexingBridge({
-    ipcMain, Menu, shell,
+  const journalStamp = () => { try { const st = fs.statSync(journalFile); return `${st.size}:${st.mtimeMs}`; } catch { return 'none'; } };
+  indexingApp = { service, docsFor, projects, journalStamp };
+  registerIndexingHandlers({
+    ipcMain,
+    overlayOfStrip: (sender) => { const p = registry.stripOwner({ sender }); const u = p !== null ? windowUnits.get(p) : null; return u ? u.overlay : null; },
+    overlayOfPage: (sender) => { for (const u of windowUnits.values()) if (u.overlay.partOf({ sender }) !== null) return u.overlay; return null; },
+  });
+  // ONE timer for the process: the service ticks once, then each window's overlay decides, by its own last stamp, whether that was news.
+  const timer = setInterval(() => {
+    Promise.resolve(service.tick()).catch(() => {}).then(() => {
+      const stamp = journalStamp();
+      for (const u of windowUnits.values()) u.overlay.tick(stamp);
+    });
+  }, 3000);
+  if (typeof timer.unref === 'function') timer.unref();
+  // Warm the chip's list off-thread, so the first click doesn't wait for it.
+  setTimeout(() => { projects(launchWindow.root).catch(() => {}); }, 15_000).unref();
+}
+
+/** One window's overlay (its own project, toast, list and views) over the shared service. */
+function makeIndexingOverlay(pw) {
+  const { service, docsFor, projects } = indexingApp;
+  return createIndexingOverlay({
+    Menu, shell,
     copyText: (text) => clipboard.writeText(text),
     makeView: () => {
       const v = new WebContentsView({
@@ -1044,23 +1061,58 @@ function startIndexing(seams) {
       return v;
     },
     overlayFile: path.join(__dirname, 'indexing-overlay.html'),
-    getWin: () => launchWindow.win,
-    isStrip: (sender) => fromStrip({ sender }),
+    getWin: () => pw.win,
     service,
-    project: { root: launchWindow.root, label: launchWindow.label },
+    project: { root: pw.root, label: pw.label },
     docsFor,
     projects,
-    viewTop: () => launchWindow.viewTop(),
-    focusSelected: () => launchWindow.focusSelected(),
-    setFieldFocused: (on) => launchWindow.setIndexFieldFocused(on),
-    journalStamp: () => { try { const s = fs.statSync(journalFile); return `${s.size}:${s.mtimeMs}`; } catch { return 'none'; } },
+    viewTop: () => pw.viewTop(),
+    focusSelected: () => pw.focusSelected({ evenWithField: true }),   // the overlay's own leave / close-list: the person is done with the field
+    setFieldFocused: (on) => pw.setIndexFieldFocused(on),
   });
-  launchWindow.attach({ indexing });
-  indexing.start(3000);
-  indexing.push(true);
-  // Warm the chip's list off-thread, so the first click doesn't wait for it.
-  setTimeout(() => { projects(launchWindow.root).catch(() => {}); }, 15_000).unref();
 }
+
+/** What a window gets when main makes it: its lean state and its indexing overlay, handed to the window before anything runs. */
+function makeWindowUnits(pw) {
+  // The nights the person sent Back to normal are kept across a restart (PR #140 Dexter F2), in the same install-wide record as the dim.
+  const leanKept = (uiStore.read(UI_KEY, {}) || {}).leanDismissed;
+  const toViews = pushToProject(pw);
+  const toStrip = (channel, value) => { const w = pw.win; if (w && !w.isDestroyed()) w.webContents.send(channel, value); };
+  const lean = createLeanUnit({
+    lean: createLean({
+      dismissed: Array.isArray(leanKept) ? leanKept : [],
+      onDismissed: (list) => {
+        try { uiStore.update(UI_KEY, {}, (prev) => ({ ...(prev && typeof prev === 'object' ? prev : {}), leanDismissed: unionDismissed(prev && prev.leanDismissed, list) })); }
+        catch (err) { console.error('[main] could not save the dismissed nights:', err && err.message); }
+      },
+    }),
+    push: (state) => { toViews(LEAN_PUSH, state); toStrip(LEAN_PUSH, state); },
+    // the working agents' portraits go to the strip only (it draws them next to the lean chip)
+    pushFaces: (list) => toStrip(LEAN_FACES_PUSH, list),
+  });
+  const overlay = makeIndexingOverlay(pw);
+  windowUnits.set(pw, { lean, overlay });
+  pw.attach({ leanBridge: lean, indexing: overlay });
+  overlay.push(true);
+}
+
+// What a window is handed the moment it is made (its own pages are loading, so this tick): the interface font and the playback watch.
+const fontGiven = new WeakSet();
+function giveUiFont(pw) {
+  const w = pw.win;
+  if (!w || fontGiven.has(pw)) return;
+  fontGiven.add(pw);
+  w.webContents.on('did-finish-load', () => {
+    try { w.webContents.executeJavaScript(uiFontScript(readFontSettings(uiStore))).catch(() => {}); } catch { /* the page is going away */ }
+  });
+}
+const playbackWatched = new WeakSet();
+function watchPlayback(pw) {
+  if (playback === null || !pw.win || playbackWatched.has(pw)) return;
+  playbackWatched.add(pw);
+  playback.watch(pw.win, pushToProject(pw));
+}
+function windowCreated(pw) { giveUiFont(pw); watchPlayback(pw); }
 
 // --- one window per project -------------------------------------------------------------------------------------
 // A second launch of this project is answered by the first window (focus + the lane it named) and ends without a window. The logic is
@@ -1082,6 +1134,7 @@ const launchWindow = createProjectWindow({
     listBackground, capture, stripFileFor,
     isQuitting: () => quitting,
     setQuitting: (v) => { quitting = v; },
+    onWindowCreated: (pw) => windowCreated(pw),
   },
 });
 registry.add(launchWindow);
@@ -1195,6 +1248,7 @@ app.whenReady().then(async () => {
   launchWindow.syncDevServersSampling();       // read AFTER the window exists, and after a start hidden to the tray
   registerIpc();
   startIndexing(seams);
+  makeWindowUnits(launchWindow);          // its lean state and indexing overlay, handed over before the window opens
   startTray();
 
   const first = await launchWindow.open();

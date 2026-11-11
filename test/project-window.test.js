@@ -21,7 +21,7 @@ const stubs = (config = {}) => ({
     uiStore: {}, readDim: noop, usageCounters: {}, forProbe: (o) => o, openInBrowser: noop, probeConfirms: [], logShellError: noop,
     canvasAsks: new Map(), nextCanvasAskId: noop, previewProbeProxy: noop, stopHostByPid: noop, occupantAt: noop, tokenFileFor: noop,
     ownIdentities: noop, ownStartTime: noop, waitForHost: noop, HARNESS_DIR: 'h', INSTALL_DIR: 'i', listBackground: noop, capture: noop,
-    stripFileFor: noop, isQuitting: () => false, setQuitting: noop,
+    stripFileFor: noop, isQuitting: () => false, setQuitting: noop, onWindowCreated: noop,
   },
 });
 const make = (launchCwd, config) => createProjectWindow({ launchCwd, ...stubs(config) });

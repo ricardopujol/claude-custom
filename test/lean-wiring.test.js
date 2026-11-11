@@ -18,9 +18,10 @@ const RENDERER = strip(read('app/renderer.js'));
 const HTML = read('app/renderer.html');
 
 test('main registers the lean handlers for tab views and the strip, and pushes to both', () => {
-  assert.match(MAIN, /registerLeanHandlers\(\{[\s\S]*?isView: isTabView[\s\S]*?isStrip: \(sender\) => fromStrip\(\{ sender \}\)/);
-  assert.match(MAIN, /pushToViews\(LEAN_PUSH, state\)/);
-  assert.match(MAIN, /w\.webContents\.send\(LEAN_PUSH, state\)/);   // the strip: main reads the window live (launchWindow.win) into `w`
+  // single-instance PR 2: registered once, over each window's own unit; the sender says which window and whether it is a tab view or the strip
+  assert.match(MAIN, /registerLeanHandlers\(\{\s*ipcMain,\s*unitOf: \(sender\) => \{[\s\S]*?viewOwner\(sender\)[\s\S]*?isView: true[\s\S]*?registry\.stripOwner\(\{ sender \}\)[\s\S]*?isView: false/);
+  assert.match(MAIN, /push: \(state\) => \{ toViews\(LEAN_PUSH, state\); toStrip\(LEAN_PUSH, state\); \}/, 'a change reaches that window\'s views and strip');
+  assert.match(MAIN, /w\.webContents\.send\(channel, value\)/);   // the strip: main reads the window live (pw.win) into `w`
 });
 
 test('main re-sends a lean state to a page that loads (or reloads) while the window is lean', () => {
