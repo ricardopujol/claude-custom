@@ -20,8 +20,18 @@
  *   attach()   the app-wide services that come into being later (resources, trayController, leanBridge, indexing), handed over the
  *              moment main assigns its own binding, so the window sees each become non-null at the same moment main does
  *
- * main.js reads window state live through getters (win, tabShell, focused, ...): never destructure or cache one across an await,
- * because the window's 'closed' handler sets `win = null`. Anything in a handler that needs a window's state reaches it through
+ * Every handed value is required: a missing electron member, config value or service throws at construction, naming itself.
+ *
+ * MODES (what a launch folder makes of itself; the window's `mode`)
+ *   tabs    the launch folder is inside a container project (`<root>dev` + sibling worktrees) and CLAUDE_CUSTOM_PORT is unset:
+ *           one tab per git worktree, a poller, closable tabs. The window's own page is the tab strip (app/tab-strip.html); each STARTED
+ *           tab is a WebContentsView showing renderer.html against that tab's own detached host.
+ *   single  everything else: a flat repo, a folder in no project, or ANY launch that names its port. One tab on that folder, no close,
+ *           no poller -- exactly what a window was before tabs, so every verify/ probe that launches one host on one folder by port
+ *           keeps working unchanged.
+ *
+ * main.js reads window state live through getters (win, tabShell, focused, ...): never cache one across an await, because the
+ * window's 'closed' handler sets `win = null`. (The launch's constants -- identity, root, mode -- never change and may be read once.) Anything in a handler that needs a window's state reaches it through
  * stripOwner(e) / viewOwner(sender) in main.js, which find the owner in the Map: the seam the next lane widens.
  */
 
@@ -82,13 +92,32 @@ const { menuTemplate, createBackgroundActions, popupUntilClosed, stopAllDetail }
 const { hidesOnClose, startsHidden } = require('./tray-model');
 const { readTraySettings, writeTraySetting } = require('./tray-settings');
 
-function createProjectWindow({ launchCwd, electron = {}, config = {}, services = {} }) {
+// What main must hand a window. A missing one throws AT CONSTRUCTION, naming itself: a silent default (isQuitting () => false) would
+// instead change behaviour far away (a hidden-to-tray window that never closes on a real quit). canvasProbeResolve is the one
+// service that is legitimately undefined (it's the probe seam, absent in a normal run), so it isn't listed.
+const REQUIRED_ELECTRON = ['app', 'BrowserWindow', 'WebContentsView', 'Menu', 'dialog', 'session'];
+const REQUIRED_CONFIG = ['EXPLICIT_PORT', 'STRIP_HEIGHT', 'POLL_MS', 'PROBE_PORT', 'PROBE_TOKEN', 'PROBE_LINE_MAX', 'TRAY_ON', 'ONE_WINDOW_ON'];
+const REQUIRED_SERVICES = ['uiStore', 'readDim', 'usageCounters', 'forProbe', 'openInBrowser', 'probeConfirms', 'logShellError', 'canvasAsks',
+  'nextCanvasAskId', 'previewProbeProxy', 'stopHostByPid', 'occupantAt', 'tokenFileFor', 'ownIdentities', 'ownStartTime', 'waitForHost',
+  'HARNESS_DIR', 'INSTALL_DIR', 'listBackground', 'capture', 'stripFileFor', 'isQuitting', 'setQuitting'];
+
+function requireAll(kind, bag, names) {
+  for (const name of names) {
+    if (bag === null || typeof bag !== 'object' || bag[name] === undefined) throw new Error(`createProjectWindow: missing ${kind} "${name}"`);
+  }
+}
+
+function createProjectWindow({ launchCwd, electron, config, services }) {
+  if (typeof launchCwd !== 'string' || launchCwd === '') throw new Error('createProjectWindow: missing launchCwd');
+  requireAll('electron member', electron, REQUIRED_ELECTRON);
+  requireAll('config value', config, REQUIRED_CONFIG);
+  requireAll('service', services, REQUIRED_SERVICES);
   const { app, BrowserWindow, WebContentsView, Menu, dialog, session } = electron;
-  const { EXPLICIT_PORT = null, STRIP_HEIGHT, POLL_MS, PROBE_PORT = 0, PROBE_TOKEN = null, PROBE_LINE_MAX, TRAY_ON, ONE_WINDOW_ON } = config;
+  const { EXPLICIT_PORT, STRIP_HEIGHT, POLL_MS, PROBE_PORT, PROBE_TOKEN, PROBE_LINE_MAX, TRAY_ON, ONE_WINDOW_ON } = config;
   const {
-    uiStore, readDim, usageCounters, forProbe = (opts) => opts, openInBrowser, probeConfirms, logShellError, canvasProbeResolve, canvasAsks,
-    nextCanvasAskId, previewProbeProxy = () => undefined, stopHostByPid, occupantAt, tokenFileFor, ownIdentities, ownStartTime, waitForHost,
-    HARNESS_DIR, INSTALL_DIR, listBackground, capture, stripFileFor, isQuitting = () => false, setQuitting = () => {},
+    uiStore, readDim, usageCounters, forProbe, openInBrowser, probeConfirms, logShellError, canvasProbeResolve, canvasAsks,
+    nextCanvasAskId, previewProbeProxy, stopHostByPid, occupantAt, tokenFileFor, ownIdentities, ownStartTime, waitForHost,
+    HARNESS_DIR, INSTALL_DIR, listBackground, capture, stripFileFor, isQuitting, setQuitting,
   } = services;
 
   // --- what this window is ----------------------------------------------------------
@@ -1637,12 +1666,15 @@ function createProjectWindow({ launchCwd, electron = {}, config = {}, services =
   function stopDevServers() { if (devServers) devServers.stop(); if (devServersExec) devServersExec.close(); }
   function closeOccupancy() { if (transcriptOccupancy) transcriptOccupancy.close(); if (occupancyService) occupancyService.close(); }
 
-  /** Hand over an app-wide service the moment main has made it. */
+  /** Hand over an app-wide service the moment main has made it. An unknown key throws: a typo must not be a silent no-op. */
   function attach(parts) {
-    if ('resources' in parts) resources = parts.resources;
-    if ('trayController' in parts) trayController = parts.trayController;
-    if ('leanBridge' in parts) leanBridge = parts.leanBridge;
-    if ('indexing' in parts) indexing = parts.indexing;
+    for (const key of Object.keys(parts)) {
+      if (key === 'resources') resources = parts.resources;
+      else if (key === 'trayController') trayController = parts.trayController;
+      else if (key === 'leanBridge') leanBridge = parts.leanBridge;
+      else if (key === 'indexing') indexing = parts.indexing;
+      else throw new Error(`attach: unknown service "${key}"`);
+    }
   }
 
   // What the indexing assistant's overlay asks of this window (its bridge is registered once, in main.js).

@@ -2,29 +2,14 @@
 /**
  * claude-custom :: Electron main  -- the app-wide half of the tab shell
  *
- * One window per PROJECT, one tab per git worktree. The window's own page is
- * the tab strip (app/tab-strip.html); each STARTED tab is a WebContentsView
- * showing today's renderer.html against that tab's own detached host.
+ * One Electron process, one project window today (one entry in the projectWindows Map). Everything that belongs to ONE project's
+ * window (its BrowserWindow, tab shell, marks, occupancy, views, dev servers, focus and cue state, the one-window claim, the
+ * launch folder's MODE) lives in app/project-window.js, made by createProjectWindow(); the tabs/single modes are described there.
  *
- * Everything that belongs to ONE project's window (its BrowserWindow, tab shell, marks, occupancy, views, dev servers, focus and
- * cue state, the one-window claim) lives in app/project-window.js, made by createProjectWindow(). This file keeps what is
- * app-wide and what must be registered once per process: every ipcMain handler (each reaches a window through stripOwner(e) /
- * viewOwner(sender) over the projectWindows Map, one entry today), the UI store, the tray, the Resources service and sampler, the
- * secret vault, the indexing bridge and the quit handlers.
- *
- * Deliberately thin. The decisions -- which worktrees are tabs
- * (host/tab-lifecycle.js), what the strip draws (app/tab-model.js), which port
- * a starting tab gets, what a poll observes, who a message came from
- * (app/tab-shell.js) -- are pure and tested. This file only builds the effects
- * they are handed: sockets, child processes, views, menus, dialogs.
- *
- * MODES
- *   tabs    CLAUDE_CUSTOM_CWD is inside a container project (`<root>\dev` +
- *           sibling worktrees) and CLAUDE_CUSTOM_PORT is unset.
- *   single  everything else: a flat repo, a folder in no project, or ANY launch
- *           that names its port. One tab on that folder, no close, no poller --
- *           exactly what a window was before tabs, so every verify/ probe that
- *           launches one host on one folder by port keeps working unchanged.
+ * This file keeps what is app-wide and what must be registered once per process: every ipcMain handler (each reaches a window
+ * through stripOwner(e) / viewOwner(sender), never by naming "the" window), the UI store, the tray, the Resources service and
+ * sampler, the secret vault, the indexing bridge, the launch order in whenReady and the quit handlers. The decisions themselves
+ * are pure and tested elsewhere (host/tab-lifecycle.js, app/tab-model.js, app/tab-shell.js).
  */
 
 const { app, BrowserWindow, WebContentsView, Menu, Notification, Tray, clipboard, dialog, ipcMain, nativeImage, safeStorage, session, shell, powerMonitor } = require('electron');
@@ -292,9 +277,6 @@ function viewOwner(sender) {
 }
 function forEachProject(fn) { for (const p of projectWindows.values()) fn(p); }
 const fromStrip = (event) => stripOwner(event) !== null;
-// Lean mode's bridge (app/lean-bridge.js), set once the handlers are registered. Module scope because a view that
-// finishes loading, or goes away, is handled far from where the handlers are.
-let leanBridge = null;
 const isTabView = (sender) => viewOwner(sender) !== null;
 // Holds each OS toast until it's clicked or closed, so its click can't be lost to garbage collection (#145).
 const toasts = createToastHolder({
@@ -303,8 +285,8 @@ const toasts = createToastHolder({
   log: (m) => console.log(m),
 });
 
-// The indexing assistant (#66): main's half (startIndexing), and whether its field has the keyboard (a publish must not
-// take it, as for the branch form).
+// The indexing assistant (#66): main's half (startIndexing); the window gets it through attach(). Whether its field has the
+// keyboard is the window's (indexFieldFocused).
 let indexing = null;
 
 // The tray icon's one controller (created in whenReady), and whether the app is really quitting: a close then goes through
@@ -859,7 +841,8 @@ function registerIpc() {
   // /bedtime night (reported by the tab pages from their host's word) drive it; see app/lean-state.js for the rules.
   // The nights the person sent Back to normal are kept across a restart (PR #140 Dexter F2), in the same install-wide record as the dim.
   const leanKept = (uiStore.read(UI_KEY, {}) || {}).leanDismissed;
-  leanBridge = registerLeanHandlers({
+  // Lean mode's bridge (app/lean-bridge.js): only the window reads it, through attach().
+  const leanBridge = registerLeanHandlers({
     lean: createLean({
       dismissed: Array.isArray(leanKept) ? leanKept : [],
       onDismissed: (list) => {
