@@ -80,32 +80,55 @@ test('playback: an unwatched (closed) window is no longer re-checked', () => {
   assert.deepStrictEqual(sent, []);
 });
 
-// --- lean -------------------------------------------------------------------------------------
+// --- lean: ONE state for the process (Ricardo, 2026-11-11: "All of Jiandu"); nights per view, faces per window -----------------
 
 function leanRig() {
+  const { createLean } = require('../app/lean-state');
   const ipcMain = fakeIpc();
-  const pushes = { A: [], B: [] }; const faces = { A: [], B: [] };
-  const unitA = createLeanUnit({ push: (s) => pushes.A.push(s), pushFaces: (l) => faces.A.push(l) });
-  const unitB = createLeanUnit({ push: (s) => pushes.B.push(s), pushFaces: (l) => faces.B.push(l) });
+  const shared = createLean();
+  const pushes = []; const faces = { A: [], B: [] };
+  const pushAll = (s) => pushes.push(s);      // main's pushLeanToAll: every window's views and strips
+  const unitA = createLeanUnit({ lean: shared, push: pushAll, pushFaces: (l) => faces.A.push(l) });
+  const unitB = createLeanUnit({ lean: shared, push: pushAll, pushFaces: (l) => faces.B.push(l) });
   const owners = { va: { id: 1 }, sa: { id: 2 }, vb: { id: 3 }, sb: { id: 4 } };
   const unitOf = (s) => (s === owners.va ? { unit: unitA, isView: true } : s === owners.sa ? { unit: unitA, isView: false }
     : s === owners.vb ? { unit: unitB, isView: true } : s === owners.sb ? { unit: unitB, isView: false } : null);
   registerLeanHandlers({ ipcMain, unitOf });
-  return { ipcMain, pushes, faces, unitA, unitB, owners };
+  const lateWindow = () => createLeanUnit({ lean: shared, push: pushAll });     // a window opened later
+  return { ipcMain, pushes, faces, unitA, unitB, owners, lateWindow };
 }
 
-test('lean: a night reported from A\'s view makes only A lean; the lean button in B\'s strip makes only B lean', () => {
+test('lean: a night from A\'s view makes A AND B lean; ending it ends it for both; a window opened while lean comes up lean', () => {
   const t = leanRig();
   t.ipcMain.emit('lean:night', t.owners.va, Date.now());
   assert.strictEqual(t.unitA.view().on, true);
-  assert.strictEqual(t.unitB.view().on, false);
-  assert.strictEqual(t.pushes.B.length, 0);
-  t.ipcMain.emit('lean:set', t.owners.sb, true);
   assert.strictEqual(t.unitB.view().on, true);
-  assert.strictEqual(t.pushes.A.length, 1, 'A heard only its own change');
+  assert.strictEqual(t.lateWindow().view().on, true, 'a new window starts in the current lean state');
+  t.ipcMain.emit('lean:night', t.owners.va, null);
+  assert.strictEqual(t.unitA.view().on, false);
+  assert.strictEqual(t.unitB.view().on, false);
 });
 
-test('lean: faces reported by B\'s view reach only B\'s strip; the strip can\'t report a night or faces', () => {
+test('lean: the Lean button in either strip makes every window lean, one push per change', () => {
+  const t = leanRig();
+  t.ipcMain.emit('lean:set', t.owners.sb, true);
+  assert.strictEqual(t.unitA.view().on, true);
+  assert.strictEqual(t.pushes.length, 1);
+  t.ipcMain.emit('lean:set', t.owners.sa, false);
+  assert.strictEqual(t.unitB.view().on, false);
+});
+
+test('lean: nights are per view: a view that closes drops only its own night, and the process stays lean while another night stands', () => {
+  const t = leanRig();
+  t.ipcMain.emit('lean:night', t.owners.va, 1000);
+  t.ipcMain.emit('lean:night', t.owners.vb, 2000);
+  t.unitA.dropOwner(t.owners.va.id);
+  assert.strictEqual(t.unitB.view().on, true, 'B\'s night still stands');
+  t.unitB.dropOwner(t.owners.vb.id);
+  assert.strictEqual(t.unitA.view().on, false);
+});
+
+test('lean: faces stay per window: faces reported by B\'s view reach only B\'s strip; the strip can\'t report a night or faces', () => {
   const t = leanRig();
   t.ipcMain.emit('lean:faces', t.owners.vb, [{ id: 'x', name: 'x' }]);
   assert.strictEqual(t.faces.A.length, 0);
@@ -115,28 +138,24 @@ test('lean: faces reported by B\'s view reach only B\'s strip; the strip can\'t 
   assert.strictEqual(t.faces.A.length, 0);
 });
 
-test('lean: get answers the asking page\'s own window; an unknown page gets null', async () => {
+test('lean: get answers every known page the one state; an unknown page gets null', async () => {
   const t = leanRig();
   t.ipcMain.emit('lean:set', t.owners.va, true);
   assert.strictEqual((await t.ipcMain.invoke('lean:get', t.owners.va)).on, true);
-  assert.strictEqual((await t.ipcMain.invoke('lean:get', t.owners.vb)).on, false);
+  assert.strictEqual((await t.ipcMain.invoke('lean:get', t.owners.vb)).on, true);
   assert.strictEqual(await t.ipcMain.invoke('lean:get', { id: 99 }), null);
   assert.strictEqual(await t.ipcMain.invoke('lean:get', null), null);
 });
 
-test('P2 (lean): random messages from A\'s and B\'s pages change a unit only on its own messages', () => {
+test('P2 (lean, app-wide): random messages from any page leave both windows with the same lean state', () => {
   for (let seed = 1; seed <= 50; seed++) {
     const rand = rng(seed);
     const t = leanRig();
-    let aMoved = 0; let bMoved = 0;
+    const pages = [t.owners.sa, t.owners.sb];
     for (let i = 0; i < 20; i++) {
-      const fromA = rand() < 0.5;
-      const before = [t.pushes.A.length, t.pushes.B.length];
-      t.ipcMain.emit('lean:set', fromA ? t.owners.sa : t.owners.vb, rand() < 0.5);
-      const after = [t.pushes.A.length, t.pushes.B.length];
-      if (fromA) { assert.strictEqual(after[1], before[1]); aMoved += after[0] - before[0]; } else { assert.strictEqual(after[0], before[0]); bMoved += after[1] - before[1]; }
+      t.ipcMain.emit('lean:set', pages[Math.floor(rand() * 2)], rand() < 0.5);
+      assert.deepStrictEqual(t.unitA.view(), t.unitB.view());
     }
-    assert.ok(aMoved + bMoved >= 0);
   }
 });
 

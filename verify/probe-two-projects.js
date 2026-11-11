@@ -13,7 +13,7 @@
  *   1  launch A: `windows` lists one window; note the Electron main pid
  *   2  `openProject` B: `windows` lists two, the SAME pid, one Electron main under the probe's user-data; B's state is B's tabs; A's did not
  *      move; `openProject` on an open root focuses it (existing); outside the temp folder it is refused; an unknown `window` is refused
- *   3  routing: `select` in B moves B's selected tab and not A's; the Lean button in B's strip makes B lean and not A; Ctrl+Shift+F in B's view
+ *   3  routing: `select` in B moves B's selected tab and not A's; the Lean button in B's strip makes BOTH lean (app-wide) and Back to normal ends it for both; Ctrl+Shift+F in B's view
  *      turns B's focus mode on and not A's
  *   4  install-wide: the interface font written to the shared store reaches BOTH windows' strips (main pushes to every window)
  *   5  per-project layout: a dock change in A is written to A's own `.claude-custom\layout-tree.json` and B's file is untouched
@@ -230,11 +230,14 @@ async function main() {
 
   const lean = await win(app, bRoot, { cmd: 'strip-lean', button: 'lean-btn' });
   const bLean = await waitFor(async () => { const s = await stateOf(app, bRoot); return s.stripChrome && s.stripChrome.lean && s.stripChrome.lean.bodyLean ? s : null; }, 15000);
-  const aLean = await stateOf(app, aRoot);
+  // Lean is app-wide (Ricardo, 2026-11-11: "All of Jiandu"): B going lean makes A lean too, and leaving it ends it for both.
+  const aLean = await waitFor(async () => { const s = await stateOf(app, aRoot); return s.stripChrome && s.stripChrome.lean && s.stripChrome.lean.bodyLean ? s : null; }, 15000);
   check('3: pressing Lean in B\'s strip makes B lean', lean.ok === true && !!bLean && bLean.lean && bLean.lean.on === true, JSON.stringify(lean));
-  check('3: ...and A is not lean (its strip, and its own state)', aLean.stripChrome.lean.bodyLean === false && aLean.lean && aLean.lean.on === false,
-    JSON.stringify({ strip: aLean.stripChrome.lean.bodyLean, lean: aLean.lean }));
-  await win(app, bRoot, { cmd: 'strip-lean', button: 'lean-back' });   // B back to normal: nothing left for the next check
+  check('3: ...and A lean too (its strip, and its own state): lean is app-wide', !!aLean && aLean.lean && aLean.lean.on === true,
+    JSON.stringify({ strip: aLean && aLean.stripChrome.lean.bodyLean, lean: aLean && aLean.lean }));
+  await win(app, bRoot, { cmd: 'strip-lean', button: 'lean-back' });   // back to normal in B...
+  const bothNormal = await waitFor(async () => { const x = await stateOf(app, aRoot); const y = await stateOf(app, bRoot); return x.lean && y.lean && !x.lean.on && !y.lean.on ? true : null; }, 15000);
+  check('3: ...and that ends lean for BOTH windows', bothNormal === true);
 
   await sleep(500);
   const key = await win(app, bRoot, { cmd: 'key', key: 'F', modifiers: ['control', 'shift'] });

@@ -1078,21 +1078,37 @@ function makeIndexingOverlay(pw) {
 }
 
 /** What a window gets when main makes it: its lean state and its indexing overlay, handed to the window before anything runs. */
-function makeWindowUnits(pw) {
+// Lean mode is ONE state for the whole process (Ricardo, 2026-11-11: "All of Jiandu"): lean on in any window, or a /bedtime night in any
+// project, makes every window lean, and a window opened while lean comes up lean. Nights are kept per tab view (owner = the view's id), so a
+// closed view still drops its own night; faces stay per window's strip. Made once, on first use.
+let sharedLean = null;
+function appLean() {
+  if (sharedLean !== null) return sharedLean;
   // The nights the person sent Back to normal are kept across a restart (PR #140 Dexter F2), in the same install-wide record as the dim.
   const leanKept = (uiStore.read(UI_KEY, {}) || {}).leanDismissed;
-  const toViews = pushToProject(pw);
+  sharedLean = createLean({
+    dismissed: Array.isArray(leanKept) ? leanKept : [],
+    onDismissed: (list) => {
+      try { uiStore.update(UI_KEY, {}, (prev) => ({ ...(prev && typeof prev === 'object' ? prev : {}), leanDismissed: unionDismissed(prev && prev.leanDismissed, list) })); }
+      catch (err) { console.error('[main] could not save the dismissed nights:', err && err.message); }
+    },
+  });
+  return sharedLean;
+}
+// Every window's views and strip hear a lean change.
+function pushLeanToAll(state) {
+  registry.forEach((p) => {
+    pushToProject(p)(LEAN_PUSH, state);
+    const w = p.win;
+    if (w && !w.isDestroyed()) w.webContents.send(LEAN_PUSH, state);
+  });
+}
+function makeWindowUnits(pw) {
   const toStrip = (channel, value) => { const w = pw.win; if (w && !w.isDestroyed()) w.webContents.send(channel, value); };
   const lean = createLeanUnit({
-    lean: createLean({
-      dismissed: Array.isArray(leanKept) ? leanKept : [],
-      onDismissed: (list) => {
-        try { uiStore.update(UI_KEY, {}, (prev) => ({ ...(prev && typeof prev === 'object' ? prev : {}), leanDismissed: unionDismissed(prev && prev.leanDismissed, list) })); }
-        catch (err) { console.error('[main] could not save the dismissed nights:', err && err.message); }
-      },
-    }),
-    push: (state) => { toViews(LEAN_PUSH, state); toStrip(LEAN_PUSH, state); },
-    // the working agents' portraits go to the strip only (it draws them next to the lean chip)
+    lean: appLean(),
+    push: pushLeanToAll,
+    // the working agents' portraits go to this window's strip only (it draws them next to the lean chip)
     pushFaces: (list) => toStrip(LEAN_FACES_PUSH, list),
   });
   const overlay = makeIndexingOverlay(pw);

@@ -20,7 +20,9 @@ const HTML = read('app/renderer.html');
 test('main registers the lean handlers for tab views and the strip, and pushes to both', () => {
   // single-instance PR 2: registered once, over each window's own unit; the sender says which window and whether it is a tab view or the strip
   assert.match(MAIN, /registerLeanHandlers\(\{\s*ipcMain,\s*unitOf: \(sender\) => \{[\s\S]*?viewOwner\(sender\)[\s\S]*?isView: true[\s\S]*?registry\.stripOwner\(\{ sender \}\)[\s\S]*?isView: false/);
-  assert.match(MAIN, /push: \(state\) => \{ toViews\(LEAN_PUSH, state\); toStrip\(LEAN_PUSH, state\); \}/, 'a change reaches that window\'s views and strip');
+  // Ricardo, 2026-11-11 ("All of Jiandu"): one lean state, every window's views and strip hear a change
+  assert.match(MAIN, /lean: appLean\(\),\s*push: pushLeanToAll,/);
+  assert.match(MAIN, /function pushLeanToAll\(state\) \{\s*registry\.forEach\(\(p\) => \{\s*pushToProject\(p\)\(LEAN_PUSH, state\);/);
   assert.match(MAIN, /w\.webContents\.send\(channel, value\)/);   // the strip: main reads the window live (pw.win) into `w`
 });
 

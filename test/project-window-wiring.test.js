@@ -29,7 +29,7 @@ const PROJECT_LETS = ['attachOnlyRefusal', 'marks', 'win', 'tabShell', 'issueSer
   'stripWasBusy', 'lastStripAccent', 'closeAsking'];
 const PROJECT_CONSTS = ['readerUnsaved', 'liveViews', 'canvasViews', 'previewViews', 'previewKeyOf', 'stripAccent', 'backgroundActions', 'windowClaim'];
 // The ONLY top-level `let`s main may have: app-wide, one per process. A new one fails here until someone says why it isn't a window's.
-const APP_LETS = ['repoDragIcon', 'resources', 'resourceSampler', 'indexingApp', 'playback', 'appStart', 'trayController', 'quitting', 'canvasAskSeq', 'pausedWoken'];
+const APP_LETS = ['repoDragIcon', 'resources', 'resourceSampler', 'indexingApp', 'playback', 'appStart', 'sharedLean', 'trayController', 'quitting', 'canvasAskSeq', 'pausedWoken'];
 // The late app-wide services a window is handed by attach(), and the statement in main that makes each. (A window's OWN lean unit and
 // indexing overlay are made by makeWindowUnits and attached together: pinned in the next test.)
 const LATE = [['trayController', 'trayController = createTrayController({'], ['resources', 'resources = createResourcesService({']];
