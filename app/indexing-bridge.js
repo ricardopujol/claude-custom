@@ -5,6 +5,12 @@
  * 10 s toast and in the "N filed" list; the chip switches project). Electron is injected, so this is tested without a
  * window (test/indexing-bridge.test.js).
  *
+ * TWO HALVES (single-instance PR 2, several windows in one process): createIndexingOverlay({ Menu, shell, copyText, makeView, overlayFile,
+ * getWin, service, project, docsFor, projects, viewTop, focusSelected, setFieldFocused, now }) is ONE window's overlay (its project, toast,
+ * list, views, sizes and journal stamp) and touches no ipcMain; registerIndexingHandlers({ ipcMain, overlayOfStrip, overlayOfPage })
+ * registers the twelve channels ONCE and hands each message to the overlay of the window it came from. main.js ticks the shared service
+ * once and calls each overlay's tick(stamp). createIndexingBridge is the single-window form, both halves in one (what the tests drive):
+ *
  *   createIndexingBridge({ ipcMain, Menu, shell, copyText, makeView, overlayFile, getWin, isStrip, service, project,
  *                          docsFor, projects, viewTop, focusSelected, setFieldFocused, journalStamp, now })
  *     -> { push(force), raise(), focusField(), setAccent(hex), relayout(), start(ms), stop() }

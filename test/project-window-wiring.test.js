@@ -177,6 +177,46 @@ test('startProject: the launch window is the process\'s own; any other project i
   assert.match(WINDOW, /process\.env\.CLAUDE_CUSTOM_TOKEN/);
 });
 
+test('seam guard: `launchWindow` is named only where the launch itself is the point (an allow-list of constructs)', () => {
+  // The construct that encloses each mention: the last top-level `function name(` / `async function name(` / `app.whenReady` / `const launchWindow` before it.
+  const owners = new Map();
+  const marks = [...MAIN.matchAll(/^(?:async )?function (\w+)\(|^(app\.whenReady)\(|^(const launchWindow) =|^(const windowServices) =/gm)]
+    .map((m) => ({ at: m.index, name: m[1] || m[2] || m[3] || m[4] }));
+  for (const m of MAIN.matchAll(/\blaunchWindow\b/g)) {
+    let owner = '(top level)';
+    for (const mk of marks) if (mk.at < m.index) owner = mk.name;
+    owners.set(owner, (owners.get(owner) || 0) + 1);
+  }
+  const allowed = {
+    'const launchWindow': 'its construction',
+    'app.whenReady': 'the launch order: claim, markReady, the refusals, the poll, the screenshot and the probe driver',
+    startProject: 'launch ? launchWindow : makeWindow(...)',
+    startTray: 'the label the tray names before any window exists',
+    startIndexing: 'warming the chip\'s list for the launch project',
+    registerIpc: 'the vault probe, which uses the launch window\'s service',
+  };
+  const names = [...owners.keys()].filter((k) => k !== '(top level)').sort();
+  assert.deepStrictEqual(names, Object.keys(allowed).sort(), 'a new place that names the launch window is a place a second window breaks: argue for it here');
+  // ...and registerIpc names it ONLY in the vault probe
+  const ipc = bodyAt(MAIN, MAIN.search(/function registerIpc\(/));
+  assert.strictEqual((ipc.match(/\blaunchWindow\b/g) || []).length, 1);
+  assert.match(ipc, /projectRecords\.secretsOf\(launchWindow\);\s*\/\/ the launch window's service|projectRecords\.secretsOf\(launchWindow\)/);
+});
+
+test('seam guard: no handler reaches a per-project record except through the owner (secretsOf(viewOwner(..)) / scopeFor(viewOwner, ..) / windowUnits via the resolvers)', () => {
+  const ipc = bodyAt(MAIN, MAIN.search(/function registerIpc\(/));
+  const used = [...ipc.matchAll(/projectRecords\.(\w+)/g)].map((m) => m[1]);
+  assert.deepStrictEqual([...new Set(used)].sort(), ['scopeFor', 'secretsOf']);
+  for (const m of ipc.matchAll(/projectRecords\.secretsOf\(([^)]*\))?/g)) assert.match(m[0], /viewOwner\(event\.sender\)|launchWindow/, 'secrets are reached through the sender\'s window');
+  assert.match(ipc, /scopeFor\(viewOwner, 'layoutSync'\)/);
+  assert.match(ipc, /scopeFor\(viewOwner, 'treeSync'\)/);
+  // windowUnits: only the two unit resolvers (lean here; the indexing overlay's are in startIndexing) read it, always from an owner found by sender
+  const reads = [...ipc.matchAll(/windowUnits\.get\((\w+)\)/g)].map((m) => m[1]);
+  assert.deepStrictEqual(reads, ['v', 'st']);
+  assert.match(ipc, /const v = viewOwner\(sender\);/);
+  assert.match(ipc, /const st = registry\.stripOwner\(\{ sender \}\);/);
+});
+
 test('close vs quit (P3 at the wiring level): a closed window tells main; main disposes it only when another stays, and drops everything it holds for it', () => {
   assert.match(WINDOW, /win\.on\('closed', \(\) => \{ win = null; if \(tabShell\) tabShell\.destroy\(\); onClosed\(self\); \}\);/);
   assert.match(MAIN, /onClosed: \(pw\) => projectClosed\(pw\),/);
