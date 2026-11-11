@@ -299,7 +299,24 @@ function createCanvasViews({ WebContentsView, session, addChild, removeChild, ow
     try { return openUrl(msg.url) !== false; } catch { return false; }
   }
 
-  return { show, setBounds, setCovered, setOwnerVisible, setHosts, setShelf, relayout, hide, destroyFor, has, fetchFor, messageFrom, shelfFor, openFrom, inspect, click };
+  /** Whether `sender` is one of this manager's panel contents (the window registry routes the panel's IPC on it). */
+  const isPanel = (sender) => !!sender && byPanel.has(sender.id);
+
+  return { show, setBounds, setCovered, setOwnerVisible, setHosts, setShelf, relayout, hide, destroyFor, has, isPanel, fetchFor, messageFrom, shelfFor, openFrom, inspect, click };
+}
+
+/**
+ * The four panel channels with several windows: `ownerOf(sender)` is the window (anything with a `canvasViews`) that owns that panel, or
+ * null. Each method goes to that window's manager; a sender no window owns gets the method's own refusal.
+ */
+function panelDispatch(ownerOf) {
+  const viewsOf = (sender) => { const w = sender ? ownerOf(sender) : null; return w ? w.canvasViews : null; };
+  return {
+    fetchFor: (sender, req) => { const v = viewsOf(sender); return v ? v.fetchFor(sender, req) : Promise.resolve({ ok: false, error: 'not a panel' }); },
+    shelfFor: (sender) => { const v = viewsOf(sender); return v ? v.shelfFor(sender) : []; },
+    messageFrom: (sender, msg) => { const v = viewsOf(sender); return v ? v.messageFrom(sender, msg) : false; },
+    openFrom: (sender, msg) => { const v = viewsOf(sender); return v ? v.openFrom(sender, msg) : false; },
+  };
 }
 
 // Process-wide, set before the app is ready (app/main.js): Chromium resolves nothing but loopback. This is the only thing
@@ -315,4 +332,4 @@ function registerCanvasIpc(ipc, views) {
   ipc.on('canvas:open', (e, msg) => { views.openFrom(e.sender, msg); });
 }
 
-module.exports = { createCanvasViews, registerCanvasIpc, HOST_RESOLVER_RULES, PANEL_LIMITS, DEAD_PROXY };
+module.exports = { createCanvasViews, registerCanvasIpc, panelDispatch, HOST_RESOLVER_RULES, PANEL_LIMITS, DEAD_PROXY };

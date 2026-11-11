@@ -51,7 +51,7 @@ const { probePort } = require('../host/port-probe');
 // BACKLOG #119 A6: the + form's "From an issue" list (the strip:issues channel); the lane's brief and the tab's link are the window's (app/project-window.js).
 const { answerIssuesRequest, issueArg } = require('../host/issues');
 const { externalUrl } = require('./external-link');
-const { registerCanvasIpc, HOST_RESOLVER_RULES } = require('./canvas-views');
+const { registerCanvasIpc, panelDispatch, HOST_RESOLVER_RULES } = require('./canvas-views');
 const { readMcpSetting, writeMcpSetting } = require('../host/canvas-settings');
 const { readModSetting, writeModSetting } = require('../host/cc-mod-settings');
 const fileLink = require('./file-link');
@@ -401,7 +401,7 @@ function registerIpc() {
   const { STATE_ROOT, PROJECT_ROOT } = launchWindow.identity;
   // Claude's panel (#71). The panel's own page talks on canvas:fetch / canvas:send only (registerCanvasIpc: main answers a
   // contents it made, nothing else). The channels below are the TAB's page, the trusted controller, and are gated on it.
-  registerCanvasIpc(ipcMain, launchWindow.canvasViews);   // its sender is the panel's own contents, not a tab view (PR 2: dispatch by panel owner)
+  registerCanvasIpc(ipcMain, panelDispatch((s) => registry.panelOwner(s)));   // its sender is the panel's own contents, not a tab view: routed by panel owner
   ipcMain.handle('canvas:show', (e, req) => (isTabView(e.sender) && req && typeof req === 'object'
     ? viewOwner(e.sender).canvasViews.show(e.sender, req) : { ok: false, error: 'refused' }));
   ipcMain.on('canvas:bounds', (e, rect) => { if (isTabView(e.sender)) viewOwner(e.sender).canvasViews.setBounds(e.sender, rect); });
