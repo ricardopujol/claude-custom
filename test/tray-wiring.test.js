@@ -44,7 +44,7 @@ test('close hides to the tray only through hidesOnClose, ahead of the unsaved-te
   const hide = close.indexOf('hidesOnClose(');
   assert.ok(hide !== -1);
   assert.ok(hide < close.indexOf('closeGuarded ||'), 'the hide decision comes first: hiding loses nothing, so no question');
-  assert.match(close, /hidesOnClose\(\{ settings: readTraySettings\(uiStore\), trayExists: !!trayController && trayController\.state\(\)\.exists, quitting: isQuitting\(\) \}\)/);
+  assert.match(close, /const tray = getTray\(\);\s*if \(hidesOnClose\(\{ settings: readTraySettings\(uiStore\), trayExists: !!tray && tray\.state\(\)\.exists, quitting: isQuitting\(\) \}\)\)/);
   assert.match(close, /e\.preventDefault\(\);\s*win\.hide\(\);/);
   assert.match(MAIN, /app\.on\('before-quit', \(\) => \{ quitting = true; forEachProject\(\(p\) => p\.claim\.stop\(\)\); \}\);/);
   assert.match(MAIN, /win\.on\('session-end', \(\) => \{ setQuitting\(true\); \}\);/);
@@ -52,29 +52,31 @@ test('close hides to the tray only through hidesOnClose, ahead of the unsaved-te
 
 test('start minimised: the window is created without being shown, only when startsHidden says so', () => {
   assert.match(MAIN, /show: !startHidden,/);
-  assert.match(bodyOf(/function startTray\(\)/), /!trayController\.state\(\)\.exists && w && !w\.isDestroyed\(\) && !w\.isVisible\(\)\) launchWindow\.focusWindow\(\);/,
+  // the check is each window's own, made right after the window exists (single-instance PR 2: startProject; the tray itself is made before any window)
+  assert.match(bodyOf(/async function startProject\(/), /trayController && !trayController\.state\(\)\.exists && w && !w\.isDestroyed\(\) && !w\.isVisible\(\)\) pw\.focusWindow\(\);/,
     'no icon could be made: the hidden window is shown, never left unreachable');
 });
 
 test('the tray follows the shell and goes with the app', () => {
-  assert.match(bodyOf(/function onShellChanged\(/), /if \(trayController\) trayController\.sync\(\);/);
+  assert.match(bodyOf(/function onShellChanged\(/), /const tray = getTray\(\);\s*if \(tray\) tray\.sync\(\);/);
   assert.match(MAIN, /app\.on\('will-quit', \(\) => \{ if \(trayController\) trayController\.destroy\(\);/);
   assert.match(MAIN, /registerTrayHandlers\(\{ ipcMain, store: uiStore, isSender: isTabView,/, 'the switches answer this window\'s views only');
 });
 
 test('the menu actions: Stop is the ▾ menu\'s own (it asks), Quit is app.quit, Hide hides, Show is focusWindow', () => {
   const actions = bodyOf(/function startTray\(\)/);
-  assert.match(actions, /stopBackground: \(row\) => \{ launchWindow\.focusWindow\(\); launchWindow\.backgroundActions\.stop\(row\)/);
+  // single-instance PR 2: the tray speaks for the first window (trayWindow()); hide / show act on every window. PR 3 sums and lists them all.
+  assert.match(actions, /stopBackground: \(row\) => \{ const w = trayWindow\(\); if \(!w\) return; w\.focusWindow\(\); w\.backgroundActions\.stop\(row\)/);
   assert.doesNotMatch(actions, /stopHost\(/);
   assert.match(actions, /app\.quit\(\); \}/);
-  assert.match(actions, /hideAll: \(\) => \{ const w = launchWindow\.win; if \(w && !w\.isDestroyed\(\)\) w\.hide\(\); \}/);
-  assert.match(actions, /showAll: launchWindow\.focusWindow/);
-  assert.match(actions, /openBackground: o => launchWindow\.backgroundActions\.open\(o\)/);
+  assert.match(actions, /hideAll: \(\) => registry\.forEach\(\(p\) => \{ const w = p\.win; if \(w && !w\.isDestroyed\(\)\) w\.hide\(\); \}\)/);
+  assert.match(actions, /showAll: \(\) => registry\.forEach\(\(p\) => p\.focusWindow\(\)\)/);
+  assert.match(actions, /openBackground: o => \{ const w = trayWindow\(\); return w \? w\.backgroundActions\.open\(o\) : undefined; \}/);
   assert.match(actions, /setStartMinimised: on => \{ writeTraySetting\(uiStore, 'startMinimised', on === true\); \}/);
 });
 
 test('Quit from the tray brings a hidden window up first when there is unsaved reader text (Miguel Y1)', () => {
-  assert.match(bodyOf(/function startTray\(\)/), /quit: \(\) => \{ if \(launchWindow\.readerUnsaved\.all\(\)\.length > 0\) launchWindow\.focusWindow\(\); app\.quit\(\); \}/);
+  assert.match(bodyOf(/function startTray\(\)/), /quit: \(\) => \{ const dirty = registry\.list\(\)\.find\(\(p\) => p\.readerUnsaved\.all\(\)\.length > 0\); if \(dirty\) dirty\.focusWindow\(\); app\.quit\(\); \}/);
 });
 
 test('a cancelled close puts quitting back, so close-to-tray keeps working (Miguel Y2)', () => {

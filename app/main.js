@@ -18,6 +18,7 @@ const { createProjectWindow } = require('./project-window');
 const { createProjectRegistry } = require('./project-registry');
 const { createPushers } = require('./push-targets');
 const { createBusyGate } = require('./busy-gate');
+const { createSeenGate } = require('./seen-gate');
 const { createProjectRecords } = require('./project-records');
 const { armQuitWatchdog } = require('./quit-watchdog');
 const { createQuitLog, wireQuitLog, markWillQuitEnd } = require('./quit-log');
@@ -371,36 +372,36 @@ function listBackground() {
 // --- the tray icon (BACKLOG #119 A8) ----------------------------------------------------------------------------------
 // One per window process (each project window is its own Electron main). The rules are app/tray-model.js, the pixels
 // app/tray-icon.js, the effects app/tray-controller.js; this hands them the real Electron and the shell.
+// The window the tray speaks for: the first one open (the launch window while it is). PR 3 sums and lists every window.
+const trayWindow = () => registry.first();
 function startTray() {
   if (!TRAY_ON) return;
+  const anyWindow = () => trayWindow() || launchWindow;     // before the first window exists the tray still has a project to name
   trayController = createTrayController({
     Tray, Menu, nativeImage, renderIcon: renderTrayIcon,
     getSettings: () => readTraySettings(uiStore),
-    tabs: () => (launchWindow.tabShell ? launchWindow.tabShell.snapshot().tabs : []),
-    windowLabel: () => launchWindow.label,
-    isHidden: () => { const w = launchWindow.win; return !w || w.isDestroyed() || !w.isVisible(); },
-    background: launchWindow.backgroundModel,
+    tabs: () => { const w = trayWindow(); return w && w.tabShell ? w.tabShell.snapshot().tabs : []; },
+    windowLabel: () => anyWindow().label,
+    isHidden: () => { const w = trayWindow(); const win = w ? w.win : null; return !win || win.isDestroyed() || !win.isVisible(); },
+    background: () => { const w = trayWindow(); return w ? w.backgroundModel() : Promise.resolve(null); },
     now: () => Date.now(),
     log: (...a) => console.log(...a),
     actions: {
-      focusWindow: launchWindow.focusWindow,
-      selectTab: key => launchWindow.tabShell.select(key),
-      openBackground: o => launchWindow.backgroundActions.open(o),
+      focusWindow: () => { const w = trayWindow(); if (w) w.focusWindow(); },
+      selectTab: key => { const w = trayWindow(); if (w && w.tabShell) w.tabShell.select(key); },
+      openBackground: o => { const w = trayWindow(); return w ? w.backgroundActions.open(o) : undefined; },
       // The same Stop as the ▾ menu: it asks first, every time. Its question needs a visible window to sit on.
-      stopBackground: (row) => { launchWindow.focusWindow(); launchWindow.backgroundActions.stop(row).catch(() => {}); },
-      hideAll: () => { const w = launchWindow.win; if (w && !w.isDestroyed()) w.hide(); },
-      showAll: launchWindow.focusWindow,
+      stopBackground: (row) => { const w = trayWindow(); if (!w) return; w.focusWindow(); w.backgroundActions.stop(row).catch(() => {}); },
+      hideAll: () => registry.forEach((p) => { const w = p.win; if (w && !w.isDestroyed()) w.hide(); }),
+      showAll: () => registry.forEach((p) => p.focusWindow()),
       setStartMinimised: on => { writeTraySetting(uiStore, 'startMinimised', on === true); },
-      // Unsaved reader text asks Save / Discard / Cancel on the window, so the window has to be visible to be answered.
-      quit: () => { if (launchWindow.readerUnsaved.all().length > 0) launchWindow.focusWindow(); app.quit(); },
+      // Unsaved reader text asks Save / Discard / Cancel on the window, so that window has to be visible to be answered.
+      quit: () => { const dirty = registry.list().find((p) => p.readerUnsaved.all().length > 0); if (dirty) dirty.focusWindow(); app.quit(); },
     },
   });
-  launchWindow.attach({ trayController });
   trayController.sync();
-  // Started hidden but no icon could be made (no tray area): a window nobody can reach is worse than a visible one.
-  const w = launchWindow.win;
-  if (!trayController.state().exists && w && !w.isDestroyed() && !w.isVisible()) launchWindow.focusWindow();
 }
+
 
   // The secret store lives HERE, in main. Not in the host: the host owns the
   // pty, so keeping secrets out of it means no wiring mistake can put one into
@@ -1120,42 +1121,10 @@ function windowCreated(pw) { giveUiFont(pw); watchPlayback(pw); }
 // while it is quitting or its start never finished.
 const ownStartTime = createSelfStartTime();   // this process's own start time, asked once: the owner file, the claims and the sampler prove "this process" with it
 
-// The project window (app/project-window.js): everything that was this file's per-project state. Made HERE, after every app-wide
-// constant it is handed (a const read before its line is a TDZ error). Construction has no side effects: the claim hooks `exit`
-// inside run(), and the window itself is made by createWindow() in whenReady.
-const launchWindow = createProjectWindow({
-  launchCwd: LAUNCH_CWD,
-  electron: { app, BrowserWindow, WebContentsView, Menu, dialog, session },
-  config: { EXPLICIT_PORT, STRIP_HEIGHT, POLL_MS, PROBE_PORT, PROBE_TOKEN, PROBE_LINE_MAX, TRAY_ON, ONE_WINDOW_ON },
-  services: {
-    uiStore, readDim, usageCounters, forProbe, openInBrowser, probeConfirms, logShellError, canvasProbeResolve, canvasAsks,
-    nextCanvasAskId: () => ++canvasAskSeq,
-    previewProbeProxy, stopHostByPid, occupantAt, tokenFileFor, ownIdentities, ownStartTime, waitForHost, HARNESS_DIR, INSTALL_DIR,
-    listBackground, capture, stripFileFor,
-    isQuitting: () => quitting,
-    setQuitting: (v) => { quitting = v; },
-    onWindowCreated: (pw) => windowCreated(pw),
-  },
-});
-registry.add(launchWindow);
-
-app.whenReady().then(async () => {
-  console.log('[main] project       :', launchWindow.root, `(${launchWindow.mode})`);
-  console.log('[main] launched on   :', LAUNCH_CWD);
-
-  // Named and refused (see explicitPort): nothing sensible is left to do, and
-  // opening a window anyway would show a terminal wired to nothing.
-  if (EXPLICIT_PORT && EXPLICIT_PORT.bad !== undefined) { app.exit(1); return; }
-
-  // One window per project: before anything is made, ask whether this project's window already exists.
-  if (await launchWindow.claim.run() === 'exit') { app.exit(0); return; }
-
-  const seams = readSeams(process.env);
-  const openPrsReader = seams.openPrsFixture
-    ? fixtureReader(seams.openPrsFixture, { parse: parseOpenPrs, log: (line) => console.log(line) })
-    : readOpenPrs;
-  launchWindow.startServices({ seams, openPrsReader });
-
+// --- the Resources service (#63) -----------------------------------------------------------------------------
+// One per process, made before any window: windows read it through getResources(). Its tabs are the union of every window's.
+const allTabs = () => registry.list().flatMap((p) => (p.tabShell ? p.tabShell.snapshot().tabs : []));
+async function startResources(seams) {
   // The Resources panel (#63). Identity files of every build beside this one say which pids are session hosts;
   // each is proven against the process table (host/resource-tree.js provenHosts) before anything is attributed.
   const resourceInstalls = () => { try { return installsBeside(INSTALL_DIR); } catch { return [INSTALL_DIR]; } };
@@ -1176,7 +1145,7 @@ app.whenReady().then(async () => {
   const ownProcStart = await ownStartTime().then(s => (typeof s === 'string' ? s : null), () => null);
   resources = createResourcesService({
     sampler: resourceSampler,
-    tabs: () => launchWindow.tabShell.snapshot().tabs,
+    tabs: allTabs,
     claims: () => {
       const out = [];
       for (const install of resourceInstalls()) {
@@ -1195,7 +1164,8 @@ app.whenReady().then(async () => {
     cores: cpuCores,
     // a worktree's cwd names its PROJECT (the folder that holds `dev\`), the way the window title does
     labelOf: (cwd) => { const p = projectOf(cwd); return projectLabel(p ? p.root : cwd); },
-    send: (full, light) => { const sel = launchWindow.selectedView(); launchWindow.forEachView((v) => v.webContents.send('resources:state', v === sel ? full : light)); },
+    // every window's views hear it; each window's SELECTED view gets the full payload (with the history), the rest the light one
+    send: (full, light) => registry.forEach((p) => { const sel = p.selectedView(); p.forEachView((v) => v.webContents.send('resources:state', v === sel ? full : light)); }),
     // Stop ends exactly the set the guard computed, leaf first, each re-proved by pid and start time through a handle
     // (host/resource-kill.js): never a bare `taskkill /T`, which follows a stale parent link.
     kill: (targets) => killVerified(targets, { exec: createPowerShellExec(20000) }),
@@ -1218,17 +1188,16 @@ app.whenReady().then(async () => {
     taskLogs: {
       everyMs: 60_000,
       scan: () => taskLogsFs.scanTaskFiles(taskLogsRoot),
-      registry: () => taskLogsFs.readRegistries(taskLogsFs.registryDirs(launchWindow.tabShell.snapshot().tabs.map(t => t.cwd), claudeConfigDir)),
+      registry: () => taskLogsFs.readRegistries(taskLogsFs.registryDirs(allTabs().map(t => t.cwd), claudeConfigDir)),
       remove: (row) => taskLogsFs.deleteTaskLog(taskLogsRoot, row),
     },
     // verify/probe-resource-panel.js only: the warning's CPU threshold (a percentage), 40 when unset or not one
     warnAt: warnAtSeam,
-    refreshStrip: () => { const ts = launchWindow.tabShell; if (ts) ts.refresh(); },
+    refreshStrip: () => registry.forEach((p) => { const ts = p.tabShell; if (ts) ts.refresh(); }),
     // Q2: install-wide, in the same store as the other window-wide UI state
     chipStore: resourceChip,
     log: (...a) => console.log(...a),
   });
-  launchWindow.attach({ resources });
   // Other project windows are other mains sharing the saved file: follow their change of the chip, live, as the panels do.
   watchChip({ file: path.join(UI_STATE_DIR, `${CHIP_KEY}.json`), onChange: () => { if (resources) resources.reloadChip(); } });
   resourceSampler.start();
@@ -1236,22 +1205,89 @@ app.whenReady().then(async () => {
   const sweepPaused = () => resources.wakeLeftover().catch((err) => console.log('[pause] waking the leftovers threw:', err && err.message));   // what a dead run left suspended (#19)
   sweepPaused();
   setInterval(sweepPaused, 60_000).unref();      // ...and a sibling window that died after this one started
+}
 
-  launchWindow.startDevServers();
+// What every project window is handed (app/project-window.js). The Resources service, the tray and the lean/indexing units are read live.
+const windowServices = {
+  uiStore, readDim, usageCounters, forProbe, openInBrowser, probeConfirms, logShellError, canvasProbeResolve, canvasAsks,
+  nextCanvasAskId: () => ++canvasAskSeq,
+  previewProbeProxy, stopHostByPid, occupantAt, tokenFileFor, ownIdentities, ownStartTime, waitForHost, HARNESS_DIR, INSTALL_DIR,
+  listBackground, capture, stripFileFor,
+  isQuitting: () => quitting,
+  setQuitting: (v) => { quitting = v; },
+  onWindowCreated: (pw) => windowCreated(pw),
+  getResources: () => resources,
+  getTray: () => trayController,
+  seenChanged: createSeenGate({ registry, getResources: () => resources }),
+};
+
+// The project window (app/project-window.js): everything that is one project's. Made HERE, after every app-wide constant it is handed (a
+// const read before its line is a TDZ error). Construction has no side effects: the claim hooks `exit` inside run(), and the window itself
+// is made by start(). `launch` is this process's own launch window (the one-window claim and an explicit port are its alone, §3.1).
+function makeWindow(cwd, launch) {
+  return createProjectWindow({
+    launchCwd: cwd,
+    launch,
+    electron: { app, BrowserWindow, WebContentsView, Menu, dialog, session },
+    config: { EXPLICIT_PORT: launch ? EXPLICIT_PORT : null, STRIP_HEIGHT, POLL_MS, PROBE_PORT, PROBE_TOKEN, PROBE_LINE_MAX, TRAY_ON, ONE_WINDOW_ON },
+    services: windowServices,
+  });
+}
+const launchWindow = makeWindow(LAUNCH_CWD, true);
+registry.add(launchWindow);
+
+// What a window's start() is handed: the probe's seams and the open-PR reader (set in whenReady).
+let appStart = null;
+
+/**
+ * Open a project in this process: its record (secrets, layout), its units (lean, indexing), then the window's own start(). `launch` is the
+ * process's own launch window (made above; its claim, poll and refusals are whenReady's); any other project gets a window of its own, or the
+ * one it already has is brought forward. Answers { pw, existing, first }.
+ */
+async function startProject(cwd, { launch = false } = {}) {
+  const pw = launch ? launchWindow : makeWindow(cwd, false);
+  if (!launch) {
+    const open = registry.get(pw.root);
+    if (open !== null) { open.focusWindow(); return { pw: open, existing: true, first: null }; }
+    registry.add(pw);
+  }
+  projectRecords.make(pw);
+  makeWindowUnits(pw);
+  const first = await pw.start(appStart);
+  // Started hidden but no icon could be made (no tray area): a window nobody can reach is worse than a visible one.
+  const w = pw.win;
+  if (trayController && !trayController.state().exists && w && !w.isDestroyed() && !w.isVisible()) pw.focusWindow();
+  if (!launch) pw.startPoll();
+  return { pw, existing: false, first };
+}
+
+app.whenReady().then(async () => {
+  console.log('[main] project       :', launchWindow.root, `(${launchWindow.mode})`);
+  console.log('[main] launched on   :', LAUNCH_CWD);
+
+  // Named and refused (see explicitPort): nothing sensible is left to do, and
+  // opening a window anyway would show a terminal wired to nothing.
+  if (EXPLICIT_PORT && EXPLICIT_PORT.bad !== undefined) { app.exit(1); return; }
+
+  // One window per project: before anything is made, ask whether this project's window already exists.
+  if (await launchWindow.claim.run() === 'exit') { app.exit(0); return; }
+
+  const seams = readSeams(process.env);
+  const openPrsReader = seams.openPrsFixture
+    ? fixtureReader(seams.openPrsFixture, { parse: parseOpenPrs, log: (line) => console.log(line) })
+    : readOpenPrs;
+  appStart = { seams, openPrsReader };
+  await startResources(seams);
 
   // No application menu bar, ever (Ricardo, 2026-09-30: every pixel of vertical
   // space). Electron paints its default File/Edit/View/Window/Help bar on
   // Windows only because none was set; null removes it. Set before the window.
   Menu.setApplicationMenu(null);
-  launchWindow.createWindow();
-  projectRecords.make(launchWindow);
-  launchWindow.syncDevServersSampling();       // read AFTER the window exists, and after a start hidden to the tray
   registerIpc();
   startIndexing(seams);
-  makeWindowUnits(launchWindow);          // its lean state and indexing overlay, handed over before the window opens
   startTray();
 
-  const first = await launchWindow.open();
+  const { first } = await startProject(LAUNCH_CWD, { launch: true });
   launchWindow.claim.markReady();        // from here a second launch is handed to this window
   if (launchWindow.attachOnlyRefusal) {
     launchWindow.claim.stop();           // this process is about to end: it is no window to hand a launch to

@@ -181,8 +181,8 @@ test('an attach-only window (Open from ▾) never spawns: it refuses and says wh
   const body = MAIN.slice(at, MAIN.indexOf('function spawnHost(', at));
   assert.match(body, /attachOnlyDecision\(decideAttach\(\{/);
   assert.match(body, /attachOnlyRefusal = decision/);
-  const start = MAIN.indexOf('const first = await launchWindow.open();');
-  assert.ok(start !== -1, 'main opens the window and reads what came back');
+  const start = MAIN.indexOf('const { first } = await startProject(LAUNCH_CWD, { launch: true });');
+  assert.ok(start !== -1, 'main opens the launch window and reads what came back');
   const after = MAIN.slice(start, start + 1500);
   assert.match(after, /if \(launchWindow\.attachOnlyRefusal\)/);
   assert.match(after, /attachOnlyText\(launchWindow\.attachOnlyRefusal\)/);
@@ -245,7 +245,8 @@ test('#77: Ctrl+click reaches the shell as ifSafe, only when the strip sent exac
 test('there is NO application menu bar: it is nulled once, before the window, and never set', () => {
   const calls = MAIN.match(/Menu\.setApplicationMenu\([^)]*\)/g) || [];
   assert.deepStrictEqual(calls, ['Menu.setApplicationMenu(null)']);
-  assert.ok(MAIN.indexOf('Menu.setApplicationMenu(null)') < MAIN.indexOf('launchWindow.createWindow();'),
+  // the window is made by start() inside startProject (single-instance PR 2), and the bar is removed before the first one
+  assert.match(MAIN, /Menu\.setApplicationMenu\(null\);\s*registerIpc\(\);[\s\S]*?await startProject\(LAUNCH_CWD, \{ launch: true \}\)/,
     'the bar is removed before the window is created');
   assert.doesNotMatch(MAIN, /buildAppMenu|accelerator:/);
 });

@@ -24,13 +24,14 @@ test('the claim runs in whenReady, after the bad-port refusal and before createW
   const claim = ready.indexOf('launchWindow.claim.run()');
   assert.ok(claim > 0);
   assert.ok(claim > ready.indexOf('EXPLICIT_PORT.bad'), 'after the bad-port refusal');
-  assert.ok(claim < ready.indexOf('createWindow();'), 'before the first window exists');
+  assert.ok(claim < ready.indexOf('startProject(LAUNCH_CWD'), 'before the first window exists (start() makes it)');
   assert.match(ready, /launchWindow\.claim\.run\(\) === 'exit'\) \{ app\.exit\(0\); return; \}/);
 });
 
 test('a probe window is outside the rule unless CLAUDE_CUSTOM_ONE_WINDOW_PROBE=1 (the tray precedent), and that flag is what enables the claim', () => {
   assert.match(src, /ONE_WINDOW_ON\s*=\s*!PROBE_PORT\s*\|\|\s*process\.env\.CLAUDE_CUSTOM_ONE_WINDOW_PROBE === '1'/);
-  assert.match(src, /createWindowClaim\(\{\s*\n\s*enabled: ONE_WINDOW_ON/);
+  // ...and only the process's own launch window holds it: the pipe is per pid, so a second window in this process must not (single-instance PR 2)
+  assert.match(src, /createWindowClaim\(\{[\s\S]{0,400}?enabled: ONE_WINDOW_ON && launch,/);
 });
 
 test('the claim is handed the real effects, and the exit hook is the process\'s own exit event', () => {
@@ -42,7 +43,7 @@ test('the claim is handed the real effects, and the exit hook is the process\'s 
 });
 
 test('the window is ready for launches once its tabs are open, and not before', () => {
-  assert.match(ready, /await launchWindow\.open\(\);\s*\n\s*launchWindow\.claim\.markReady\(\)/);
+  assert.match(ready, /await startProject\(LAUNCH_CWD, \{ launch: true \}\);\s*\n\s*launchWindow\.claim\.markReady\(\)/);
 });
 
 test('the owner stops being one at before-quit, before a dialog that ends the process, and when startup throws', () => {

@@ -99,7 +99,7 @@ const REQUIRED_ELECTRON = ['app', 'BrowserWindow', 'WebContentsView', 'Menu', 'd
 const REQUIRED_CONFIG = ['EXPLICIT_PORT', 'STRIP_HEIGHT', 'POLL_MS', 'PROBE_PORT', 'PROBE_TOKEN', 'PROBE_LINE_MAX', 'TRAY_ON', 'ONE_WINDOW_ON'];
 const REQUIRED_SERVICES = ['uiStore', 'readDim', 'usageCounters', 'forProbe', 'openInBrowser', 'probeConfirms', 'logShellError', 'canvasAsks',
   'nextCanvasAskId', 'previewProbeProxy', 'stopHostByPid', 'occupantAt', 'tokenFileFor', 'ownIdentities', 'ownStartTime', 'waitForHost',
-  'HARNESS_DIR', 'INSTALL_DIR', 'listBackground', 'capture', 'stripFileFor', 'isQuitting', 'setQuitting', 'onWindowCreated'];
+  'HARNESS_DIR', 'INSTALL_DIR', 'listBackground', 'capture', 'stripFileFor', 'isQuitting', 'setQuitting', 'onWindowCreated', 'getResources', 'getTray', 'seenChanged'];
 
 function requireAll(kind, bag, names) {
   for (const name of names) {
@@ -107,17 +107,20 @@ function requireAll(kind, bag, names) {
   }
 }
 
-function createProjectWindow({ launchCwd, electron, config, services }) {
+function createProjectWindow({ launchCwd, electron, config, services, launch }) {
   if (typeof launchCwd !== 'string' || launchCwd === '') throw new Error('createProjectWindow: missing launchCwd');
   requireAll('electron member', electron, REQUIRED_ELECTRON);
   requireAll('config value', config, REQUIRED_CONFIG);
   requireAll('service', services, REQUIRED_SERVICES);
+  // No default: the launch window holds the one-window claim, and a window made for a project opened later (a probe's openProject, PR 3's
+  // second launch) must not, so a silent default would flip one of them.
+  if (typeof launch !== 'boolean') throw new Error('createProjectWindow: launch must be true (this process\'s own launch window) or false');
   const { app, BrowserWindow, WebContentsView, Menu, dialog, session } = electron;
   const { EXPLICIT_PORT, STRIP_HEIGHT, POLL_MS, PROBE_PORT, PROBE_TOKEN, PROBE_LINE_MAX, TRAY_ON, ONE_WINDOW_ON } = config;
   const {
     uiStore, readDim, usageCounters, forProbe, openInBrowser, probeConfirms, logShellError, canvasProbeResolve, canvasAsks,
     nextCanvasAskId, previewProbeProxy, stopHostByPid, occupantAt, tokenFileFor, ownIdentities, ownStartTime, waitForHost,
-    HARNESS_DIR, INSTALL_DIR, listBackground, capture, stripFileFor, isQuitting, setQuitting, onWindowCreated,
+    HARNESS_DIR, INSTALL_DIR, listBackground, capture, stripFileFor, isQuitting, setQuitting, onWindowCreated, getResources, getTray, seenChanged,
   } = services;
 
   // --- what this window is ----------------------------------------------------------
@@ -133,9 +136,9 @@ function createProjectWindow({ launchCwd, electron, config, services }) {
   // labels itself from (its PROJECT_ROOT).
   const WINDOW_LABEL = projectLabel(PROJECT_ROOT);
 
-  // The app-wide services that come into being after this window, handed over by attach() (null until then).
-  let resources = null;              // the Resources panel's service (#63)
-  let trayController = null;         // the tray icon's one controller
+  // The app-wide services that exist before any window and are read live: getResources() (the Resources panel's service, #63) and
+  // getTray() (the tray icon's one controller) answer null until main has made them. This window's OWN lean unit and indexing overlay come
+  // through attach(), before start().
   let leanBridge = null;             // lean mode's bridge (app/lean-bridge.js)
   let indexing = null;               // the indexing assistant (#66): main's half (startIndexing)
   const CANVAS_ASK_TIMEOUT_MS = 5 * 60 * 1000;
@@ -471,11 +474,12 @@ function createProjectWindow({ launchCwd, electron, config, services }) {
       focusSelected();
     });
     win.on('blur', () => { focused = false; sendFocus(); });
-    win.on('minimize', () => { focused = false; if (resources) resources.setMinimised(true); });
-    win.on('restore', () => { focused = win.isFocused(); sendFocus(); if (resources) resources.setMinimised(false); });
+    // What the Resources sampler polls for follows whether ANY window is looked at: main works that out over every window (seenChanged).
+    win.on('minimize', () => { focused = false; seenChanged(); });
+    win.on('restore', () => { focused = win.isFocused(); sendFocus(); seenChanged(); });
     // Hidden to the tray is minimised as far as the polling and the cue go: nobody is looking.
-    win.on('hide', () => { focused = false; if (resources) resources.setMinimised(true); });
-    win.on('show', () => { if (resources) resources.setMinimised(false); });
+    win.on('hide', () => { focused = false; seenChanged(); });
+    win.on('show', () => { seenChanged(); });
     // The Dev servers sampler follows what the window shows: minimise, restore, and hide/show (the tray) alike (#119 A4).
     for (const ev of ['minimize', 'restore', 'hide', 'show']) win.on(ev, syncDevServersSampling);
     // Windows asks to end the session (log off, shut down): a hidden-to-tray window must not stand in its way.
@@ -507,7 +511,8 @@ function createProjectWindow({ launchCwd, electron, config, services }) {
     win.on('close', (e) => {
       // "Minimise to tray on close" (off by default): the window hides, the pages and their unsaved text stay alive, and the
       // tray reaches it again. Only with a tray icon up to reach it from, and never while the app is quitting.
-      if (hidesOnClose({ settings: readTraySettings(uiStore), trayExists: !!trayController && trayController.state().exists, quitting: isQuitting() })) {
+      const tray = getTray();
+      if (hidesOnClose({ settings: readTraySettings(uiStore), trayExists: !!tray && tray.state().exists, quitting: isQuitting() })) {
         e.preventDefault();
         win.hide();
         return;
@@ -709,10 +714,14 @@ function createProjectWindow({ launchCwd, electron, config, services }) {
   let devServers = null;
   let devServersExec = null;
   // Sampling follows what the window shows (host/dev-servers.js unseen): a window hidden to the tray, minimised, or not made yet samples nothing.
+  // Nobody can see this window: minimised, hidden to the tray, not made yet or gone.
+  function isUnseen() {
+    const gone = !win || win.isDestroyed();
+    return devServersHost.unseen({ visible: gone ? false : win.isVisible(), minimized: gone ? true : win.isMinimized() });
+  }
   function syncDevServersSampling() {
     if (!devServers) return;
-    const gone = !win || win.isDestroyed();
-    devServers.setMinimised(devServersHost.unseen({ visible: gone ? false : win.isVisible(), minimized: gone ? true : win.isMinimized() }));
+    devServers.setMinimised(isUnseen());
   }
 
   function destroyTabView(tab) {
@@ -781,6 +790,7 @@ function createProjectWindow({ launchCwd, electron, config, services }) {
     lastFocusedView = step.lastFocused;
     pushStripAccent();
     // The Resources panel runs its process-tree sample only for the SELECTED tab's page (#63).
+    const resources = getResources();
     if (resources) resources.refresh();
     if (devServers) devServers.refresh();      // a tab that came or went changes whose ports are asked about
     // Only the selected page's payload carries the one-hour history, so a page that has just been selected is sent it now,
@@ -842,7 +852,8 @@ function createProjectWindow({ launchCwd, electron, config, services }) {
       mode: snapshot.mode, create: snapshot.create, devClosed: snapshot.devClosed === true, mergedNotice: snapshot.mergedNotice || null,
     };
     win.webContents.send('strip-model', lastStripPayload);
-    if (trayController) trayController.sync();     // the count and the tooltip follow the cues
+    const tray = getTray();
+    if (tray) tray.sync();     // the count and the tooltip follow the cues
   }
 
   // Hand close (criterion 5): ask first, every time; then the reducer's stop +
@@ -1418,6 +1429,7 @@ function createProjectWindow({ launchCwd, electron, config, services }) {
       // BACKLOG #119 A8 (verify/probe-tray.js): the tray's own state, and its click and menu through the same functions the real
       // Tray events call. Only a window started with CLAUDE_CUSTOM_TRAY_PROBE=1 has a tray.
       async tray() {
+        const trayController = getTray();
         if (!trayController) return { ok: false, error: 'no tray in this window' };
         const snap = tabShell.snapshot();
         return { ok: true, tray: trayController.state(), visible: win.isVisible(), minimized: win.isMinimized(), selectedKey: snap.selectedKey,
@@ -1426,17 +1438,20 @@ function createProjectWindow({ launchCwd, electron, config, services }) {
       },
       // The Tray's current image as a PNG, so a person can look at what a probe measured (a Tray can't be screenshotted).
       async trayImage(file) {
+        const trayController = getTray();
         const img = trayController && trayController.image();
         if (!img) return { ok: false, error: 'no tray image' };
         fs.writeFileSync(file, img.toPNG());
         return { ok: true, bytes: fs.statSync(file).size };
       },
       async trayClick() {
+        const trayController = getTray();
         if (!trayController) return { ok: false, error: 'no tray in this window' };
         trayController.click();
         return { ok: true };
       },
       async trayMenu(clickLabel) {
+        const trayController = getTray();
         if (!trayController) return { ok: false, error: 'no tray in this window' };
         const t = await trayController.template();
         const rows = t.filter(x => x.type !== 'separator');
@@ -1449,6 +1464,7 @@ function createProjectWindow({ launchCwd, electron, config, services }) {
       },
       async traySetting(key, value) {
         const saved = writeTraySetting(uiStore, key, value);
+        const trayController = getTray();
         if (trayController) trayController.sync();
         return { ok: saved !== null, settings: saved };
       },
@@ -1507,7 +1523,9 @@ function createProjectWindow({ launchCwd, electron, config, services }) {
   }
 
   const windowClaim = createWindowClaim({
-    enabled: ONE_WINDOW_ON, stateRoot: STATE_ROOT, pid: process.pid, ownStart: () => ownStartTime(), startTimes,
+    // The claim pipe is named per pid (host/window-focus.js), so a second window in this process would collide on it: only the launch window
+    // holds the claim. PR 3 routes a second launch to the right window of the process (DESIGN_SINGLE_INSTANCE.md, Q2).
+    enabled: ONE_WINDOW_ON && launch, stateRoot: STATE_ROOT, pid: process.pid, ownStart: () => ownStartTime(), startTimes,
     project: PROJECT, launchCwd: LAUNCH_CWD, explicitPort: EXPLICIT_PORT,
     listen: windowFocus.listen, claim: windowOwner.claim, send: windowFocus.send, takeOver: windowOwner.takeOver,
     release: windowOwner.release, forwardedCwd: windowOwner.forwardedCwd,
@@ -1571,7 +1589,7 @@ function createProjectWindow({ launchCwd, electron, config, services }) {
       git: { list: listWorktrees, marker: readMergedMarker },
       marks: { markFor: (branch) => tabMarks.markFor(marks.store, branch) },
       // #63: each tab's "over 40% CPU for 30 s" chip, from the Resources service (cleared while the panel is hidden).
-      resources: { warnFor: (key) => (resources ? resources.warnFor(key) : null) },
+      resources: { warnFor: (key) => (getResources() ? getResources().warnFor(key) : null) },
       // #44 + #47: the live claims (the strip's hatched edge, each page's banner and card lines).
       // `known`: whether "no claims" can be believed (#77: a Ctrl+click close treats an unreadable service as unknown).
       occupancy: { claims: () => occupancyService.current(), known: (folder) => occupancyService.known(folder) },
@@ -1638,7 +1656,7 @@ function createProjectWindow({ launchCwd, electron, config, services }) {
       exec: devServersExec,
       tabs: () => tabShell.snapshot().tabs.filter(t => t.view && !t.view.webContents.isDestroyed()),
       portBaseOf: (cwd) => { const root = worktreeRoot(cwd); return root ? lookupPortBlock(root) : null; },
-      hostPidOf: (key) => (resources ? resources.hostPidOf(key) : null),
+      hostPidOf: (key) => (getResources() ? getResources().hostPidOf(key) : null),
       send: (key, state) => {
         const tab = tabShell.snapshot().tabs.find(t => t.key === key);
         if (tab && tab.view && !tab.view.webContents.isDestroyed()) tab.view.webContents.send('devservers:state', state);
@@ -1658,6 +1676,19 @@ function createProjectWindow({ launchCwd, electron, config, services }) {
     return first;
   }
 
+  /**
+   * The window's own phases, in the order they must run: the services (the shell, which the window's focus handler reads), the dev servers,
+   * then the window (whose events call the shell), then the dev servers' sampling (read AFTER the window exists, and after a start hidden to
+   * the tray), then the first open. Answers what tabShell.open() answers.
+   */
+  async function start({ seams, openPrsReader }) {
+    startServices({ seams, openPrsReader });
+    startDevServers();
+    createWindow();
+    syncDevServersSampling();
+    return open();
+  }
+
   /** The poll and the issue-list warm-up that follow a window which stayed up. */
   function startPoll() {
     if (MODE === 'tabs') setInterval(() => { reloadMarks(); tabShell.poll(); }, POLL_MS);
@@ -1671,12 +1702,10 @@ function createProjectWindow({ launchCwd, electron, config, services }) {
   function stopDevServers() { if (devServers) devServers.stop(); if (devServersExec) devServersExec.close(); }
   function closeOccupancy() { if (transcriptOccupancy) transcriptOccupancy.close(); if (occupancyService) occupancyService.close(); }
 
-  /** Hand over an app-wide service the moment main has made it. An unknown key throws: a typo must not be a silent no-op. */
+  /** Hand over this window's own lean unit and indexing overlay, before start(). An unknown key throws: a typo must not be a silent no-op. */
   function attach(parts) {
     for (const key of Object.keys(parts)) {
-      if (key === 'resources') resources = parts.resources;
-      else if (key === 'trayController') trayController = parts.trayController;
-      else if (key === 'leanBridge') leanBridge = parts.leanBridge;
+      if (key === 'leanBridge') leanBridge = parts.leanBridge;
       else if (key === 'indexing') indexing = parts.indexing;
       else throw new Error(`attach: unknown service "${key}"`);
     }
@@ -1726,13 +1755,10 @@ function createProjectWindow({ launchCwd, electron, config, services }) {
     viewTop: currentViewTop,
     focusSelected,
     setIndexFieldFocused,
-    // the phases of the launch, in the order whenReady runs them
+    // the phases of a window's start: attach() its units, start() it, then (once it stayed up) startPoll()
     attach,
-    startServices,
-    startDevServers,
-    createWindow,
-    syncDevServersSampling,
-    open,
+    start,
+    isUnseen,
     startPoll,
     runScreenshotPath,
     startProbeDriver,

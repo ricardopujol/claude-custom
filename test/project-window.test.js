@@ -22,9 +22,10 @@ const stubs = (config = {}) => ({
     canvasAsks: new Map(), nextCanvasAskId: noop, previewProbeProxy: noop, stopHostByPid: noop, occupantAt: noop, tokenFileFor: noop,
     ownIdentities: noop, ownStartTime: noop, waitForHost: noop, HARNESS_DIR: 'h', INSTALL_DIR: 'i', listBackground: noop, capture: noop,
     stripFileFor: noop, isQuitting: () => false, setQuitting: noop, onWindowCreated: noop,
+    getResources: () => null, getTray: () => null, seenChanged: noop,
   },
 });
-const make = (launchCwd, config) => createProjectWindow({ launchCwd, ...stubs(config) });
+const make = (launchCwd, config, launch = true) => createProjectWindow({ launchCwd, launch, ...stubs(config) });
 
 // <tmp>/p is a container: `dev` holds the repo, `feat-a` is a sibling worktree (a `.git` file).
 function container() {
@@ -115,8 +116,42 @@ test('isQuitting and setQuitting have no silent default: without them the window
   }
 });
 
-test('attach takes the four late services and throws on any other key', () => {
+test('attach takes only the window\'s own two units, and throws on any other key (the Resources service and the tray are read live now)', () => {
   const pw = make(tmpDir('pw-'));
-  pw.attach({ resources: {}, trayController: null, leanBridge: null, indexing: null });
+  pw.attach({ leanBridge: null, indexing: null });
   assert.throws(() => pw.attach({ resouces: {} }), /unknown service "resouces"/);
+  assert.throws(() => pw.attach({ resources: {} }), /unknown service "resources"/, 'resources is a getResources() service now, not attached');
+  assert.throws(() => pw.attach({ trayController: null }), /unknown service "trayController"/, 'so is the tray: getTray()');
+});
+
+test('getResources, getTray and seenChanged are required services, and the window reads them live', () => {
+  for (const name of ['getResources', 'getTray', 'seenChanged', 'onWindowCreated']) {
+    const d = stubs(); delete d.services[name];
+    assert.throws(() => createProjectWindow({ launchCwd: tmpDir('pw-'), launch: true, ...d }), new RegExp(`missing service "${name}"`));
+  }
+});
+
+test('launch is required, with no default: it decides who holds the one-window claim', () => {
+  assert.throws(() => createProjectWindow({ launchCwd: tmpDir('pw-'), ...stubs() }), /launch must be true/);
+  assert.throws(() => createProjectWindow({ launchCwd: tmpDir('pw-'), launch: 'yes', ...stubs() }), /launch must be true/);
+});
+
+test('only the launch window holds the claim: a window made for another project has it disabled (the pipe is per pid)', async () => {
+  const dir = tmpDir('pw-');
+  const launched = make(dir, { ONE_WINDOW_ON: true }, true);
+  const other = make(tmpDir('pw-'), { ONE_WINDOW_ON: true }, false);
+  assert.strictEqual(await other.claim.run(), 'proceed', 'a disabled claim lets the window proceed and listens on nothing');
+  assert.notStrictEqual(launched.claim, other.claim);
+  // with the rule off for everyone (a probe), the launch window's claim is off too
+  const off = make(tmpDir('pw-'), { ONE_WINDOW_ON: false }, true);
+  assert.strictEqual(await off.claim.run(), 'proceed');
+});
+
+test('a window\'s phases are one start(): its parts are not callable from outside', () => {
+  const pw = make(tmpDir('pw-'));
+  assert.strictEqual(typeof pw.start, 'function');
+  for (const gone of ['startServices', 'startDevServers', 'createWindow', 'syncDevServersSampling', 'open']) {
+    assert.strictEqual(pw[gone], undefined, `${gone} is the window's own phase, run by start() in order`);
+  }
+  assert.strictEqual(pw.isUnseen(), true, 'a window not made yet is unseen');
 });

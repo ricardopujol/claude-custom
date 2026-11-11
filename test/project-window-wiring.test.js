@@ -27,7 +27,7 @@ const PROJECT_LETS = ['attachOnlyRefusal', 'marks', 'win', 'tabShell', 'issueSer
   'stripWasBusy', 'lastStripAccent', 'closeAsking'];
 const PROJECT_CONSTS = ['readerUnsaved', 'liveViews', 'canvasViews', 'previewViews', 'previewKeyOf', 'stripAccent', 'backgroundActions', 'windowClaim'];
 // The ONLY top-level `let`s main may have: app-wide, one per process. A new one fails here until someone says why it isn't a window's.
-const APP_LETS = ['repoDragIcon', 'resources', 'resourceSampler', 'indexingApp', 'playback', 'trayController', 'quitting', 'canvasAskSeq', 'pausedWoken'];
+const APP_LETS = ['repoDragIcon', 'resources', 'resourceSampler', 'indexingApp', 'playback', 'appStart', 'trayController', 'quitting', 'canvasAskSeq', 'pausedWoken'];
 // The late app-wide services a window is handed by attach(), and the statement in main that makes each. (A window's OWN lean unit and
 // indexing overlay are made by makeWindowUnits and attached together: pinned in the next test.)
 const LATE = [['trayController', 'trayController = createTrayController({'], ['resources', 'resources = createResourcesService({']];
@@ -49,7 +49,7 @@ test('the window module touches no ipcMain and requires no electron', () => {
   assert.doesNotMatch(WINDOW, /\bipcMain\b/, 'a window never registers a channel: main does, once');
   assert.doesNotMatch(WINDOW, /require\(\s*['"]electron['"]\s*\)/, 'electron is handed in, so the module loads under plain node');
   assert.doesNotMatch(WINDOW, /\bregisterCanvasIpc\b|\bcreateIndexingBridge\b|\bregister\w+Handlers\b/, 'no bridge registers from inside a window');
-  assert.match(WINDOW, /function createProjectWindow\(\{ launchCwd, electron, config, services \}\)/);
+  assert.match(WINDOW, /function createProjectWindow\(\{ launchCwd, electron, config, services, launch \}\)/);
 });
 
 test('main keeps no per-project binding: its top-level lets are exactly the app-wide allow-list', () => {
@@ -68,16 +68,16 @@ test('the window owns each of those bindings, as a closure variable', () => {
   for (const name of PROJECT_CONSTS) assert.match(WINDOW, new RegExp(`^  const ${name}\\b`, 'm'), `the window declares \`const ${name}\``);
 });
 
-test('what is app-wide stays in main; a late service is attached in the very next statement after main makes it', () => {
+test('the window is handed its two own units by attach(), and reads the Resources service and the tray LIVE through getters', () => {
   assert.match(WINDOW, /function attach\(parts\) \{/);
   assert.match(WINDOW, /else throw new Error\(`attach: unknown service "\$\{key\}"`\);/, 'a typo in an attach key must not be a silent no-op');
-  for (const [name, assignment] of LATE) {
-    assert.match(WINDOW, new RegExp(`key === '${name}'\\) ${name} = parts\\.${name};`), `attach hands the window ${name}`);
-    const at = MAIN.indexOf(assignment);
-    assert.ok(at !== -1, `main makes ${name}`);
-    const rest = MAIN.slice(callEnd(MAIN, at));
-    assert.match(rest, new RegExp(`^;\\s*launchWindow\\.attach\\(\\{ ${name} \\}\\);`), `nothing may sit between main's ${name} and its attach: the window must see it become non-null at the same moment main does`);
-  }
+  assert.match(WINDOW, /key === 'leanBridge'\) leanBridge = parts\.leanBridge;/);
+  assert.match(WINDOW, /else if \(key === 'indexing'\) indexing = parts\.indexing;/);
+  assert.doesNotMatch(WINDOW, /key === 'resources'|key === 'trayController'|^  let resources\b|^  let trayController\b/m, 'a later window sees them with no extra call');
+  // main's two lets are what the getters read: a window sees each become non-null at the same moment main does
+  assert.match(MAIN, /getResources: \(\) => resources,/);
+  assert.match(MAIN, /getTray: \(\) => trayController,/);
+  for (const [name, assignment] of LATE) assert.ok(MAIN.includes(assignment), `main makes ${name}`);
 });
 
 test('a window\'s own lean unit and indexing overlay are made per window and attached together, before the window opens', () => {
@@ -86,8 +86,9 @@ test('a window\'s own lean unit and indexing overlay are made per window and att
   assert.match(body, /const overlay = makeIndexingOverlay\(pw\);/);
   assert.match(body, /windowUnits\.set\(pw, \{ lean, overlay \}\);\s*pw\.attach\(\{ leanBridge: lean, indexing: overlay \}\);/, 'the window sees both the moment main has them');
   const ready = MAIN.slice(MAIN.indexOf('app.whenReady().then('));
-  assert.match(ready, /startIndexing\(seams\);\s*makeWindowUnits\(launchWindow\);/, 'the service exists before the first overlay');
-  assert.ok(ready.search(/makeWindowUnits\(launchWindow\)/) < ready.search(/await launchWindow\.open\(\)/), 'attached before the window opens');
+  assert.match(ready, /startIndexing\(seams\);\s*startTray\(\);\s*const \{ first \} = await startProject\(LAUNCH_CWD/, 'the service exists before the first window (and so its overlay)');
+  const sp = bodyAt(MAIN, MAIN.search(/async function startProject\(/));
+  assert.ok(sp.search(/makeWindowUnits\(pw\)/) < sp.search(/await pw\.start\(appStart\)/), 'attached before the window starts');
   assert.match(MAIN, /onWindowCreated: \(pw\) => windowCreated\(pw\),/);
 });
 
@@ -127,11 +128,10 @@ test('registry is the one registry of project windows (app/project-registry.js),
   assert.doesNotMatch(MAIN, /\blaunchWindow\b[^;\n]*=\s*null/, 'launchWindow is a const');
 });
 
-test('whenReady runs the window\'s phases in the order they ran when this was one file', () => {
+test('whenReady runs the launch in this order (single-instance PR 2: the window\'s own phases are its start())', () => {
   const ready = MAIN.slice(MAIN.indexOf('app.whenReady().then('));
-  const order = ['launchWindow.claim.run()', 'launchWindow.startServices(', 'resources = createResourcesService(', 'launchWindow.attach({ resources })',
-    'launchWindow.startDevServers()', 'Menu.setApplicationMenu(null)', 'launchWindow.createWindow()', 'launchWindow.syncDevServersSampling()',
-    'registerIpc()', 'startIndexing(seams)', 'startTray()', 'await launchWindow.open()', 'launchWindow.claim.markReady()',
+  const order = ['launchWindow.claim.run()', 'await startResources(seams)', 'Menu.setApplicationMenu(null)', 'registerIpc()', 'startIndexing(seams)', 'startTray()',
+    'await startProject(LAUNCH_CWD, { launch: true })', 'launchWindow.claim.markReady()', 'launchWindow.attachOnlyRefusal',
     'launchWindow.startPoll()', 'launchWindow.runScreenshotPath()', 'launchWindow.startProbeDriver('];
   let from = -1;
   for (const step of order) {
@@ -139,6 +139,15 @@ test('whenReady runs the window\'s phases in the order they ran when this was on
     assert.ok(at !== -1, `whenReady must call ${step}`);
     assert.ok(at > from, `${step} must come after the step before it`);
     from = at;
+  }
+  // The window's own phases, in the one order they can run (win.on('focus') calls the shell, so the services come first; the dev servers'
+  // sampling is read after the window exists): they are start() in the window, not main's interleaving.
+  const startBody = bodyAt(WINDOW, WINDOW.indexOf('async function start('));
+  let p = -1;
+  for (const step of ['startServices({ seams, openPrsReader })', 'startDevServers()', 'createWindow()', 'syncDevServersSampling()', 'return open()']) {
+    const at = startBody.indexOf(step);
+    assert.ok(at !== -1 && at > p, `start() must run ${step} after the one before it`);
+    p = at;
   }
   // The quit listeners keep their REGISTRATION order in the source (at runtime before-quit fires ahead of every will-quit):
   // dev servers, the paused hold, before-quit, then the tray / sampler / occupancy close, then the watchdog.
@@ -151,9 +160,25 @@ test('whenReady runs the window\'s phases in the order they ran when this was on
   }
 });
 
+test('startProject: the launch window is the process\'s own; any other project is a window with no port and no claim of its own, or the open one brought forward', () => {
+  const make = bodyAt(MAIN, MAIN.search(/function makeWindow\(/));
+  assert.match(make, /EXPLICIT_PORT: launch \? EXPLICIT_PORT : null,/, 'a port-named launch is its own process: no second window inherits its port (CLAUDE_CUSTOM_PORT)');
+  assert.match(make, /launch,/, 'the window is told whether it is the launch window (it alone holds the claim)');
+  const sp = bodyAt(MAIN, MAIN.search(/async function startProject\(/));
+  assert.match(sp, /const pw = launch \? launchWindow : makeWindow\(cwd, false\);/);
+  assert.match(sp, /registry\.get\(pw\.root\);\s*if \(open !== null\) \{ open\.focusWindow\(\); return \{ pw: open, existing: true, first: null \}; \}\s*registry\.add\(pw\);/,
+    'a project that already has a window is brought forward, not opened twice');
+  assert.match(sp, /projectRecords\.make\(pw\);\s*makeWindowUnits\(pw\);\s*const first = await pw\.start\(appStart\);/, 'its record and units exist before its window starts');
+  assert.match(sp, /if \(!launch\) pw\.startPoll\(\);/, 'the launch window\'s poll starts after the claim\'s ready and the launch exits (whenReady)');
+  assert.strictEqual((MAIN.match(/\bcreateProjectWindow\(/g) || []).length, 1, 'one maker');
+  // per-launch env (plan risk 6): the token and the side-tab switch are only a port-named launch's, and that launch never gets a second window
+  assert.match(WINDOW, /process\.env\.CLAUDE_CUSTOM_TOKEN/);
+});
+
 test('the project window is made after every app-wide constant it is handed (a const read before its line is a TDZ error)', () => {
-  const made = MAIN.indexOf('const launchWindow = createProjectWindow({');
+  const made = MAIN.indexOf('const windowServices = {');
   assert.ok(made !== -1);
+  assert.ok(MAIN.indexOf('const launchWindow = makeWindow(LAUNCH_CWD, true);') > made, 'the launch window is made after the services it is handed');
   for (const dep of ['const stopHostByPid = ', 'const toasts = ', 'const canvasAsks = ', 'const canvasProbeResolve = ', 'const probeConfirms = ', 'const logShellError = ',
     'const stripFileFor = ', 'const ownStartTime = ', 'const INSTALL_DIR = ', 'const uiStore = ', 'const usageCounters = ']) {
     const at = MAIN.indexOf(dep);
