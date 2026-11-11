@@ -19,7 +19,7 @@
  *   5  per-project layout: a dock change in A is written to A's own `.claude-custom\layout-tree.json` and B's file is untouched
  *   6  `win-close` on B: `windows` lists one, the process is alive, B's session host is still running (a window closing detaches), A
  *      still polls (a worktree added to A on disk shows as a tab) and answers
- *   7  `win-close` on A, the last window: the process exits 0
+ *   7  `win-close` on A, the last window: the quit path runs (window-all-closed, before-quit, every will-quit listener: read from the quit log) and the process exits 0
  *
  * SAFE. Two scratch projects in a temp folder (never dev\), the hosts' `claude` is cmd.exe (CLAUDE_CUSTOM_BIN), ELECTRON_RUN_AS_NODE and
  * every CLAUDE_CUSTOM_* the probe doesn't set are deleted by the launcher, registry / portraits / uploads / UI state / user data are temp
@@ -70,7 +70,8 @@ const freePort = () => new Promise((resolve, reject) => {
 });
 
 const PASSED_ENV = ['CLAUDE_CUSTOM_BIN', 'CLAUDE_CUSTOM_CWD', 'CLAUDE_CUSTOM_TABS_PROBE', 'CLAUDE_CUSTOM_TABS_PROBE_TOKEN',
-  'CLAUDE_CUSTOM_REGISTRY', 'CLAUDE_CUSTOM_PORTRAITS', 'CLAUDE_CUSTOM_UPLOADS', 'CLAUDE_CUSTOM_UI_STATE_DIR'];
+  'CLAUDE_CUSTOM_REGISTRY', 'CLAUDE_CUSTOM_PORTRAITS', 'CLAUDE_CUSTOM_UPLOADS', 'CLAUDE_CUSTOM_UI_STATE_DIR', 'CLAUDE_CUSTOM_QUIT_LOG'];
+const QUIT_LOG = path.join(tmp, 'quit.log');   // the quit's own timeline (app/quit-log.js): which step of the way out ran, however long Chromium then takes
 
 async function launchApp(cwd) {
   const port = await freePort();
@@ -85,6 +86,7 @@ async function launchApp(cwd) {
     CLAUDE_CUSTOM_PORTRAITS: path.join(tmp, 'portraits'),
     CLAUDE_CUSTOM_UPLOADS: path.join(tmp, 'uploads'),
     CLAUDE_CUSTOM_UI_STATE_DIR: uiState,
+    CLAUDE_CUSTOM_QUIT_LOG: QUIT_LOG,
   };
   for (const k of Object.keys(env)) {
     if (k.startsWith('CLAUDE_CUSTOM_') && !PASSED_ENV.includes(k)) delete env[k];
@@ -274,9 +276,15 @@ async function main() {
   check('6: ...and A answers', (await stateOf(app, aRoot)).ok === true);
 
   // 7 ---------------------------------------------------------------------------------
+  const quitLines = () => (readText(QUIT_LOG) || '').split('\n');
+  check('7: (control) closing B, a window of two, did not start a quit', !quitLines().some(l => /window-all-closed|before-quit/.test(l)), quitLines().slice(0, 6).join(' | '));
   await win(app, aRoot, { cmd: 'win-close' });
-  const gone = await waitFor(() => (app.exited ? true : null), 300000, 1000);
-  check('7: closing the last window ends the process with exit code 0', gone === true && app.exitCode === 0, `exited=${app.exited} code=${app.exitCode}`);
+  const quitPath = await waitFor(() => (quitLines().some(l => /will-quit last/.test(l)) ? true : null), 60000, 500);
+  check('7: closing the last window runs the quit path (window-all-closed, before-quit, every will-quit listener)', quitPath === true
+    && ['window-all-closed', 'before-quit'].every(s => quitLines().some(l => l.endsWith(` ${s}`))), quitLines().filter(Boolean).slice(-8).join(' | '));
+  // Chromium's own shutdown can take minutes on this machine (BACKLOG #74 A, verify/probe-quit-linger.js), so the exit is polled for ten.
+  const gone = await waitFor(() => (app.exited ? true : null), 600000, 1000);
+  check('7: ...and the process ends with exit code 0', gone === true && app.exitCode === 0, `exited=${app.exited} code=${app.exitCode}`);
 }
 
 main()
