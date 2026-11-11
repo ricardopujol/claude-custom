@@ -11,7 +11,8 @@
  * where it can still be clicked. It releases on `click` and `failed`, and holds at most MAX_HELD toasts, dropping the
  * oldest, so unclicked toasts (and the views they name) can't pile up for the life of the app.
  *
- * deps: Notification (Electron's class), onClick(sender), log(msg)
+ * deps: Notification (Electron's class), onClick(who), log(msg). `who` is whatever show() was given as its second argument; the holder
+ * never looks inside it (main passes `{ sender, owner }`, see clickFor below).
  */
 const MAX_HELD = 20;
 
@@ -47,4 +48,16 @@ function createToastHolder(deps) {
   return { show, held: () => held.size };
 }
 
-module.exports = { createToastHolder, MAX_HELD };
+/**
+ * What a toast click does, with several windows: the toast carries `{ sender, owner }`, recorded when it was SHOWN (the window that
+ * raised it), so the click can't land on another window and can't outlive its own. A window that has since been closed (no longer the
+ * registered one for its root) or has no tab shell is ignored.
+ */
+function clickFor(registry) {
+  return ({ sender, owner }) => {
+    if (!owner || registry.get(owner.root) !== owner || !owner.tabShell) return;
+    owner.tabShell.attentionClick(sender);
+  };
+}
+
+module.exports = { createToastHolder, clickFor, MAX_HELD };

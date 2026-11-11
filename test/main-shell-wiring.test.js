@@ -129,11 +129,11 @@ test('nothing compares a sender to the window\'s own webContents except the stri
 test('the bridges that took `win` are handed the tab-view predicate', () => {
   assert.match(MAIN, /registerClipboardHandlers\(\{[^}]*isSender: isTabView[^}]*\}\)/);
   assert.match(MAIN, /registerFavouriteHandlers\(\{[^}]*isSender: isTabView[^}]*\}\)/);
-  assert.match(MAIN, /registerAvatarHandlers\(\{[^}]*isSender: isTabView[^}]*send: pushToViews[^}]*\}\)/);
-  assert.match(MAIN, /watchImagesEnabled\(\{[\s\S]*?send: pushToViews/);
+  assert.match(MAIN, /registerAvatarHandlers\(\{[^}]*isSender: isTabView[^}]*send: pushToAll[^}]*\}\)/);
+  assert.match(MAIN, /watchImagesEnabled\(\{[\s\S]*?send: pushToAll/);
   // Layout pass L2: the window-chrome settings, the same shape.
-  assert.match(MAIN, /registerChromeHandlers\(\{[^}]*isSender: isTabView[^}]*send: pushToViews[^}]*\}\)/);
-  assert.match(MAIN, /watchChromeSettings\(\{[\s\S]*?send: pushToViews[\s\S]*?`\$\{CHROME_KEY\}\.json`/);
+  assert.match(MAIN, /registerChromeHandlers\(\{[^}]*isSender: isTabView[^}]*send: pushToAll[^}]*\}\)/);
+  assert.match(MAIN, /watchChromeSettings\(\{[\s\S]*?send: pushToAll[\s\S]*?`\$\{CHROME_KEY\}\.json`/);
   // #34: the background video's play inputs (minimised, hidden, on battery), pushed to every view.
   assert.match(MAIN, /registerPlaybackHandlers\(\{[^}]*powerMonitor[^}]*isSender: isTabView[^}]*send: pushToViews[^}]*\}\)/);
 });
@@ -141,7 +141,7 @@ test('the bridges that took `win` are handed the tab-view predicate', () => {
 test('the window-wide broadcasts reach EVERY tab view', () => {
   assert.match(MAIN, /forEachView\(\(v\) => v\.webContents\.send\('window-focus'/);
   assert.match(MAIN, /forEachView\(\(v\) => v\.webContents\.send\('attention-cue'/);
-  assert.match(MAIN, /const pushToViews = \(channel, value\) => launchWindow\.forEachView/);
+  assert.match(MAIN, /const \{ pushToAll, pushToProject \} = createPushers\(registry\);/, 'install-wide settings reach every window; a project\'s own state only its own (app/push-targets.js)');
 });
 
 test('the per-window constants are gone: the port, token and cwd belong to a tab', () => {
@@ -290,8 +290,8 @@ test('the screenshot path captures the SELECTED view and the strip beside it', (
 
 test('the notification click goes to the tab that raised it', () => {
   // ...through the holder (app/toast-holder.js), which keeps the toast alive until clicked (#145).
-  assert.match(MAIN, /onClick: \(sender\) => \{ const ts = launchWindow\.tabShell; if \(ts\) ts\.attentionClick\(sender\); \}/);
-  assert.match(MAIN, /toasts\.show\(surfaces\.toast, event\.sender\)/);
+  assert.match(MAIN, /onClick: clickFor\(registry\),/, 'the click goes to the window recorded when the toast was shown');
+  assert.match(MAIN, /toasts\.show\(surfaces\.toast, \{ sender: event\.sender, owner \}\)/);
   assert.doesNotMatch(MAIN, /new Notification\(/);
 });
 
@@ -574,13 +574,13 @@ test('D3: the preset list is a third registration under PRESET_NAMES, with its o
   assert.match(reg, /sync: presetSync/);
   assert.match(reg, /store: uiStore/);
   assert.match(reg, /isSender: isTabView/);
-  assert.match(reg, /send: pushToViews/);
+  assert.match(reg, /send: pushToAll/, 'the presets are install-wide: every window hears a change');
   const w1 = MAIN.indexOf('watchLayout({');
   const watch = callText(MAIN, MAIN.indexOf('watchLayout({', MAIN.indexOf('watchLayout({', w1 + 1) + 1));
   assert.match(watch, /names: PRESET_NAMES/);
   assert.match(watch, /sync: presetSync/);
   assert.match(watch, /store: uiStore/);
-  assert.match(watch, /send: pushToViews/);
+  assert.match(watch, /send: pushToAll/);
   assert.match(watch, /`\$\{PRESET_NAMES\.key\}\.json`/);
 });
 

@@ -121,7 +121,8 @@ function pickerOptions() {
 // `isSender` and `send` (worktree tabs): the window is a shell of tab views, so
 // "from this window" means "from one of its views", and a push goes to every
 // view. Absent, the old single-page rule and `win.webContents.send`.
-function registerAvatarHandlers({ ipcMain, store, win, dialog, sync = {}, isSender, send }) {
+// `parentFor(sender)` (several project windows): the window the picker sits on is the asking page's own, not `win`.
+function registerAvatarHandlers({ ipcMain, store, win, dialog, sync = {}, isSender, send, parentFor }) {
   const fromWindow = (e) => !!e && (typeof isSender === 'function'
     ? isSender(e.sender) === true
     : !!(win && e.sender === win.webContents));
@@ -182,7 +183,8 @@ function registerAvatarHandlers({ ipcMain, store, win, dialog, sync = {}, isSend
   ipcMain.handle(PICK_CHANNEL, async (e) => {
     if (!fromWindow(e)) return null;
     try {
-      const r = await dialog.showOpenDialog(win, pickerOptions());
+      const parent = typeof parentFor === 'function' ? (parentFor(e.sender) || win) : win;
+      const r = await dialog.showOpenDialog(parent, pickerOptions());
       return r && !r.canceled && Array.isArray(r.filePaths) && typeof r.filePaths[0] === 'string'
         ? r.filePaths[0] : null;
     } catch (err) {

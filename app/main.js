@@ -13,9 +13,11 @@
  */
 
 const { app, BrowserWindow, WebContentsView, Menu, Notification, Tray, clipboard, dialog, ipcMain, nativeImage, safeStorage, session, shell, powerMonitor } = require('electron');
-const { createToastHolder } = require('./toast-holder');
+const { createToastHolder, clickFor } = require('./toast-holder');
 const { createProjectWindow } = require('./project-window');
 const { createProjectRegistry } = require('./project-registry');
+const { createPushers } = require('./push-targets');
+const { createBusyGate } = require('./busy-gate');
 const { armQuitWatchdog } = require('./quit-watchdog');
 const { createQuitLog, wireQuitLog, markWillQuitEnd } = require('./quit-log');
 // BACKLOG #74 A: the quit's timeline, only when CLAUDE_CUSTOM_QUIT_LOG names a file (verify/probe-quit-linger.js); a no-op otherwise.
@@ -269,6 +271,7 @@ const indexingPages = new Set();       // the indexing overlay's pages (toast, l
 // bridge requires `isSender(sender) === true` and an object-returning gate would make each of them refuse silently; the owner comes
 // from the resolver, after the gate.
 const registry = createProjectRegistry();
+const { pushToAll, pushToProject } = createPushers(registry);
 function stripOwner(event) { return registry.stripOwner(event); }
 function viewOwner(sender) { return registry.viewOwner(sender); }
 function forEachProject(fn) { registry.forEach(fn); }
@@ -277,7 +280,7 @@ const isTabView = (sender) => viewOwner(sender) !== null;
 // Holds each OS toast until it's clicked or closed, so its click can't be lost to garbage collection (#145).
 const toasts = createToastHolder({
   Notification,
-  onClick: (sender) => { const ts = launchWindow.tabShell; if (ts) ts.attentionClick(sender); },   // not viewOwner(sender): the click can outlive its tab view (PR 2: record the owner at show time)
+  onClick: clickFor(registry),   // the owner is recorded at show time (not viewOwner(sender): the click can outlive its tab view)
   log: (m) => console.log(m),
 });
 
@@ -550,13 +553,14 @@ function registerIpc() {
   });
   // The ▾ menu. Answers when it closes, so the strip can show it was busy
   // (the list takes two powershell.exe, ~1-2 s); one at a time.
-  let backgroundBusy = false;
+  const backgroundBusy = createBusyGate();     // per window's strip: a busy ▾ in one window never blocks another's
   ipcMain.handle('strip:background', async (e) => {
-    if (!fromStrip(e) || backgroundBusy) return;
-    backgroundBusy = true;
-    try { await stripOwner(e).showBackgroundMenu(); } catch (err) {
+    if (!fromStrip(e)) return;
+    const owner = stripOwner(e);
+    if (!backgroundBusy.enter(owner)) return;
+    try { await owner.showBackgroundMenu(); } catch (err) {
       console.log('[main] background menu failed:', err && err.message);
-    } finally { backgroundBusy = false; }
+    } finally { backgroundBusy.leave(owner); }
   });
   // STOP ALL (host/kill-switch.js): one confirm, then ~/.claude/STOP-ALL, the file every host polls. One at a time. The file comes from
   // the home folder, never the CLI's config dir, so it is the same one every host watches; the probe seam stands in for it.
@@ -715,7 +719,7 @@ function registerIpc() {
     if (!surfaces.toast) console.log(`[main] attention: suppressed (focused=${owner.focused})`);
     if (surfaces.toast && Notification.isSupported()) {
       // The click goes to the tab that raised it, and to the window; the holder keeps the toast alive until then.
-      toasts.show(surfaces.toast, event.sender);
+      toasts.show(surfaces.toast, { sender: event.sender, owner });
     }
     // Survives the toast: on Windows the taskbar button keeps flashing until
     // the window is looked at, which is the whole point for a blocked session.
@@ -798,22 +802,24 @@ function registerIpc() {
   ipcMain.handle('secrets:melt', (e) => (fromWindow(e) ? secrets.melt() : { ok: false }));
 
   // Ctrl+V (BACKLOG #12, #8): the page asks, main reads the clipboard.
-  registerClipboardHandlers({ ipcMain, clipboard, win: launchWindow.win, isSender: isTabView });
+  registerClipboardHandlers({ ipcMain, clipboard, isSender: isTabView });
 
   // Model favourites (BACKLOG E #5, #3): a star on an OpenRouter row or a
   // Claude choice, persisted GLOBALLY next to look-global -- see
   // favourites-bridge.js's header for why main owns this store directly.
-  registerFavouriteHandlers({ ipcMain, store: uiStore, win: launchWindow.win, isSender: isTabView });
+  registerFavouriteHandlers({ ipcMain, store: uiStore, isSender: isTabView });
 
   // Agent pictures (BACKLOG C #13, #18): the file picker for a portrait and the
   // install-wide "show agent images" toggle, persisted GLOBALLY next to
   // look-global -- see avatar-bridge.js. A push goes to EVERY tab view.
   const avatarSync = {};
-  const pushToViews = (channel, value) => launchWindow.forEachView((v) => v.webContents.send(channel, value));
-  registerAvatarHandlers({ ipcMain, store: uiStore, win: launchWindow.win, dialog, sync: avatarSync, isSender: isTabView, send: pushToViews });
+  // One window's views, until the per-project units of steps 4-5 replace each user of it (the layout, the tree, lean, playback).
+  const pushToViews = pushToProject(launchWindow);
+  const windowOf = (sender) => { const p = viewOwner(sender); return p ? p.win : null; };   // the asking page's own window (a dialog's parent)
+  registerAvatarHandlers({ ipcMain, store: uiStore, dialog, sync: avatarSync, isSender: isTabView, send: pushToAll, parentFor: windowOf });
   // Other project windows are other mains sharing this store: follow their toggle.
   watchImagesEnabled({
-    store: uiStore, win: launchWindow.win, sync: avatarSync, send: pushToViews,
+    store: uiStore, sync: avatarSync, send: pushToAll,
     file: path.join(UI_STATE_DIR, `${AVATAR_KEY}.json`),
   });
 
@@ -823,9 +829,9 @@ function registerIpc() {
   // The tray icon's switches (BACKLOG #119 A8), in the same record. Changing one applies at once: the icon appears or goes.
   registerTrayHandlers({ ipcMain, store: uiStore, isSender: isTabView, onChange: () => { if (trayController) trayController.sync(); } });
   const chromeSync = {};
-  registerChromeHandlers({ ipcMain, store: uiStore, sync: chromeSync, isSender: isTabView, send: pushToViews });
+  registerChromeHandlers({ ipcMain, store: uiStore, sync: chromeSync, isSender: isTabView, send: pushToAll });
   watchChromeSettings({
-    store: uiStore, sync: chromeSync, send: pushToViews,
+    store: uiStore, sync: chromeSync, send: pushToAll,
     file: path.join(UI_STATE_DIR, `${CHROME_KEY}.json`),
   });
 
@@ -880,9 +886,9 @@ function registerIpc() {
   });
   // The layout presets (dockable panels D3): a list, install-wide, under its own key. Same bridge, an array.
   const presetSync = {};
-  registerLayoutHandlers({ ipcMain, store: uiStore, sync: presetSync, names: PRESET_NAMES, isSender: isTabView, send: pushToViews });
+  registerLayoutHandlers({ ipcMain, store: uiStore, sync: presetSync, names: PRESET_NAMES, isSender: isTabView, send: pushToAll });
   watchLayout({
-    store: uiStore, sync: presetSync, names: PRESET_NAMES, send: pushToViews,
+    store: uiStore, sync: presetSync, names: PRESET_NAMES, send: pushToAll,
     file: path.join(UI_STATE_DIR, `${PRESET_NAMES.key}.json`),
   });
 
@@ -891,9 +897,10 @@ function registerIpc() {
   // The tab strip and the indexing overlay are their own pages: they get the interface font as a --font-ui they read (uiFontScript).
   const fontsSync = {};
   const pushFonts = (channel, settings) => {
-    pushToViews(channel, settings);
+    pushToAll(channel, settings);
     const script = uiFontScript(settings);
-    for (const wc of [launchWindow.win && launchWindow.win.webContents, ...indexingPages]) {
+    const strips = []; registry.forEach((p) => strips.push(p.win && p.win.webContents));   // every window's strip page, then the overlays
+    for (const wc of [...strips, ...indexingPages]) {
       try { if (wc && !wc.isDestroyed()) wc.executeJavaScript(script).catch(() => {}); } catch { /* the page is going away */ }
     }
   };
