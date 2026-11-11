@@ -291,3 +291,37 @@ test('settleVersion: a version that never reads is tried twice more, no more; a 
   assert.strictEqual(prepared, 0);
   assert.strictEqual(slept, 0);
 });
+
+// --- the exe is missing at BOOT (an update has it deleted for a moment): that is an install mid-update, not "never installed" ------
+const path = require('node:path');
+const { claudeLooksInstalled } = require('../host/boot-retry');
+const HOME = path.join('C:', 'Users', 'u');
+const APPDATA = path.join(HOME, 'AppData', 'Roaming');
+const looks = (existing, over = {}) => claudeLooksInstalled({
+  bin: 'claude.exe', explicit: false, home: HOME, appdata: APPDATA,
+  exists: (p) => existing.includes(p), ...over,
+});
+
+test('claudeLooksInstalled: the exe itself being there is enough', () => {
+  assert.strictEqual(looks(['claude.exe']), true);
+});
+
+test("claudeLooksInstalled: the exe missing but the CLI's own data folder there is an update in progress (measured 2026-11-11)", () => {
+  assert.strictEqual(looks([path.join(HOME, '.local/share/claude')]), true);
+  assert.strictEqual(looks([path.join(APPDATA, 'npm/node_modules/@anthropic-ai/claude-code')]), true);
+});
+
+test('claudeLooksInstalled: nothing of an install anywhere is not installed, so a missing claude still fails at once', () => {
+  assert.strictEqual(looks([]), false);
+});
+
+test('claudeLooksInstalled: a CLAUDE_CUSTOM_BIN that is not there stays a typo, whatever else is installed', () => {
+  assert.strictEqual(looks([path.join(HOME, '.local/share/claude')], { explicit: true, bin: 'C:\typo\claude.exe' }), false);
+  assert.strictEqual(looks(['C:\ok\claude.exe'], { explicit: true, bin: 'C:\ok\claude.exe' }), true);
+});
+
+test('claudeLooksInstalled: an unset APPDATA does not turn the npm marker into a path under the cwd', () => {
+  const seen = [];
+  claudeLooksInstalled({ bin: 'claude.exe', explicit: false, home: HOME, appdata: '', exists: (p) => { seen.push(p); return false; } });
+  assert.ok(!seen.some((p) => p.includes('claude-code')), seen.join(' | '));
+});

@@ -42,6 +42,13 @@ test('prepareMod says whether the version was unreadable (and only then)', () =>
   assert.match(host, /let modVersionUnreadable = false;/);
 });
 
-test('CLAUDE_BIN_EXISTED is read once, at boot, from the resolved path', () => {
-  assert.match(host, /const CLAUDE_BIN_EXISTED = fs\.existsSync\(CLAUDE_BIN\);/);
+test('CLAUDE_BIN_EXISTED is read once, at boot, and an exe missing at boot still counts when the CLI is installed (an update has it gone)', () => {
+  assert.match(host, /const CLAUDE_BIN_EXISTED = claudeLooksInstalled\(\{\s*bin: CLAUDE_BIN, explicit: Boolean\(process\.env\.CLAUDE_CUSTOM_BIN\), exists: fs\.existsSync, home: os\.homedir\(\), appdata: process\.env\.APPDATA \|\| ''/);
+});
+
+test('a retry looks for the exe again: a bare "claude.exe" from a boot with no exe is resolved to the real path once it is there', () => {
+  assert.match(host, /let CLAUDE_BIN = resolveClaude\(\);/);
+  const spawn = host.slice(host.indexOf('const spawnPty = () =>'), host.indexOf('// The clock just before and just after the spawn'));
+  assert.match(spawn, /SHELL \? SHELL_TARGET\.bin : liveClaudeBin\(\)/);
+  assert.match(host, /function liveClaudeBin\(\) \{\s*if \(!fs\.existsSync\(CLAUDE_BIN\)\) CLAUDE_BIN = resolveClaude\(\);\s*return CLAUDE_BIN;\s*\}/);
 });

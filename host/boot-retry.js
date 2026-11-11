@@ -1,4 +1,5 @@
 'use strict';
+const path = require('path');
 /**
  * BACKLOG #217: Claude Code's auto-update rewrites claude.exe in place, and a spawn that lands in that window fails (node-pty: "Cannot
  * create process, error code: 216", a truncated exe) and left the tab empty for good. This is the decision (is the failure the "binary
@@ -20,6 +21,20 @@ const PTY_CODE = /error code: (?:216|193|32)\b/;
 const PTY_NOT_FOUND = /^File not found\b/;
 const ALWAYS_CODES = new Set(['EBUSY']);
 const IF_IT_EXISTED_CODES = new Set(['ENOENT', 'EACCES', 'EPERM']);
+
+/**
+ * Is a claude installed here, even if its exe is not on disk this second? An update deletes claude.exe and writes it again, so a tab
+ * opened in that window boots with no exe (measured 2026-11-11: "claude binary : claude.exe", the bare PATH fallback, then "File not
+ * found" and a blank tab for good). The exe being there is the strongest proof; failing that, the CLI's own data folder or the npm
+ * package folder is. A CLAUDE_CUSTOM_BIN that isn't there is a typo and stays one. All the filesystem reads are the injected `exists`.
+ */
+function claudeLooksInstalled({ bin, explicit, exists, home, appdata }) {
+  if (exists(bin)) return true;
+  if (explicit) return false;
+  const markers = [path.join(home, '.local/share/claude')];
+  if (appdata) markers.push(path.join(appdata, 'npm/node_modules/@anthropic-ai/claude-code'));
+  return markers.some((m) => exists(m));
+}
 
 function messageOf(err) {
   if (typeof err === 'string') return err;
@@ -142,6 +157,6 @@ async function settleVersion({ prepare, unreadable, sleep, retries = VERSION_RET
 }
 
 module.exports = {
-  isRetryableSpawnError, nextStep, giveUpLine, createBootRetry, settleVersion,
+  isRetryableSpawnError, nextStep, giveUpLine, createBootRetry, settleVersion, claudeLooksInstalled,
   RETRY_EVERY_MS, GIVE_UP_AFTER_MS, RETRY_LINE,
 };

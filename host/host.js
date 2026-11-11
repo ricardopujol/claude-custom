@@ -154,7 +154,7 @@ const { createSelfStartTime, isAlive: procAlive, startTimes } = require('./proc-
 const { isSideEnv, siblingSessions } = require('./side-session');
 // BACKLOG #119 A5: a tab's plain shell is a host of its own too (host/shell-tab.js): its pty runs the person's shell, not claude.
 const { isShellEnv, startShellPty, identityFields, FAILED_START_LINGER_MS } = require('./shell-tab');
-const { createBootRetry, settleVersion } = require('./boot-retry');
+const { createBootRetry, settleVersion, claudeLooksInstalled } = require('./boot-retry');
 const { identitiesIn } = require('./background-hosts');
 // Worktree occupancy (backlog #44 + #47): which worktree each of this session's subagents is working in,
 // as claim files the other windows read. See host/occupancy-producer.js.
@@ -198,9 +198,18 @@ function resolveClaude() {
   return process.platform === 'win32' ? 'claude.exe' : 'claude';
 }
 
-const CLAUDE_BIN = resolveClaude();
-// Whether the exe was there at boot (BACKLOG #217): only then is a later "not found" an update in progress, not a claude that isn't installed.
-const CLAUDE_BIN_EXISTED = fs.existsSync(CLAUDE_BIN);
+let CLAUDE_BIN = resolveClaude();
+// Whether a claude is installed here at boot (BACKLOG #217): only then is a later "not found" an update in progress, not a claude that
+// isn't installed. The exe alone is not proof: an update has it deleted for a moment, and a tab opened then boots with the bare PATH
+// fallback (measured 2026-11-11), so the CLI's own folders count too (host/boot-retry.js claudeLooksInstalled).
+const CLAUDE_BIN_EXISTED = claudeLooksInstalled({
+  bin: CLAUDE_BIN, explicit: Boolean(process.env.CLAUDE_CUSTOM_BIN), exists: fs.existsSync, home: os.homedir(), appdata: process.env.APPDATA || '',
+});
+// The path to spawn. A boot with no exe left the bare name; once the update has put the exe back, a retry finds the real path again.
+function liveClaudeBin() {
+  if (!fs.existsSync(CLAUDE_BIN)) CLAUDE_BIN = resolveClaude();
+  return CLAUDE_BIN;
+}
 const CWD = process.env.CLAUDE_CUSTOM_CWD || process.cwd();
 // A relative CLAUDE_CONFIG_DIR means a folder under THIS tab's cwd (where its `claude` runs), not the host process's.
 setConfigAnchor(CWD);
@@ -1990,7 +1999,7 @@ function startSession() {
   // arrived while blocked or booting only reached termState, which starts at
   // 120x30 and follows every validated resize since.
   const { cols, rows } = termState.size();
-  const spawnPty = () => pty.spawn(SHELL ? SHELL_TARGET.bin : CLAUDE_BIN, SHELL ? SHELL_TARGET.args : claudeArgs(), {
+  const spawnPty = () => pty.spawn(SHELL ? SHELL_TARGET.bin : liveClaudeBin(), SHELL ? SHELL_TARGET.args : claudeArgs(), {
     name: 'xterm-256color',
     cols,
     rows,
