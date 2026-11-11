@@ -21,10 +21,12 @@ const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
+const { mainProcessSource, bodyAt } = require('./main-source');
 
 const strip = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*/gm, '');
-// app/main.js has CRLF endings on a core.autocrlf checkout; the slices below anchor on '\n}\n'.
-const MAIN = strip(fs.readFileSync(path.join(__dirname, '..', 'app', 'main.js'), 'utf8').replace(/\r\n/g, '\n'));
+// The main process is two files since the per-project state moved into app/project-window.js: read both (test/main-source.js),
+// CRLF-normalised (app/main.js has CRLF on a core.autocrlf checkout), so a pin never passes on a subset of the code.
+const MAIN = mainProcessSource({ strip: true });
 
 // A top-level function body, up to its closing brace at column 0. A missing end FAILS instead of reading to EOF.
 const topLevelBody = (at) => {

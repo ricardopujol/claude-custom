@@ -23,6 +23,7 @@
 
 const { app, BrowserWindow, WebContentsView, Menu, Notification, Tray, clipboard, dialog, ipcMain, nativeImage, safeStorage, session, shell, powerMonitor } = require('electron');
 const { createToastHolder } = require('./toast-holder');
+const { createProjectWindow } = require('./project-window');
 const { tabViewWebPreferences } = require('./tab-view-prefs');
 const { cueFlash } = require('./cue-flash');
 const { armQuitWatchdog } = require('./quit-watchdog');
@@ -206,16 +207,11 @@ const EXPLICIT_PORT = explicitPort();
 
 // --- what this window is ----------------------------------------------------------
 const LAUNCH_CWD = process.env.CLAUDE_CUSTOM_CWD || process.cwd();
-const PROJECT = projectOf(LAUNCH_CWD);
-const MODE = (PROJECT && PROJECT.kind === 'container' && EXPLICIT_PORT === null) ? 'tabs' : 'single';
-// What hostEnv hands each host as its project. A folder in no project is its
-// own root and state, as the host would work out for itself.
-const HOST_PROJECT = PROJECT || { kind: 'none', root: LAUNCH_CWD, dev: LAUNCH_CWD };
-const PROJECT_ROOT = HOST_PROJECT.root;
-const STATE_ROOT = stateRoot(HOST_PROJECT);
-// The name on the window and on every tab's header: the same source the host
-// labels itself from (its PROJECT_ROOT).
-const WINDOW_LABEL = projectLabel(PROJECT_ROOT);
+// The project this launch opens, made by app/project-window.js (PROJECT, MODE, HOST_PROJECT, PROJECT_ROOT, STATE_ROOT and
+// WINDOW_LABEL are worked out there). One entry in the Map today: still one project per process.
+const launchWindow = createProjectWindow({ launchCwd: LAUNCH_CWD, config: { EXPLICIT_PORT } });
+const projectWindows = new Map([[launchWindow.root, launchWindow]]);
+const { PROJECT, MODE, HOST_PROJECT, PROJECT_ROOT, STATE_ROOT, WINDOW_LABEL } = launchWindow.identity;   // interim aliases (constants)
 const STRIP_HEIGHT = 34;
 const POLL_MS = 3000;
 const PROBE_PORT = Number(process.env.CLAUDE_CUSTOM_TABS_PROBE) || 0;
