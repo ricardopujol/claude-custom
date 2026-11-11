@@ -61,4 +61,13 @@ function bodyAt(src, at) {
   assert.fail(`bodyAt: no closing brace for the body at ${at}`);
 }
 
-module.exports = { mainProcessSource, mainOnly, windowOnly, bodyAt, stripComments };
+/** The index of `needle` in `src`, failing if it's missing or occurs more than once (a bare indexOf silently takes the first). */
+function uniqueAt(src, needle) {
+  const first = src.indexOf(needle);
+  assert.ok(first !== -1, `uniqueAt: ${JSON.stringify(needle)} not found`);
+  const second = src.indexOf(needle, first + needle.length);
+  assert.ok(second === -1, `uniqueAt: ${JSON.stringify(needle)} occurs more than once (at ${first} and ${second})`);
+  return first;
+}
+
+module.exports = { mainProcessSource, mainOnly, windowOnly, bodyAt, stripComments, uniqueAt };
