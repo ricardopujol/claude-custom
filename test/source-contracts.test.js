@@ -360,7 +360,7 @@ test('#50: the reader\'s unsaved file reaches main only from a tab view, and the
 });
 
 test('#50 (PR #155 Dexter 2): closing the window asks about unsaved reader text, with Save wired through the pages', () => {
-  const main = fs.readFileSync(path.join(__dirname, '..', 'app', 'main.js'), 'utf8').replace(/\r\n/g, '\n');
+  const main = require('./main-source').mainProcessSource();   // the close handler is the project window's (app/project-window.js)
   const at = main.indexOf("win.on('close', (e) => {");
   assert.ok(at !== -1, 'the window has a close handler');
   const body = main.slice(at, main.indexOf("win.on('closed'", at));
@@ -377,7 +377,7 @@ test('#50 (PR #155 Dexter 2): closing the window asks about unsaved reader text,
 });
 
 test('#50 (PR #155 Miguel I1): a reloaded or crashed page can no longer leave main believing it has unsaved text', () => {
-  const main = fs.readFileSync(path.join(__dirname, '..', 'app', 'main.js'), 'utf8').replace(/\r\n/g, '\n');
+  const main = require('./main-source').mainProcessSource();
   assert.match(main, /wc\.on\('render-process-gone', \(_e, d\) => \{ readerUnsaved\.clear\(tab\.key\);/);
   assert.match(main, /wc\.on\('did-start-navigation', \(_e, _url, isInPlace, isMainFrame\) => \{ if \(isMainFrame && !isInPlace\) readerUnsaved\.clear\(tab\.key\); \}\);/);
 });
@@ -392,7 +392,7 @@ test('#50 (PR #155 Miguel I3): the reader\'s probe hooks (type, confirmAnswer...
   assert.match(renderer, /case 'repoProbe': \{\s*const r = repoBrowser\.probe\(a\.what, a\);/);
   // that case is inside the view-action switch, which only the probe driver's `view` command reaches, behind a whitelist
   assert.match(read('app', 'tab-shell.js'), /VIEW_PROBE_ACTIONS = new Set\(\[[^\]]*'repoProbe'/);
-  assert.match(read('app', 'main.js').replace(/\r\n/g, '\n'), /if \(PROBE_PORT\) startProbeDriver\(PROBE_PORT\)/);
+  assert.match(read('app', 'main.js').replace(/\r\n/g, '\n'), /if \(PROBE_PORT\) launchWindow\.startProbeDriver\(PROBE_PORT\)/);
   // the answer hook is read in exactly one place besides probe(): confirmLeave
   const reader = read('app', 'repo-reader.js');
   const uses = (reader.match(/probeAnswer/g) || []).length;
@@ -400,10 +400,10 @@ test('#50 (PR #155 Miguel I3): the reader\'s probe hooks (type, confirmAnswer...
 });
 
 test('#50 (PR #155 r2 N1): destroying a tab view clears its unsaved entry (a removed worktree leaves no phantom question)', () => {
-  const main = fs.readFileSync(path.join(__dirname, '..', 'app', 'main.js'), 'utf8').replace(/\r\n/g, '\n');
+  const main = require('./main-source').mainProcessSource();
   const at = main.indexOf('function destroyTabView(tab) {');
   assert.ok(at !== -1);
-  assert.match(main.slice(at, main.indexOf('\n}\n', at)), /readerUnsaved\.clear\(tab\.key\)/);
+  assert.match(require('./main-source').bodyAt(main, at), /readerUnsaved\.clear\(tab\.key\)/);
 });
 
 test('#50 (PR #155 Miguel I2): the Files panel highlight goes back when the person declines to leave unsaved text', () => {
@@ -767,7 +767,7 @@ test('Miguel S2: one "pinnable" rule serves pin and pinMenu, and the menu click 
   assert.strictEqual((shell.match(/const pinnable = /g) || []).length, 1);
   assert.ok((shell.match(/pinnable\(key\)/g) || []).length >= 2, 'used by setPinned and pinMenu');
   assert.strictEqual((shell.match(/model\(\)\.some\(e => e\.key === key && !isCompanionEntry\(e\) && !e\.isDev\)/g) || []).length, 1, 'the predicate is written once');
-  const main = fs.readFileSync(path.join(__dirname, '..', 'app', 'main.js'), 'utf8').replace(/\r\n/g, '\n');
+  const main = require('./main-source').mainProcessSource();
   const menu = main.slice(main.indexOf('function tabMenuTemplate('), main.indexOf('let win = null;'));
   assert.match(menu, /const done = \(r\) => \{ if \(r && r\.ok === false\) console\.log\(`\[menu\] pin: \$\{r\.error\}`\); \};/);
 });

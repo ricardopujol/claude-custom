@@ -8,9 +8,10 @@ const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
+const { mainProcessSource } = require('./main-source');
 
 const HOST = fs.readFileSync(path.join(__dirname, '..', 'host', 'host.js'), 'utf8');
-const MAIN = fs.readFileSync(path.join(__dirname, '..', 'app', 'main.js'), 'utf8');
+const MAIN = mainProcessSource();
 
 test('host.js: the shell flag is read once, before the hook helper is looked for, and a shell host has no helper', () => {
   assert.match(HOST, /const SHELL = isShellEnv\(process\.env\);\s*\nconst helperExists = !SHELL && fs\.existsSync\(HELPER_PATH\);/);
@@ -125,7 +126,7 @@ test('main.js: the + menu offers a Shell tab for the selected lane', () => {
   // #160: the template is app/tab-shell.js plusMenuTemplate (its labels are pinned in test/tab-shell-develop.test.js); main hands
   // it the shell's openShell for the item's target.
   const plus = MAIN.slice(MAIN.indexOf("ipcMain.on('strip:plus'"), MAIN.indexOf("ipcMain.on('strip:plus'") + 300);
-  assert.match(plus, /Menu\.buildFromTemplate\(plusMenuFor\(\)\)/);
+  assert.match(plus, /Menu\.buildFromTemplate\(p\.plusMenuFor\(\)\)/);   // `p` is the strip's owning window (stripOwner(e))
   const builder = MAIN.slice(MAIN.indexOf('function plusMenuFor('), MAIN.indexOf('function plusMenuFor(') + 500);
   assert.match(builder, /plusMenuTemplate\(tabShell\.plusMenu\(\)/);
   assert.match(builder, /openShell: \(target\) => tabShell\.openShell\(target\)/);

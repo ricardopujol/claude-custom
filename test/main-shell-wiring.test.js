@@ -28,11 +28,11 @@ const strip = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\
 // CRLF-normalised (app/main.js has CRLF on a core.autocrlf checkout), so a pin never passes on a subset of the code.
 const MAIN = mainProcessSource({ strip: true });
 
-// A top-level function body, up to its closing brace at column 0. A missing end FAILS instead of reading to EOF.
+// A function's braced body, its end found by brace matching (some of these functions are indented now, inside app/project-window.js's
+// factory, so a column-0 closing brace would overrun into the rest of the file). A missing start or end FAILS instead of reading to EOF.
 const topLevelBody = (at) => {
-  const end = MAIN.indexOf('\n}\n', at);
-  assert.ok(at !== -1 && end !== -1, 'the function must exist and close at column 0');
-  return MAIN.slice(at, end);
+  assert.ok(at !== -1, 'the function must exist');
+  return bodyAt(MAIN, at);
 };
 
 // A slice from `at` up to the next `end` marker. A missing start or end FAILS instead of reading to EOF.
@@ -119,7 +119,10 @@ test('every other channel is gated on "one of this window\'s tab views"', () => 
 test('nothing compares a sender to the window\'s own webContents except the strip gate', () => {
   const uses = [...MAIN.matchAll(/sender\s*===\s*[^;\n]*webContents/g)].map(m => m[0]);
   assert.strictEqual(uses.length, 1, `only fromStrip may: ${uses.join(' | ')}`);
-  assert.match(MAIN, /const fromStrip = \(event\) => [^\n]*event\.sender === win\.webContents/);
+  assert.match(MAIN, /const isStrip = \(sender\) => [^\n]*sender === win\.webContents/);
+  assert.match(MAIN, /const fromStrip = \(event\) => stripOwner\(event\) !== null;/);
+  assert.match(MAIN, /for \(const p of projectWindows\.values\(\)\) if \(p\.isStrip\(event && event\.sender\)\) return p;/);
+  assert.match(MAIN, /const isTabView = \(sender\) => viewOwner\(sender\) !== null;/, 'the gates stay boolean: every bridge requires isSender(...) === true');
 });
 
 test('the bridges that took `win` are handed the tab-view predicate', () => {
@@ -137,7 +140,7 @@ test('the bridges that took `win` are handed the tab-view predicate', () => {
 test('the window-wide broadcasts reach EVERY tab view', () => {
   assert.match(MAIN, /forEachView\(\(v\) => v\.webContents\.send\('window-focus'/);
   assert.match(MAIN, /forEachView\(\(v\) => v\.webContents\.send\('attention-cue'/);
-  assert.match(MAIN, /const pushToViews = \(channel, value\) => forEachView/);
+  assert.match(MAIN, /const pushToViews = \(channel, value\) => launchWindow\.forEachView/);
 });
 
 test('the per-window constants are gone: the port, token and cwd belong to a tab', () => {
@@ -173,10 +176,11 @@ test('an attach-only window (Open from ▾) never spawns: it refuses and says wh
   const body = MAIN.slice(at, MAIN.indexOf('function spawnHost(', at));
   assert.match(body, /attachOnlyDecision\(decideAttach\(\{/);
   assert.match(body, /attachOnlyRefusal = decision/);
-  const start = MAIN.indexOf('const first = await tabShell.open();');
+  const start = MAIN.indexOf('const first = await launchWindow.open();');
+  assert.ok(start !== -1, 'main opens the window and reads what came back');
   const after = MAIN.slice(start, start + 1500);
-  assert.match(after, /if \(attachOnlyRefusal\)/);
-  assert.match(after, /attachOnlyText\(attachOnlyRefusal\)/);
+  assert.match(after, /if \(launchWindow\.attachOnlyRefusal\)/);
+  assert.match(after, /attachOnlyText\(launchWindow\.attachOnlyRefusal\)/);
   assert.match(after, /app\.exit\(1\)/);
 });
 
@@ -207,7 +211,7 @@ test('the poller runs every 3 s', () => {
 
 test('the probe driver does nothing without its env var, and only listens locally', () => {
   assert.match(MAIN, /const PROBE_PORT = Number\(process\.env\.CLAUDE_CUSTOM_TABS_PROBE\) \|\| 0/);
-  assert.match(MAIN, /if \(PROBE_PORT\) startProbeDriver\(PROBE_PORT\)/);
+  assert.match(MAIN, /if \(PROBE_PORT\) launchWindow\.startProbeDriver\(PROBE_PORT\)/);
   assert.match(MAIN, /server\.listen\(port, '127\.0\.0\.1'/);
   assert.match(MAIN, /if \(PROBE_PORT\) \{\r?\n\s+probeConfirms\.push\(\{ label: tab\.branch \|\| projectLabel\(tab\.cwd\), reason, unsaved \}\);\r?\n\s+return reason === '';/,
     'the confirm is auto-yes only under the driver, and only for a close that had no reason to ask');
@@ -222,8 +226,8 @@ test('a hand close asks first, every time', () => {
 
 test('#77: Ctrl+click reaches the shell as ifSafe, only when the strip sent exactly true; the reason rides into the confirm', () => {
   assert.match(MAIN, /ipcMain\.on\('strip:close', \(e, key, ifSafe\)/);
-  assert.match(MAIN, /ipcMain\.on\('strip:stop', \(e, key\) => \{\s*if \(!fromStrip\(e\) \|\| typeof key !== 'string'\) return;\s*closeTabFlow\(key, \{ stop: true \}\);/, 'Stop is its own gated channel');
-  assert.match(MAIN, /closeTabFlow\(key, \{ ifSafe: ifSafe === true \}\)/);
+  assert.match(MAIN, /ipcMain\.on\('strip:stop', \(e, key\) => \{\s*if \(!fromStrip\(e\) \|\| typeof key !== 'string'\) return;\s*stripOwner\(e\)\.closeTabFlow\(key, \{ stop: true \}\);/, 'Stop is its own gated channel');
+  assert.match(MAIN, /stripOwner\(e\)\.closeTabFlow\(key, \{ ifSafe: ifSafe === true \}\)/);
   assert.match(MAIN, /tabShell\.closeTab\(key, \{ ifSafe, stop \}\)/);
   assert.match(MAIN, /async function confirmClose\(tab, \{ reason = '' \} = \{\}\)/);
   assert.match(MAIN, /safety: \{ facts: \(folder\) => readCloseFacts\(folder\), readerUnsaved: \(tab\) => readerUnsaved\.pathFor\(tab\.key\) \}/);
@@ -236,7 +240,7 @@ test('#77: Ctrl+click reaches the shell as ifSafe, only when the strip sent exac
 test('there is NO application menu bar: it is nulled once, before the window, and never set', () => {
   const calls = MAIN.match(/Menu\.setApplicationMenu\([^)]*\)/g) || [];
   assert.deepStrictEqual(calls, ['Menu.setApplicationMenu(null)']);
-  assert.ok(MAIN.indexOf('Menu.setApplicationMenu(null)') < MAIN.indexOf('  createWindow();'),
+  assert.ok(MAIN.indexOf('Menu.setApplicationMenu(null)') < MAIN.indexOf('launchWindow.createWindow();'),
     'the bar is removed before the window is created');
   assert.doesNotMatch(MAIN, /buildAppMenu|accelerator:/);
 });
@@ -247,7 +251,7 @@ test('override and close live in the right-click popup only', () => {
   const body = MAIN.slice(MAIN.indexOf('function tabMenuTemplate('), MAIN.indexOf('let win = null;'));
   assert.match(body, /label: 'Allow a second session here'/);
   assert.match(body, /label: 'Close tab'/);
-  assert.match(handler, /Menu\.buildFromTemplate\(tabMenuTemplate\(key\)\)\.popup\(\{ window: win \}\);/, 'the popup is that template');
+  assert.match(handler, /Menu\.buildFromTemplate\(p\.tabMenuTemplate\(key\)\)\.popup\(\{ window: p\.win \}\);/, 'the popup is that template');
 });
 
 test('the shortcuts are registered on the strip AND on every tab view, and only shortcutFor decides', () => {
@@ -285,7 +289,7 @@ test('the screenshot path captures the SELECTED view and the strip beside it', (
 
 test('the notification click goes to the tab that raised it', () => {
   // ...through the holder (app/toast-holder.js), which keeps the toast alive until clicked (#145).
-  assert.match(MAIN, /onClick: \(sender\) => \{ if \(tabShell\) tabShell\.attentionClick\(sender\); \}/);
+  assert.match(MAIN, /onClick: \(sender\) => \{ const ts = launchWindow\.tabShell; if \(ts\) ts\.attentionClick\(sender\); \}/);
   assert.match(MAIN, /toasts\.show\(surfaces\.toast, event\.sender\)/);
   assert.doesNotMatch(MAIN, /new Notification\(/);
 });
@@ -328,7 +332,7 @@ test('only the headless paths switch native occlusion tracking off (an occluded 
 test('F4 (Dexter, PR #75): applySelection focuses by view IDENTITY via focusStep, not by a changed selection key', () => {
   const start = MAIN.indexOf('function applySelection(');
   assert.ok(start !== -1);
-  const body = sliceTo(start, '\n}');
+  const body = bodyAt(MAIN, start);
   assert.ok(/focusStep\(\s*lastFocusedView\s*,/.test(body), 'applySelection must ask focusStep');
   assert.ok(/lastFocusedView\s*=\s*\w+\.lastFocused/.test(body),
     'and keep what focusStep says holds the keyboard, including null (R2-4)');
@@ -352,7 +356,7 @@ test('F4: the window-focus path records which view it focused, so applySelection
 
 test('PR 3: the shell gets the marker reader, the three-answer probe and the contract scripts', () => {
   const at = MAIN.indexOf('tabShell = createShell({');
-  const call = sliceTo(at, '\n  });');
+  const call = sliceTo(at, '\n    });');   // inside startServices() in app/project-window.js
   assert.match(call, /marker: readMergedMarker/);
   assert.match(call, /probe: \(port\) => probePort\(port\)/);
   assert.match(call, /ops: createOps\(\{ dir: scriptsDir\(process\.env\) \}\)/);
@@ -402,7 +406,7 @@ test('PR #80 Miguel G3: a branch name in a native menu label goes through menuTe
   // #170 S8: the template is app/tab-shell.js lanesMenuTemplate now, whose rows go through menuText (test/tab-shell-develop.test.js
   // pins `feat/r&d` -> `feat/r&&d`); main must build the menu with it, not by hand.
   const c = channels.find(x => x.name === 'strip:lanes');
-  assert.match(callText(MAIN, c.at), /Menu\.buildFromTemplate\(lanesMenuFor\(asked\)\)/);
+  assert.match(callText(MAIN, c.at), /Menu\.buildFromTemplate\(p\.lanesMenuFor\(asked\)\)/);   // `p` is the strip's owning window (stripOwner(e))
   const builder = MAIN.slice(MAIN.indexOf('function lanesMenuFor('), MAIN.indexOf('function lanesMenuFor(') + 400);
   assert.match(builder, /lanesMenuTemplate\(tabShell\.lanesMenu\(asked\)/);
   assert.doesNotMatch(builder, /label: `\$\{/, 'no hand-built row labels left in main');
@@ -435,7 +439,7 @@ test('#139: the + menu no longer lists the tabs closed by hand; the strip gets o
 test('#141: the shell is given the strip layout store, which main builds from the project\'s look folder', () => {
   assert.match(MAIN, /createStripLayout\(\{ file: layoutFile \}\)/);
   assert.match(MAIN, /layoutFile = stripLayoutFileFor\(STATE_ROOT\)/);
-  const call = MAIN.slice(MAIN.indexOf('tabShell = createShell({'), MAIN.indexOf('\n  });', MAIN.indexOf('tabShell = createShell({')));
+  const call = MAIN.slice(MAIN.indexOf('tabShell = createShell({'), MAIN.indexOf('\n    });', MAIN.indexOf('tabShell = createShell({')));
   assert.match(call, /layout: stripLayout,/);
 });
 
@@ -597,11 +601,12 @@ test('D1: the preload exposes layoutTree with one listener at a time, on its own
 });
 
 test('L1 #1: focus mode lifts the tab view over the strip, and every view is told', () => {
-  assert.match(MAIN, /\nlet focusMode = false;/);
-  const lv = sliceTo(MAIN.indexOf('function layoutView('), '\n}');
+  assert.match(MAIN, /\n  let focusMode = false;/);   // per window: a closure variable of the project window, never main's
+  assert.doesNotMatch(MAIN, /\nlet focusMode\b/);
+  const lv = bodyAt(MAIN, MAIN.indexOf('function layoutView('));
   assert.match(lv, /const top = viewTop\(\{ focusMode, frameless: windowFrameless, stripHeight: STRIP_HEIGHT \}\);/);
   assert.match(lv, /y: top,/);
-  const set = sliceTo(MAIN.indexOf('function setFocusMode('), '\n}');
+  const set = bodyAt(MAIN, MAIN.indexOf('function setFocusMode('));
   assert.match(set, /forEachView\(layoutView\)/);
   assert.match(set, /send\('focus-mode', focusMode\)/);
 });
@@ -617,9 +622,9 @@ test('L1 #1: Ctrl+Shift+F toggles it, and only a tab view may ask through IPC', 
 });
 
 test('L1 #1: a tab view that loads while focus mode is on hears it too', () => {
-  const at = MAIN.indexOf("wc.on('did-finish-load', () => {");
+  const at = MAIN.indexOf("wc.on('did-finish-load', () => {", MAIN.indexOf('function createTabView('));   // main's own giveUiFont has one too
   assert.ok(at !== -1);
-  assert.match(sliceTo(at, '\n  });'), /if \(focusMode\) wc\.send\('focus-mode', true\);/);
+  assert.match(sliceTo(at, '\n    });'), /if \(focusMode\) wc\.send\('focus-mode', true\);/);
 });
 
 test('L1 S7: the window keeps room for the terminal and two side zones', () => {

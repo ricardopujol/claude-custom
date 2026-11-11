@@ -10,10 +10,11 @@ const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
+const { mainProcessSource } = require('./main-source');
 
 const read = (...p) => fs.readFileSync(path.join(__dirname, '..', ...p), 'utf8');
 const strip = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*/gm, '');
-const CODE = strip(read('app/main.js'));
+const CODE = strip(mainProcessSource());
 const VIEWS = strip(read('app/preview-views.js'));
 const PRELOAD = strip(read('app/preload.js'));
 
@@ -23,7 +24,7 @@ test('every Preview channel from the tab page is gated on the sender being a tab
     assert.ok(m, `${ch} must check isTabView(e.sender)`);
   }
   assert.match(CODE, /ipcMain\.handle\('preview:show', \(e, req\) => \(isTabView\(e\.sender\) && req && typeof req === 'object'/);
-  assert.match(CODE, /ipcMain\.handle\('devservers:get', \(e\) => \{\s*const tab = isTabView\(e\.sender\) \? tabShell\.tabForSender\(e\.sender\) : null;/);
+  assert.match(CODE, /ipcMain\.handle\('devservers:get', \(e\) => \{\s*const p = isTabView\(e\.sender\) \? viewOwner\(e\.sender\) : null;\s*const tab = p \? p\.tabShell\.tabForSender\(e\.sender\) : null;/);
 });
 
 test('the dev server\'s page has no channel to main at all: nothing in main answers a sender that is not a tab view', () => {
@@ -69,10 +70,11 @@ test('the listener sampler is started minimised-aware, stopped and its shell clo
   // What the window shows decides it: minimise, restore AND hide/show (the tray), through the pure rule in host/dev-servers.js.
   assert.match(CODE, /for \(const ev of \['minimize', 'restore', 'hide', 'show'\]\) win\.on\(ev, syncDevServersSampling\);/);
   assert.match(CODE, /devServers\.setMinimised\(devServersHost\.unseen\(\{ visible: gone \? false : win\.isVisible\(\), minimized: gone \? true : win\.isMinimized\(\) \}\)\);/);
-  assert.match(CODE, /createWindow\(\);\s*syncDevServersSampling\(\);/, 'the first read is AFTER the window exists');
+  assert.match(CODE, /launchWindow\.createWindow\(\);\s*launchWindow\.syncDevServersSampling\(\);/, 'the first read is AFTER the window exists');
   assert.doesNotMatch(CODE, /devServers\.setMinimised\(!!\(win/, 'no read before the window exists');
   // What the window shows decides it: minimise, restore AND hide/show (the tray), through the pure rule in host/dev-servers.js.
-  assert.match(CODE, /app\.on\('will-quit', \(\) => \{ if \(devServers\) devServers\.stop\(\); if \(devServersExec\) devServersExec\.close\(\); \}\);/);
+  assert.match(CODE, /function stopDevServers\(\) \{ if \(devServers\) devServers\.stop\(\); if \(devServersExec\) devServersExec\.close\(\); \}/);
+  assert.match(CODE, /app\.on\('will-quit', \(\) => \{ forEachProject\(\(p\) => p\.stopDevServers\(\)\); \}\);/);
 });
 
 test('the block is READ for a tab (lookup), never allocated by the sampler', () => {

@@ -14,17 +14,16 @@ const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
+const { mainProcessSource, bodyAt } = require('./main-source');
 
 const read = (rel) => fs.readFileSync(path.join(__dirname, '..', rel), 'utf8').replace(/\r\n/g, '\n');
 const strip = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*/gm, '');
-const MAIN = strip(read('app/main.js'));
+const MAIN = strip(mainProcessSource());
 
 const bodyOf = (re) => {
   const at = MAIN.search(re);
   assert.ok(at !== -1, 'must exist: ' + re);
-  const end = MAIN.indexOf('\n}\n', at);
-  assert.ok(end !== -1);
-  return MAIN.slice(at, end);
+  return bodyAt(MAIN, at);   // brace-matched: some of these functions moved into app/project-window.js and are indented there
 };
 
 test('main makes the one Tray through the controller, in startTray, called once from whenReady', () => {
@@ -45,15 +44,15 @@ test('close hides to the tray only through hidesOnClose, ahead of the unsaved-te
   const hide = close.indexOf('hidesOnClose(');
   assert.ok(hide !== -1);
   assert.ok(hide < close.indexOf('closeGuarded ||'), 'the hide decision comes first: hiding loses nothing, so no question');
-  assert.match(close, /hidesOnClose\(\{ settings: readTraySettings\(uiStore\), trayExists: !!trayController && trayController\.state\(\)\.exists, quitting \}\)/);
+  assert.match(close, /hidesOnClose\(\{ settings: readTraySettings\(uiStore\), trayExists: !!trayController && trayController\.state\(\)\.exists, quitting: isQuitting\(\) \}\)/);
   assert.match(close, /e\.preventDefault\(\);\s*win\.hide\(\);/);
-  assert.match(MAIN, /app\.on\('before-quit', \(\) => \{ quitting = true; windowClaim\.stop\(\); \}\);/);
-  assert.match(MAIN, /win\.on\('session-end', \(\) => \{ quitting = true; \}\);/);
+  assert.match(MAIN, /app\.on\('before-quit', \(\) => \{ quitting = true; forEachProject\(\(p\) => p\.claim\.stop\(\)\); \}\);/);
+  assert.match(MAIN, /win\.on\('session-end', \(\) => \{ setQuitting\(true\); \}\);/);
 });
 
 test('start minimised: the window is created without being shown, only when startsHidden says so', () => {
   assert.match(MAIN, /show: !startHidden,/);
-  assert.match(bodyOf(/function startTray\(\)/), /!trayController\.state\(\)\.exists && win && !win\.isDestroyed\(\) && !win\.isVisible\(\)\) focusWindow\(\);/,
+  assert.match(bodyOf(/function startTray\(\)/), /!trayController\.state\(\)\.exists && w && !w\.isDestroyed\(\) && !w\.isVisible\(\)\) launchWindow\.focusWindow\(\);/,
     'no icon could be made: the hidden window is shown, never left unreachable');
 });
 
@@ -65,22 +64,22 @@ test('the tray follows the shell and goes with the app', () => {
 
 test('the menu actions: Stop is the ▾ menu\'s own (it asks), Quit is app.quit, Hide hides, Show is focusWindow', () => {
   const actions = bodyOf(/function startTray\(\)/);
-  assert.match(actions, /stopBackground: \(row\) => \{ focusWindow\(\); backgroundActions\.stop\(row\)/);
+  assert.match(actions, /stopBackground: \(row\) => \{ launchWindow\.focusWindow\(\); launchWindow\.backgroundActions\.stop\(row\)/);
   assert.doesNotMatch(actions, /stopHost\(/);
   assert.match(actions, /app\.quit\(\); \}/);
-  assert.match(actions, /hideAll: \(\) => \{ if \(win && !win\.isDestroyed\(\)\) win\.hide\(\); \}/);
-  assert.match(actions, /showAll: focusWindow/);
-  assert.match(actions, /openBackground: o => backgroundActions\.open\(o\)/);
+  assert.match(actions, /hideAll: \(\) => \{ const w = launchWindow\.win; if \(w && !w\.isDestroyed\(\)\) w\.hide\(\); \}/);
+  assert.match(actions, /showAll: launchWindow\.focusWindow/);
+  assert.match(actions, /openBackground: o => launchWindow\.backgroundActions\.open\(o\)/);
   assert.match(actions, /setStartMinimised: on => \{ writeTraySetting\(uiStore, 'startMinimised', on === true\); \}/);
 });
 
 test('Quit from the tray brings a hidden window up first when there is unsaved reader text (Miguel Y1)', () => {
-  assert.match(bodyOf(/function startTray\(\)/), /quit: \(\) => \{ if \(readerUnsaved\.all\(\)\.length > 0\) focusWindow\(\); app\.quit\(\); \}/);
+  assert.match(bodyOf(/function startTray\(\)/), /quit: \(\) => \{ if \(launchWindow\.readerUnsaved\.all\(\)\.length > 0\) launchWindow\.focusWindow\(\); app\.quit\(\); \}/);
 });
 
 test('a cancelled close puts quitting back, so close-to-tray keeps working (Miguel Y2)', () => {
   const close = MAIN.slice(MAIN.indexOf("win.on('close'"), MAIN.indexOf("win.on('closed'"));
-  assert.match(close, /closeGuarded = true; win\.close\(\); \}\s*else \{\s*quitting = false;/);
+  assert.match(close, /closeGuarded = true; win\.close\(\); \}\s*else \{\s*setQuitting\(false\);/);
 });
 
 test('will-quit destroys the tray FIRST, so a throwing sampler stop cannot leave a ghost icon (Miguel S1)', () => {

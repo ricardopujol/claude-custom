@@ -8,10 +8,11 @@ const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
+const { mainProcessSource } = require('./main-source');
 
 const read = (f) => fs.readFileSync(path.join(__dirname, '..', f), 'utf8');
 const strip = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*/gm, '');
-const MAIN = strip(read('app/main.js'));
+const MAIN = strip(mainProcessSource());
 const PRELOAD = strip(read('app/preload.js'));
 const RENDERER = strip(read('app/renderer.js'));
 const HTML = read('app/renderer.html');
@@ -19,7 +20,7 @@ const HTML = read('app/renderer.html');
 test('main registers the lean handlers for tab views and the strip, and pushes to both', () => {
   assert.match(MAIN, /registerLeanHandlers\(\{[\s\S]*?isView: isTabView[\s\S]*?isStrip: \(sender\) => fromStrip\(\{ sender \}\)/);
   assert.match(MAIN, /pushToViews\(LEAN_PUSH, state\)/);
-  assert.match(MAIN, /win\.webContents\.send\(LEAN_PUSH, state\)/);
+  assert.match(MAIN, /w\.webContents\.send\(LEAN_PUSH, state\)/);   // the strip: main reads the window live (launchWindow.win) into `w`
 });
 
 test('main re-sends a lean state to a page that loads (or reloads) while the window is lean', () => {

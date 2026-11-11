@@ -9,10 +9,11 @@ const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
+const { mainProcessSource } = require('./main-source');
 
 const strip = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*/gm, '');
 const read = (...p) => fs.readFileSync(path.join(__dirname, '..', ...p), 'utf8').replace(/\r\n/g, '\n');
-const MAIN = strip(read('app', 'main.js'));
+const MAIN = strip(mainProcessSource());
 
 function callText(src, at) {
   const open = src.indexOf('(', at);
@@ -42,7 +43,7 @@ test('the three new strip channels exist and answer the strip page alone', () =>
 
 test('strip:issues is a handle (the page awaits it) and reads through the service, with the request left to host/issues.js', () => {
   assert.match(MAIN, /ipcMain\.handle\('strip:issues'/);
-  assert.match(channel('strip:issues'), /answerIssuesRequest\(issueService, HOST_PROJECT\.dev, req\)/);
+  assert.match(channel('strip:issues'), /answerIssuesRequest\(stripOwner\(e\)\.issueService, stripOwner\(e\)\.hostProject\.dev, req\)/);
 });
 
 test('strip:create passes the issue number on only after issueArg has read it', () => {

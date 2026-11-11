@@ -14,6 +14,7 @@ const { buildClaudeArgs } = require('../host/settings-writer');
 const { hostEnv, PER_TAB_KEYS } = require('../host/tab-env');
 const { writeIdentity } = require('../host/host-identity');
 const { tmpDir } = require('./tmp-dir');
+const { mainProcessSource } = require('./main-source');
 
 const argValue = (args, flag) => { const i = args.indexOf(flag); return i < 0 ? null : args[i + 1]; };
 
@@ -126,7 +127,7 @@ test('readerSessionIds: the session ids of the live side identities in a list, a
 
 const read = (...p) => fs.readFileSync(path.join(__dirname, '..', ...p), 'utf8').replace(/\r\n/g, '\n');
 const HOST = read('host', 'host.js');
-const MAIN = read('app', 'main.js');
+const MAIN = mainProcessSource();
 
 test('host.js: the terminal-session warning excludes the folder\'s sibling side/main sessions', () => {
   const at = HOST.indexOf('async function refreshTerminals');
