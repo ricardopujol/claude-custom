@@ -10,8 +10,9 @@ const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
+const { mainProcessSource, bodyAt } = require('./main-source');
 
-const MAIN = fs.readFileSync(path.join(__dirname, '..', 'app', 'main.js'), 'utf8');
+const MAIN = mainProcessSource();
 const strip = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*/gm, '');
 const CODE = strip(MAIN);
 
@@ -31,7 +32,7 @@ test('every tab-page channel is gated on the sender being a tab view', () => {
 });
 
 test('the panel page talks only on the two channels registerCanvasIpc owns', () => {
-  assert.match(CODE, /registerCanvasIpc\(ipcMain, canvasViews\);/);
+  assert.match(CODE, /registerCanvasIpc\(ipcMain, launchWindow\.canvasViews\);/);
   assert.doesNotMatch(CODE, /ipcMain\.(on|handle)\('canvas:(fetch|send)'/, 'main.js must not answer the panel by hand');
 });
 
@@ -48,7 +49,9 @@ test('a host question that nobody answers ends as a deny, not a hang', () => {
 });
 
 test("a tab's panel follows its tab: destroyed with it, hidden when it is not selected, moved when it is laid out again", () => {
-  const destroy = CODE.slice(CODE.indexOf('function destroyTabView('), CODE.indexOf('// --- pushing the model out'));
+  const destroyAt = CODE.indexOf('function destroyTabView(');
+  assert.ok(destroyAt !== -1, 'destroyTabView exists');
+  const destroy = bodyAt(CODE, destroyAt);   // the old end anchor was a comment the strip removes (-1: the slice ran to EOF)
   assert.match(destroy, /canvasViews\.destroyFor\(view\.webContents\);/);
   const sel = CODE.slice(CODE.indexOf('function applySelection('), CODE.indexOf('function applySelection(') + 900);
   // `shows` is the selected tab, unless the branch form's issue list is open and the strip page draws over the view (#119 A6)
@@ -95,7 +98,10 @@ test("the broker's transport is its own pinned one, never the engine's: main mus
 test("the probe's name map exists only behind the probe driver's port AND token, and never marks anything it did not map as vouched (PR #122 Dexter F10)", () => {
   const at = CODE.indexOf('const CANVAS_PROBE_HOSTS = (() => {');
   assert.ok(at !== -1);
-  const seam = CODE.slice(at, CODE.indexOf('const canvasViews = createCanvasViews({'));
+  // The probe seam stays in main (an app-wide constant); the window is handed it as `canvasProbeResolve`, pinned just above. The slice ends
+  // at the next main-only function, so it can't swallow the window's text.
+  const seam = CODE.slice(at, CODE.indexOf('function previewProbeProxy('));
+  assert.ok(seam.length > 0 && seam.length < 2500, 'the slice is the seam alone');
   assert.match(seam, /if \(!PROBE_PORT \|\| !PROBE_TOKEN\) return null;/);
   assert.match(seam, /CANVAS_PROBE_HOSTS === null \? undefined/);
   assert.match(seam, /typeof CANVAS_PROBE_HOSTS\[name\] === 'string' \? \[\{ address: CANVAS_PROBE_HOSTS\[name\], family: 4, trusted: true \}\] : require\('dns'\)\.promises\.lookup\(name, \{ all: true \}\)/);

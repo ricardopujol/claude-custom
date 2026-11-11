@@ -9,10 +9,11 @@ const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
+const { mainProcessSource, bodyAt } = require('./main-source');
 
 const strip = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*/gm, '');
 const read = (...p) => fs.readFileSync(path.join(__dirname, '..', ...p), 'utf8').replace(/\r\n/g, '\n');
-const MAIN = strip(read('app', 'main.js'));
+const MAIN = strip(mainProcessSource());
 
 function callText(src, at) {
   const open = src.indexOf('(', at);
@@ -42,7 +43,7 @@ test('the three new strip channels exist and answer the strip page alone', () =>
 
 test('strip:issues is a handle (the page awaits it) and reads through the service, with the request left to host/issues.js', () => {
   assert.match(MAIN, /ipcMain\.handle\('strip:issues'/);
-  assert.match(channel('strip:issues'), /answerIssuesRequest\(issueService, HOST_PROJECT\.dev, req\)/);
+  assert.match(channel('strip:issues'), /answerIssuesRequest\(stripOwner\(e\)\.issueService, stripOwner\(e\)\.hostProject\.dev, req\)/);
 });
 
 test('strip:create passes the issue number on only after issueArg has read it', () => {
@@ -53,7 +54,9 @@ test('strip:create passes the issue number on only after issueArg has read it', 
 
 test('the picker steps the selected tab\'s page aside, and its panel with it', () => {
   const at = MAIN.indexOf('function applySelection(');
-  const body = MAIN.slice(at, MAIN.indexOf('\n}\n', at));
+  assert.ok(at !== -1, 'applySelection exists');
+  const body = bodyAt(MAIN, at);   // brace-matched: it is indented inside the window's factory, so a column-0 end would overrun by ~1000 lines
+  assert.doesNotMatch(body, /function openBranchForm\(/, 'the body is applySelection alone');
   assert.match(body, /const pickerOpen = !!\(snapshot\.create && snapshot\.create\.picker === true\)/);
   assert.match(body, /const shows = tab\.key === snapshot\.selectedKey && !pickerOpen;/);
   assert.match(body, /tab\.view\.setVisible\(shows\)/);

@@ -157,8 +157,7 @@ test('pinMenu: a lane offers Pin, a pinned lane offers Unpin, develop and compan
 });
 
 test('main.js: the lane tab menu has the Pin / Unpin item, built from tabShell.pinMenu and clicking pin / unpin', () => {
-  const fs = require('fs');
-  const main = fs.readFileSync(path.join(__dirname, '..', 'app', 'main.js'), 'utf8').replace(/\r\n/g, '\n');
+  const main = require('./main-source').mainProcessSource();   // the menu lives in app/project-window.js now
   const menu = main.slice(main.indexOf('function tabMenuTemplate('), main.indexOf('let win = null;'));
   assert.match(menu, /tabShell\.pinMenu\(key\)/);
   assert.match(menu, /pinState\.pinned \? tabShell\.unpin\(pinState\.target\) : tabShell\.pin\(pinState\.target\)/);

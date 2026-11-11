@@ -10,10 +10,11 @@ const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
+const { mainProcessSource } = require('./main-source');
 
 const read = (...p) => fs.readFileSync(path.join(__dirname, '..', ...p), 'utf8').replace(/\r\n/g, '\n');
 const HOST = read('host', 'host.js');
-const MAIN = read('app', 'main.js');
+const MAIN = mainProcessSource();
 const PRELOAD = read('app', 'preload-strip.js');
 
 test('host.js: a side host builds claude\'s args with the side option, from the environment flag', () => {

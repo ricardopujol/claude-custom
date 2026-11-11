@@ -11,13 +11,14 @@ const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
+const { mainProcessSource } = require('./main-source');
 
 const APP = path.join(__dirname, '..', 'app');
 const strip = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*/gm, '');
 const RAW = fs.readFileSync(path.join(APP, 'renderer.js'), 'utf8');
 const HTML = fs.readFileSync(path.join(APP, 'renderer.html'), 'utf8');
 const PRELOAD = strip(fs.readFileSync(path.join(APP, 'preload.js'), 'utf8'));
-const MAIN = strip(fs.readFileSync(path.join(APP, 'main.js'), 'utf8'));
+const MAIN = strip(mainProcessSource());
 const { TABS } = require('../app/side-tabs');
 
 const START = RAW.indexOf('// RESOURCES-BEGIN');
@@ -91,7 +92,7 @@ test('the bridge exposes what the page calls, and main answers it behind the tab
 
 test('main kills by pid through the vetted path, and the strip learns of a warning through the shell\'s refresh', () => {
   assert.match(MAIN, /kill: \(targets\) => killVerified\(targets, \{ exec: createPowerShellExec\(20000\) \}\)/);
-  assert.match(MAIN, /refreshStrip: \(\) => \{ if \(tabShell\) tabShell\.refresh\(\); \}/);
+  assert.match(MAIN, /refreshStrip: \(\) => \{ const ts = launchWindow\.tabShell; if \(ts\) ts\.refresh\(\); \}/);
   assert.match(MAIN, /resources: \{ warnFor: \(key\) => \(resources \? resources\.warnFor\(key\) : null\) \}/);
   assert.doesNotMatch(MAIN, /taskkill|killPidTree/);
 });
@@ -137,7 +138,7 @@ test('Leftovers Stop (B): the bridge, the gated IPC handler and the page\'s clic
 test('Leftovers task logs (#74 F(3)): main hands the service the stat-only scan of %TEMP%\\claude, the CLI registry, and the one guarded delete', () => {
   assert.match(MAIN, /taskLogsRoot = path\.join\(require\('os'\)\.tmpdir\(\), 'claude'\)/);
   assert.match(MAIN, /scan: \(\) => taskLogsFs\.scanTaskFiles\(taskLogsRoot\)/);
-  assert.match(MAIN, /registry: \(\) => taskLogsFs\.readRegistries\(taskLogsFs\.registryDirs\(tabShell\.snapshot\(\)\.tabs\.map\(t => t\.cwd\), claudeConfigDir\)\)/);
+  assert.match(MAIN, /registry: \(\) => taskLogsFs\.readRegistries\(taskLogsFs\.registryDirs\(launchWindow\.tabShell\.snapshot\(\)\.tabs\.map\(t => t\.cwd\), claudeConfigDir\)\)/);
   assert.match(MAIN, /remove: \(row\) => taskLogsFs\.deleteTaskLog\(taskLogsRoot, row\)/);
   assert.doesNotMatch(MAIN, /\bunlink|rmSync|\.rm\(/, 'main never deletes a file itself');
 });

@@ -8,11 +8,12 @@ const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
+const { mainProcessSource } = require('./main-source');
 
 const APP = path.join(__dirname, '..', 'app');
 const js = fs.readFileSync(path.join(APP, 'renderer.js'), 'utf8');
 const html = fs.readFileSync(path.join(APP, 'renderer.html'), 'utf8');
-const main = fs.readFileSync(path.join(APP, 'main.js'), 'utf8');
+const main = mainProcessSource();
 
 test('peer-cue.js loads before the renderer, which uses it', () => {
   const at = html.indexOf('<script src="./peer-cue.js"></script>');
