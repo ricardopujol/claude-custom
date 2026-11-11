@@ -113,7 +113,9 @@ test('every strip channel is gated on the window\'s own page, and only they', ()
 });
 
 test('every other channel is gated on "one of this window\'s tab views"', () => {
-  assert.deepStrictEqual(ungated(MAIN, /isTabView\(|fromWindow\(/, c => !c.name.startsWith('strip:')), []);
+  // secretsFor(e) IS a gate: its definition below is `fromWindow(event) ? <that window's service> : null`, and every secrets:* handler answers a refusal on null
+  assert.match(MAIN, /const secretsFor = \(event\) => \(fromWindow\(event\) \? projectRecords\.secretsOf\(viewOwner\(event\.sender\)\) : null\);/);
+  assert.deepStrictEqual(ungated(MAIN, /isTabView\(|fromWindow\(|secretsFor\(/, c => !c.name.startsWith('strip:')), []);
 });
 
 test('nothing compares a sender to the window\'s own webContents except the strip gate', () => {
@@ -527,10 +529,10 @@ test("L1: the project's own layout is served to this window's tab views and push
   const at = MAIN.indexOf('registerLayoutHandlers({');
   assert.ok(at !== -1, 'registerLayoutHandlers is called');
   const call = callText(MAIN, at);
-  assert.match(call, /isSender: isTabView/);
-  assert.match(call, /send: pushToViews/);
-  assert.match(call, /store: layoutStore/);       // #211: the project's own layout store; the install-wide file is only a default
-  assert.match(call, /sync: layoutSync/);
+  // single-instance PR 2: one registration, served from the asking page's window's own store, sync and send (app/project-records.js scopeFor);
+  // #211: the project's own layout store, the install-wide file is only a default (makeProjectLayoutStore)
+  assert.match(call, /scopeFor: projectRecords\.scopeFor\(viewOwner, 'layoutSync'\)/);
+  assert.doesNotMatch(call, /store:|isSender:|send:/, 'no store, gate or push of its own: the scope carries them');
 });
 
 test('L1: another project window\'s layout change reaches this one through the store file', () => {
@@ -538,7 +540,7 @@ test('L1: another project window\'s layout change reaches this one through the s
   assert.ok(at !== -1, 'watchLayout is started');
   const call = callText(MAIN, at);
   assert.match(call, /sync: layoutSync/);
-  assert.match(call, /send: pushToViews/);
+  assert.match(call, /send,/, "it pushes to THIS window's views only (the record's send)");
   assert.match(call, /layoutStore\.pathOf\(LAYOUT_KEY\)/);       // the project's own file, so another project's change is never followed
 });
 
@@ -553,12 +555,11 @@ test('D1: the tree layout is a second registration under TREE_NAMES, with its ow
   assert.match(MAIN, /const \{ registerLayoutHandlers, watchLayout, LAYOUT_KEY, TREE_NAMES, PRESET_NAMES \} = require\('\.\/layout-bridge'\);/);
   const reg = callText(MAIN, MAIN.indexOf('registerLayoutHandlers({', MAIN.indexOf('registerLayoutHandlers({') + 1));
   assert.match(reg, /names: TREE_NAMES/);
-  assert.match(reg, /sync: treeSync/);
-  assert.match(reg, /isSender: isTabView/);
-  assert.match(reg, /send: pushToViews/);
+  assert.match(reg, /scopeFor: projectRecords\.scopeFor\(viewOwner, 'treeSync'\)/);
   const watch = callText(MAIN, MAIN.indexOf('watchLayout({', MAIN.indexOf('watchLayout({') + 1));
   assert.match(watch, /names: TREE_NAMES/);
   assert.match(watch, /sync: treeSync/);
+  assert.match(watch, /send,/);
   assert.match(watch, /layoutStore\.pathOf\(TREE_NAMES\.key\)/);
   assert.strictEqual(MAIN.split('registerLayoutHandlers({').length - 1, 3, 'the L1 pair stays, for older windows and the one migration read; D3 adds the presets as the third');
   assert.strictEqual(MAIN.split('watchLayout({').length - 1, 4, 'the three layout records, plus the fonts record (#88), which reuses the same poll');

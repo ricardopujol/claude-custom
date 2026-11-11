@@ -1686,7 +1686,6 @@ function createProjectWindow({ launchCwd, electron, config, services }) {
   function setIndexFieldFocused(on) { indexFieldFocused = on; }
 
   return {
-    identity: { LAUNCH_CWD, PROJECT, MODE, HOST_PROJECT, PROJECT_ROOT, STATE_ROOT, WINDOW_LABEL },
     launchCwd: LAUNCH_CWD,
     project: PROJECT,
     mode: MODE,

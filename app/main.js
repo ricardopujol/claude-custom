@@ -18,6 +18,7 @@ const { createProjectWindow } = require('./project-window');
 const { createProjectRegistry } = require('./project-registry');
 const { createPushers } = require('./push-targets');
 const { createBusyGate } = require('./busy-gate');
+const { createProjectRecords } = require('./project-records');
 const { armQuitWatchdog } = require('./quit-watchdog');
 const { createQuitLog, wireQuitLog, markWillQuitEnd } = require('./quit-log');
 // BACKLOG #74 A: the quit's timeline, only when CLAUDE_CUSTOM_QUIT_LOG names a file (verify/probe-quit-linger.js); a no-op otherwise.
@@ -396,12 +397,81 @@ function startTray() {
   if (!trayController.state().exists && w && !w.isDestroyed() && !w.isVisible()) launchWindow.focusWindow();
 }
 
+  // The secret store lives HERE, in main. Not in the host: the host owns the
+  // pty, so keeping secrets out of it means no wiring mistake can put one into
+  // the session. Not in the renderer: the window would then hold the file and
+  // every value in it.
+function makeProjectSecrets(p) {
+  const { stateRoot: STATE_ROOT, root: PROJECT_ROOT, launchCwd: LAUNCH_CWD } = p;
+  return createSecretService({
+    // The project's STATE root: secrets are scoped to the project (every tab
+    // shares them) unless explicitly shared; the vault file itself is
+    // per-INSTALL, which is why the scope has to be enforced rather than implied
+    // by where the file lives. NEW entries go under it.
+    project: STATE_ROOT,
+    // ...and entries saved earlier stay visible: under the project root (the
+    // container path, before the 2026-09-28 layout move) or the folder this
+    // window was launched on. Visibility only; `add` still gets ONE path.
+    scopes: [PROJECT_ROOT, LAUNCH_CWD].filter((p) => !samePath(p, STATE_ROOT)),
+    // DELIBERATELY NOT WRAPPED IN try/catch, and that rests on an invariant:
+    // `createVault` CONSTRUCTS FOR ANY BYTES ON DISK, reporting the vault as
+    // healthy or damaged rather than throwing.
+    //
+    // Miguel asked for this line, and the history is why. When `load()` threw on
+    // a malformed lock record, this call took the whole window down with it --
+    // no panel, no damage message, no melt button (Dexter G3). Wrapping it here
+    // would have been worse: a window whose vault panel is silently dead is the
+    // class this repo has already paid for four times (careerDisplay,
+    // quotaDisplay, isPanelToggle, `.vault-row`). So the throw was removed
+    // instead of the crash being caught.
+    //
+    // The invariant is pinned as a RULE, not by example, in
+    // test/vault-damaged-path.test.js -- eighteen adversarial byte shapes
+    // including a UTF-8 BOM. If you add a throw to `load()`, that test fails and
+    // this comment is what it means.
+    vault: createVault({
+      file: path.join(__dirname, '..', '.harness', 'secrets.enc'),
+      crypto: safeStorage,
+    }),
+    clipboard: {
+      writeText: (t) => clipboard.writeText(t),
+      readText: () => clipboard.readText(),
+      clear: () => clipboard.writeText(''),
+    },
+  });
+}
+
+// The dock layout (layout pass L1, see layout-bridge.js). A tab's OWN layout is its host's business, not main's.
+// BACKLOG #211: the layout is each PROJECT's own, in its `.claude-custom` folder, so another project's window is never moved by this one; the
+// install-wide file only seeds a project that has none yet. Presets stay install-wide (registerIpc).
+function makeProjectLayoutStore(p) {
+  const STATE_ROOT = p.stateRoot;
+  return createProjectLayoutStore({
+    project: createStore({ dir: lookDir(STATE_ROOT) }), fallback: uiStore,
+    usable: () => lookDirState(STATE_ROOT, fs) !== 'foreign', log: (...a) => console.warn(...a),
+    prepare: () => {
+      if (lookDirState(STATE_ROOT, fs) === 'foreign') throw new Error('.claude-custom is a link to somewhere else');
+      ensureLookDir(STATE_ROOT, fs);
+    },
+  });
+}
+
+// Each project window's secrets, layout store and layout watchers (app/project-records.js). Made when a window is.
+const projectRecords = createProjectRecords({
+  makeSecrets: makeProjectSecrets,
+  makeLayoutStore: makeProjectLayoutStore,
+  pushToProject,
+  log: (...a) => console.log(...a),
+  // Other project windows are other mains sharing the store files: follow their change, live. The pair stays for older windows.
+  watch: ({ layoutStore, layoutSync, treeSync, send }) => [
+    watchLayout({ store: layoutStore, sync: layoutSync, send, file: layoutStore.pathOf(LAYOUT_KEY) }),
+    watchLayout({ store: layoutStore, sync: treeSync, names: TREE_NAMES, send, file: layoutStore.pathOf(TREE_NAMES.key) }),
+  ],
+});
+
 // --- IPC ---------------------------------------------------------------------------
 
 function registerIpc() {
-  // The secret service and the layout store are made once, from the launch's project (constants of the launch, so reading them off
-  // the window object is safe). PR 2 of the single-instance work: both become per project.
-  const { STATE_ROOT, PROJECT_ROOT } = launchWindow.identity;
   // Claude's panel (#71). The panel's own page talks on canvas:fetch / canvas:send only (registerCanvasIpc: main answers a
   // contents it made, nothing else). The channels below are the TAB's page, the trusted controller, and are gated on it.
   registerCanvasIpc(ipcMain, panelDispatch((s) => registry.panelOwner(s)));   // its sender is the panel's own contents, not a tab view: routed by panel owner
@@ -735,54 +805,16 @@ function registerIpc() {
     if (surfaces.toast) console.log(`[main] attention body: ${surfaces.toast.body}`);
   });
 
-  // The secret store lives HERE, in main. Not in the host: the host owns the
-  // pty, so keeping secrets out of it means no wiring mistake can put one into
-  // the session. Not in the renderer: the window would then hold the file and
-  // every value in it.
-  const secrets = createSecretService({
-    // The project's STATE root: secrets are scoped to the project (every tab
-    // shares them) unless explicitly shared; the vault file itself is
-    // per-INSTALL, which is why the scope has to be enforced rather than implied
-    // by where the file lives. NEW entries go under it.
-    project: STATE_ROOT,
-    // ...and entries saved earlier stay visible: under the project root (the
-    // container path, before the 2026-09-28 layout move) or the folder this
-    // window was launched on. Visibility only; `add` still gets ONE path.
-    scopes: [PROJECT_ROOT, LAUNCH_CWD].filter((p) => !samePath(p, STATE_ROOT)),
-    // DELIBERATELY NOT WRAPPED IN try/catch, and that rests on an invariant:
-    // `createVault` CONSTRUCTS FOR ANY BYTES ON DISK, reporting the vault as
-    // healthy or damaged rather than throwing.
-    //
-    // Miguel asked for this line, and the history is why. When `load()` threw on
-    // a malformed lock record, this call took the whole window down with it --
-    // no panel, no damage message, no melt button (Dexter G3). Wrapping it here
-    // would have been worse: a window whose vault panel is silently dead is the
-    // class this repo has already paid for four times (careerDisplay,
-    // quotaDisplay, isPanelToggle, `.vault-row`). So the throw was removed
-    // instead of the crash being caught.
-    //
-    // The invariant is pinned as a RULE, not by example, in
-    // test/vault-damaged-path.test.js -- eighteen adversarial byte shapes
-    // including a UTF-8 BOM. If you add a throw to `load()`, that test fails and
-    // this comment is what it means.
-    vault: createVault({
-      file: path.join(__dirname, '..', '.harness', 'secrets.enc'),
-      crypto: safeStorage,
-    }),
-    clipboard: {
-      writeText: (t) => clipboard.writeText(t),
-      readText: () => clipboard.readText(),
-      clear: () => clipboard.writeText(''),
-    },
-  });
 
   const fromWindow = (event) => isTabView(event.sender);
-  ipcMain.handle('secrets:available', (e) => fromWindow(e) && secrets.available());
-  ipcMain.handle('secrets:list', (e, query) => (fromWindow(e) ? secrets.list({ query }) : []));
-  ipcMain.handle('secrets:add', (e, entry) => (fromWindow(e) ? secrets.add(entry || {}) : { ok: false }));
-  ipcMain.handle('secrets:remove', (e, id) => (fromWindow(e) ? secrets.remove(id) : { ok: false }));
-  ipcMain.handle('secrets:reveal', (e, id) => (fromWindow(e) ? secrets.reveal(id) : { ok: false }));
-  ipcMain.handle('secrets:copy', (e, id) => (fromWindow(e) ? secrets.copy(id) : { ok: false }));
+  // Each window's secrets are its own service over its own vault (Q1 default: unlocking in one window leaves another locked).
+  const secretsFor = (event) => (fromWindow(event) ? projectRecords.secretsOf(viewOwner(event.sender)) : null);
+  ipcMain.handle('secrets:available', (e) => { const s = secretsFor(e); return s !== null && s.available(); });
+  ipcMain.handle('secrets:list', (e, query) => { const s = secretsFor(e); return s !== null ? s.list({ query }) : []; });
+  ipcMain.handle('secrets:add', (e, entry) => { const s = secretsFor(e); return s !== null ? s.add(entry || {}) : { ok: false }; });
+  ipcMain.handle('secrets:remove', (e, id) => { const s = secretsFor(e); return s !== null ? s.remove(id) : { ok: false }; });
+  ipcMain.handle('secrets:reveal', (e, id) => { const s = secretsFor(e); return s !== null ? s.reveal(id) : { ok: false }; });
+  ipcMain.handle('secrets:copy', (e, id) => { const s = secretsFor(e); return s !== null ? s.copy(id) : { ok: false }; });
 
   // The lock. Same `fromWindow` gate as everything above it: a handler that
   // answers anyone is not a boundary.
@@ -791,15 +823,15 @@ function registerIpc() {
   // `hasKey: false` with `locked: true` was already safe, but it says "locked
   // vault with no key", which is not a state that exists. Now this default and
   // the service's (secret-service.js, Dexter F6 / Miguel A2) are the same object.
-  ipcMain.handle('secrets:lockState', (e) =>
-    (fromWindow(e) ? secrets.lockState() : { hasKey: true, locked: true, count: null }));
-  ipcMain.handle('secrets:setKey', (e, key) =>
-    (fromWindow(e) ? secrets.setKey(key) : { ok: false }));
-  ipcMain.handle('secrets:unlock', (e, key) =>
-    (fromWindow(e) ? secrets.unlock(key) : { ok: false }));
-  ipcMain.handle('secrets:lock', (e) => (fromWindow(e) ? secrets.lock() : { ok: false }));
-  ipcMain.handle('secrets:removeKey', (e) => (fromWindow(e) ? secrets.removeKey() : { ok: false }));
-  ipcMain.handle('secrets:melt', (e) => (fromWindow(e) ? secrets.melt() : { ok: false }));
+  ipcMain.handle('secrets:lockState', (e) => {
+    const s = secretsFor(e);
+    return s !== null ? s.lockState() : { hasKey: true, locked: true, count: null };
+  });
+  ipcMain.handle('secrets:setKey', (e, key) => { const s = secretsFor(e); return s !== null ? s.setKey(key) : { ok: false }; });
+  ipcMain.handle('secrets:unlock', (e, key) => { const s = secretsFor(e); return s !== null ? s.unlock(key) : { ok: false }; });
+  ipcMain.handle('secrets:lock', (e) => { const s = secretsFor(e); return s !== null ? s.lock() : { ok: false }; });
+  ipcMain.handle('secrets:removeKey', (e) => { const s = secretsFor(e); return s !== null ? s.removeKey() : { ok: false }; });
+  ipcMain.handle('secrets:melt', (e) => { const s = secretsFor(e); return s !== null ? s.melt() : { ok: false }; });
 
   // Ctrl+V (BACKLOG #12, #8): the page asks, main reads the clipboard.
   registerClipboardHandlers({ ipcMain, clipboard, isSender: isTabView });
@@ -859,31 +891,10 @@ function registerIpc() {
   });
   launchWindow.attach({ leanBridge });
 
-  // The dock layout (layout pass L1, see layout-bridge.js). A tab's OWN layout is its host's business, not main's.
-  // BACKLOG #211: the layout is each PROJECT's own, in its `.claude-custom\` (the install-wide file only seeds a project
-  // that has none yet), so another project's window is never moved by this one. Presets below stay install-wide.
-  const layoutStore = createProjectLayoutStore({
-    project: createStore({ dir: lookDir(STATE_ROOT) }), fallback: uiStore,
-    usable: () => lookDirState(STATE_ROOT, fs) !== 'foreign', log: (...a) => console.warn(...a),
-    prepare: () => {
-      if (lookDirState(STATE_ROOT, fs) === 'foreign') throw new Error('.claude-custom is a link to somewhere else');
-      ensureLookDir(STATE_ROOT, fs);
-    },
-  });
-  const layoutSync = {};
-  registerLayoutHandlers({ ipcMain, store: layoutStore, sync: layoutSync, isSender: isTabView, send: pushToViews });
-  watchLayout({
-    store: layoutStore, sync: layoutSync, send: pushToViews,
-    file: layoutStore.pathOf(LAYOUT_KEY),
-  });
-  // The split-tree layout (dockable panels D1) under its own key. The pair above stays: an older
-  // window still writes it, and it is read once to migrate into the tree, never written by this build.
-  const treeSync = {};
-  registerLayoutHandlers({ ipcMain, store: layoutStore, sync: treeSync, names: TREE_NAMES, isSender: isTabView, send: pushToViews });
-  watchLayout({
-    store: layoutStore, sync: treeSync, names: TREE_NAMES, send: pushToViews,
-    file: layoutStore.pathOf(TREE_NAMES.key),
-  });
+  // The dock layout and the split tree are each PROJECT's own: registered once, served from the asking page's window's own store
+  // (app/project-records.js; the watchers that follow the files are started with the window's record).
+  registerLayoutHandlers({ ipcMain, scopeFor: projectRecords.scopeFor(viewOwner, 'layoutSync') });
+  registerLayoutHandlers({ ipcMain, names: TREE_NAMES, scopeFor: projectRecords.scopeFor(viewOwner, 'treeSync') });
   // The layout presets (dockable panels D3): a list, install-wide, under its own key. Same bridge, an array.
   const presetSync = {};
   registerLayoutHandlers({ ipcMain, store: uiStore, sync: presetSync, names: PRESET_NAMES, isSender: isTabView, send: pushToAll });
@@ -935,6 +946,7 @@ function registerIpc() {
   // BOOLEANS -- never the secret, which would defeat the thing being tested.
   if (process.env.CLAUDE_CUSTOM_VAULT_PROBE) {
     const value = process.env.CLAUDE_CUSTOM_VAULT_PROBE;
+    const secrets = projectRecords.secretsOf(launchWindow);     // the launch window's service
     setTimeout(() => {
       console.log('[vault-probe] available:', secrets.available());
       const added = secrets.add({ label: 'probe entry', secret: value });
@@ -1179,6 +1191,7 @@ app.whenReady().then(async () => {
   // Windows only because none was set; null removes it. Set before the window.
   Menu.setApplicationMenu(null);
   launchWindow.createWindow();
+  projectRecords.make(launchWindow);
   launchWindow.syncDevServersSampling();       // read AFTER the window exists, and after a start hidden to the tray
   registerIpc();
   startIndexing(seams);

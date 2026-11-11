@@ -64,14 +64,15 @@ test('a folder in no project is its own root and its own state, kind none', () =
   assert.strictEqual(pw.stateRoot, dir);
 });
 
-test('the identity bundle is the same facts the getters give', () => {
+test('a window states its facts once, as flat fields: there is no second "identity" bundle (single-instance PR 2, S3)', () => {
   const root = container();
   const pw = make(path.join(root, 'dev'));
-  const { PROJECT_ROOT, STATE_ROOT, MODE, WINDOW_LABEL, HOST_PROJECT, PROJECT, LAUNCH_CWD } = pw.identity;
-  assert.deepStrictEqual([PROJECT_ROOT, STATE_ROOT, MODE, WINDOW_LABEL, LAUNCH_CWD],
-    [pw.root, pw.stateRoot, pw.mode, pw.label, pw.launchCwd]);
-  assert.strictEqual(HOST_PROJECT, pw.hostProject);
-  assert.strictEqual(PROJECT, pw.project);
+  assert.strictEqual(pw.identity, undefined, 'the bundle repeated the flat fields; main reads the flat ones');
+  assert.strictEqual(pw.launchCwd, path.join(root, 'dev'));
+  assert.strictEqual(pw.root, root);
+  assert.strictEqual(pw.mode, 'tabs');
+  assert.ok(typeof pw.stateRoot === 'string' && typeof pw.label === 'string');
+  assert.ok(pw.hostProject && pw.hostProject.root === pw.root);
 });
 
 test('two windows share no state: their stores are distinct, and a report in one is absent from the other', () => {

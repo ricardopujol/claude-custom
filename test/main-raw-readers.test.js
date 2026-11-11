@@ -16,7 +16,7 @@ const fs = require('fs');
 const path = require('path');
 
 const ALLOWED = new Set([
-  'bridge-contract.test.js',                // createSecretService's project (main's own registerIpc)
+  'bridge-contract.test.js',                // createSecretService's project (main's makeProjectSecrets, built per window by the project records)
   'cache-dirs.test.js',                     // useOwnCaches, main's top-level
   'cc-mod-style-wiring.test.js',            // app-wide settings handlers
   'clipboard-bridge.test.js',               // app-wide bridge registration
@@ -24,7 +24,7 @@ const ALLOWED = new Set([
   'fonts-bridge.test.js',                   // app-wide bridge registration
   'global-propagation-wiring.test.js',      // app-wide watchers
   'main-shell-wiring.test.js',              // one raw read: the comment before tab:raise
-  'project-layout-store.test.js',           // registerIpc's layout store
+  'project-layout-store.test.js',           // main's makeProjectLayoutStore (built per window by the project records)
   'renderer-backgrounding-wiring.test.js',  // a switch at main's top level
   'renderer-games-wiring.test.js',          // app-wide games handlers
   'renderer-resources-viewing-wiring.test.js', // app-wide resources handlers
