@@ -34,8 +34,10 @@ const ALLOWED = new Set([
 ]);
 const SELF = new Set(['main-source.js', 'main-raw-readers.test.js']);
 
-// A line that names a main.js path in a string and reads a file on the same line.
-const READS_MAIN = /(?:read\w*\(|readFileSync\()[^\n]*['"`][^'"`\n]*main\.js['"`]/;
+// A string that is exactly a main.js path ('main.js', 'app/main.js', '../app/main.js'): the argument of whatever reads it.
+const READS_MAIN = /['"`](?:\.\.\/)?(?:app\/)?main\.js['"`]/;
+// ...on a line that also calls a reader (read(..), readFileSync(..), a test's own app('main.js') helper, path.join(..)): a fixture string isn't a read.
+const READS_CALL = /(?:\bread\w*|\bapp|\bjoin)\(/;
 const stripComments = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*/gm, '');
 
 test('only the listed tests read app/main.js raw; every other one goes through test/main-source.js', () => {
@@ -44,7 +46,7 @@ test('only the listed tests read app/main.js raw; every other one goes through t
   for (const f of fs.readdirSync(dir)) {
     if (!f.endsWith('.js') || SELF.has(f)) continue;
     const src = stripComments(fs.readFileSync(path.join(dir, f), 'utf8'));
-    if (READS_MAIN.test(src)) readers.push(f);
+    if (src.split('\n').some((line) => READS_MAIN.test(line) && READS_CALL.test(line))) readers.push(f);
   }
   assert.ok(readers.length >= 10, `the scan finds the readers (${readers.length})`);
   const unlisted = readers.filter((f) => !ALLOWED.has(f));

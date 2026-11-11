@@ -10,6 +10,10 @@
  *   mainProcessSource({ strip: 1 })  the same with block and whole-line comments removed (what main-shell-wiring reads)
  *   mainOnly() / windowOnly()        one file, for a fact that is about that file's own top level
  *   bodyAt(src, at)                  the braced body that starts at/after `at`, string-aware; a missing end FAILS
+ *
+ * bodyAt's two limits: (1) it does not understand regex literals, so one holding a quote or a brace (/'/, /\{/) throws "no closing
+ * brace" (loud, never silent): anchor on the `function name(` itself, and keep such regexes out of the body being sliced;
+ * (2) if `at` points at text with no brace of its own, it returns the NEXT function's body: always anchor on `function name(`.
  */
 const fs = require('fs');
 const path = require('path');

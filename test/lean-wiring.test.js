@@ -8,7 +8,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
-const { mainProcessSource } = require('./main-source');
+const { mainProcessSource, bodyAt } = require('./main-source');
 
 const read = (f) => fs.readFileSync(path.join(__dirname, '..', f), 'utf8');
 const strip = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*/gm, '');
@@ -31,7 +31,9 @@ test('main re-sends a lean state to a page that loads (or reloads) while the win
 test('a tab view going away drops its night by the id taken when it was made, even if the webContents is already destroyed (Miguel M2)', () => {
   assert.match(MAIN, /view\.leanOwnerId = leanOwnerId/);
   assert.match(MAIN, /wc\.once\('destroyed', \(\) => \{ if \(leanBridge\) leanBridge\.dropOwner\(leanOwnerId\); \}\)/);
-  const drop = MAIN.slice(MAIN.indexOf('function destroyTabView'), MAIN.indexOf('// --- pushing the model out'));
+  const dropAt = MAIN.indexOf('function destroyTabView');
+  assert.ok(dropAt !== -1, 'destroyTabView exists');
+  const drop = bodyAt(MAIN, dropAt);   // the old end anchor was a comment the strip removes (-1: the slice ran to EOF)
   assert.match(drop, /leanBridge\.dropOwner\(view\.leanOwnerId\)/);
   assert.doesNotMatch(drop, /isDestroyed\(\)\) leanBridge/, 'the drop is not behind an isDestroyed guard');
 });

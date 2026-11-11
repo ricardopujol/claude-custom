@@ -10,7 +10,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
-const { mainProcessSource } = require('./main-source');
+const { mainProcessSource, bodyAt } = require('./main-source');
 
 const MAIN = mainProcessSource();
 const strip = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*/gm, '');
@@ -49,7 +49,9 @@ test('a host question that nobody answers ends as a deny, not a hang', () => {
 });
 
 test("a tab's panel follows its tab: destroyed with it, hidden when it is not selected, moved when it is laid out again", () => {
-  const destroy = CODE.slice(CODE.indexOf('function destroyTabView('), CODE.indexOf('// --- pushing the model out'));
+  const destroyAt = CODE.indexOf('function destroyTabView(');
+  assert.ok(destroyAt !== -1, 'destroyTabView exists');
+  const destroy = bodyAt(CODE, destroyAt);   // the old end anchor was a comment the strip removes (-1: the slice ran to EOF)
   assert.match(destroy, /canvasViews\.destroyFor\(view\.webContents\);/);
   const sel = CODE.slice(CODE.indexOf('function applySelection('), CODE.indexOf('function applySelection(') + 900);
   // `shows` is the selected tab, unless the branch form's issue list is open and the strip page draws over the view (#119 A6)

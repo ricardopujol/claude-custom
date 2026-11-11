@@ -10,7 +10,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
-const { mainProcessSource } = require('./main-source');
+const { mainProcessSource, bodyAt } = require('./main-source');
 
 const read = (...p) => fs.readFileSync(path.join(__dirname, '..', ...p), 'utf8');
 const strip = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*/gm, '');
@@ -53,7 +53,9 @@ test('the view is made from the module, with the Electron classes handed in, and
 });
 
 test('a tab\'s Preview follows its tab: destroyed with it, hidden when it is not selected, moved when it is laid out again', () => {
-  const destroy = CODE.slice(CODE.indexOf('function destroyTabView('), CODE.indexOf('// --- pushing the model out'));
+  const destroyAt = CODE.indexOf('function destroyTabView(');
+  assert.ok(destroyAt !== -1, 'destroyTabView exists');
+  const destroy = bodyAt(CODE, destroyAt);   // the old end anchor was a comment the strip removes (-1: the slice ran to EOF)
   assert.match(destroy, /previewViews\.destroyFor\(view\.webContents\);/);
   const sel = CODE.slice(CODE.indexOf('function applySelection('), CODE.indexOf('function applySelection(') + 1000);
   assert.match(sel, /previewViews\.setOwnerVisible\(tab\.view\.webContents, shows\);/);
