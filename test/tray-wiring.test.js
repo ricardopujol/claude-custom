@@ -57,6 +57,10 @@ test('start minimised: the window is created without being shown, only when star
     'no icon could be made: the hidden window is shown, never left unreachable');
 });
 
+test('the tray\'s "hidden" is any window hidden, as hideAll and showAll act on every window (PR #256 Dexter 6)', () => {
+  assert.match(MAIN, /isHidden: \(\) => anyWindowHidden\(registry\.list\(\)\.map\(\(p\) => p\.win\)\),/);
+});
+
 test('the tray follows the shell and goes with the app', () => {
   assert.match(bodyOf(/function onShellChanged\(/), /const tray = getTray\(\);\s*if \(tray\) tray\.sync\(\);/);
   assert.match(MAIN, /app\.on\('will-quit', \(\) => \{ if \(trayController\) trayController\.destroy\(\);/);

@@ -24,6 +24,7 @@ const { createBusyGate } = require('./busy-gate');
 const { createSeenGate } = require('./seen-gate');
 const { createAppApi, startProbeServer } = require('./probe-driver');
 const { createProjectLifecycle } = require('./project-lifecycle');
+const { anyWindowHidden } = require('./tray-model');
 const { createProjectRecords } = require('./project-records');
 const { armQuitWatchdog } = require('./quit-watchdog');
 const { createQuitLog, wireQuitLog, markWillQuitEnd } = require('./quit-log');
@@ -387,7 +388,8 @@ function startTray() {
     getSettings: () => readTraySettings(uiStore),
     tabs: () => { const w = trayWindow(); return w && w.tabShell ? w.tabShell.snapshot().tabs : []; },
     windowLabel: () => anyWindow().label,
-    isHidden: () => { const w = trayWindow(); const win = w ? w.win : null; return !win || win.isDestroyed() || !win.isVisible(); },
+    // ANY window hidden: hideAll / showAll act on every window, so the menu must offer "Show all" while one of them is hidden (PR #256 Dexter 6)
+    isHidden: () => anyWindowHidden(registry.list().map((p) => p.win)),
     background: () => { const w = trayWindow(); return w ? w.backgroundModel() : Promise.resolve(null); },
     now: () => Date.now(),
     log: (...a) => console.log(...a),
