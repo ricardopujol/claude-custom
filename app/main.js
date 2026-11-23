@@ -294,7 +294,7 @@ const toasts = createToastHolder({
 // overlay is made with its units (makeWindowUnits) and handed to the window through attach(). Whether its field has the keyboard is the
 // window's (indexFieldFocused).
 let indexingApp = null;
-// The per-window units main makes for a window: its lean state and its indexing overlay. Window -> { lean, overlay }.
+// The per-window units main makes for a window: its lean unit (over the process's one lean state, appLean) and its indexing overlay. Window -> { lean, overlay }.
 const windowUnits = new Map();
 // Backlog #34's playback bridge: one registration, watched per window (watchPlayback).
 let playback = null;

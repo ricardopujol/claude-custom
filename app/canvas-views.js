@@ -64,6 +64,8 @@ function createCanvasViews({ WebContentsView, session, addChild, removeChild, ow
   // ONE in-memory session per tab, kept across hide/show: Electron never frees a session, so a fresh partition per show leaked a network
   // context, a webRequest hook and permission handlers every time the module was shown (PR #122 Dexter F8 / Miguel G2). Storage and
   // cache are cleared whenever the view goes.
+  // A closed window keeps its tabs' sessions for the life of the process (Electron never frees one; PR 2 plan risk 7): each holds no page and no
+  // storage once its view is gone (cleared in destroyRecord), so it costs a network context per tab ever shown, not data. A bounded leak, accepted.
   const sessions = new Map();        // partition -> { ses, ready }: ready = the dead proxy is in place
   const watched = new Set();         // owner ids whose 'destroyed' we already listen for
 

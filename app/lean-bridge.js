@@ -1,7 +1,8 @@
 'use strict';
 /**
- * Main's half of lean mode (BACKLOG #62, documentation/DESIGN_LEAN_MODE.md): the window-level state
- * (app/lean-state.js) behind three IPC channels, and the push of every change to the tab pages and the strip.
+ * Main's half of lean mode (BACKLOG #62, documentation/DESIGN_LEAN_MODE.md): the state (app/lean-state.js,
+ * ONE for the whole process since single-instance PR 2, Ricardo: "All of Jiandu") behind its IPC channels, and the push of every
+ * change to the tab pages and the strip of every window.
  *
  *   lean:get     (invoke)  a tab view or the strip asks the state
  *   lean:set     (send)    the ☾ Lean button / Back to normal: a boolean, from a tab view or the strip
@@ -13,7 +14,7 @@
  *                          view and pushes the window's whole set to the strip as `lean-faces` whenever it changes
  *
  * `isView` / `isStrip` say who a sender is, as in app/playback-bridge.js: a handler that answers anyone is not a
- * boundary. A tab view going away calls `dropOwner` so its night cannot keep the window lean for ever.
+ * boundary. A tab view going away calls `dropOwner` so its night cannot keep the process lean for ever.
  * Its own module so it can be tested without booting Electron.
  */
 const { createLean } = require('./lean-state');
@@ -27,9 +28,9 @@ const FACES_CHANNEL = 'lean:faces';
 const FACES_PUSH = 'lean-faces';
 
 /**
- * ONE window's lean state, its faces, and the pushes of every change to that window's own pages (single-instance PR 2: lean stays per
- * window, Q3 default). It touches no ipcMain: registerLeanHandlers registers the channels once and hands each message to the unit of
- * the window it came from.
+ * ONE window's lean UNIT over the process's lean state (`lean`, shared by every window: single-instance PR 2, Q3 answer: lean is app-wide):
+ * the window's own faces (the working agents' portraits stay per strip) and the push of every change (main's `push` reaches every window).
+ * It touches no ipcMain: registerLeanHandlers registers the channels once and hands each message to the unit of the window it came from.
  */
 function createLeanUnit({ push, pushFaces = () => {}, lean = createLean(), faces = createFaces() }) {
   const announce = (changed) => {
