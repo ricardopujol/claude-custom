@@ -242,7 +242,7 @@ test('dispose() stops what a window runs on its own, and the poll and the issue 
   assert.match(dispose, /closeViews\(liveViews, \{ canvasViews, previewViews, dropOwner: leanBridge \? \(id\) => leanBridge\.dropOwner\(id\) : null \}\);/, 'every tab view (and its panels, previews and lean night)');
   assert.match(dispose, /if \(indexing && typeof indexing\.dispose === 'function'\) indexing\.dispose\(\);/, 'the indexing overlay\'s views');
   assert.match(WINDOW, /require\('\.\/view-closer'\)/);
-  assert.match(WINDOW, /timers\.startPoll\(POLL_MS, \(\) => \{ reloadMarks\(\); tabShell\.poll\(\); \}\);/);
+  assert.match(WINDOW, /timers\.startPoll\(POLL_MS, \(\) => \{ reloadMarks\(\); return tabShell\.poll\(\); \}\);/, 'the tick RETURNS the poll\'s promise: guard() logs a rejected poll with the window\'s label (PR #256 Dexter 4)');
   assert.match(WINDOW, /timers\.later\('issue list warm-up', 20_000,/);
   assert.match(WINDOW, /win\.on\(ev, timers\.guard\('dev-servers sampling', syncDevServersSampling\)\);/);
   assert.doesNotMatch(WINDOW, /\bsetInterval\(/, 'no bare interval: a timer that outlives its window ticks a dead shell');

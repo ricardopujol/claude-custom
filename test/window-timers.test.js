@@ -85,3 +85,14 @@ test('a tick that throws costs one tick, not the poll: the next interval still r
 });
 
 // (the "needs no Electron" source assertion lives in test/source-contracts.test.js: this file is in the mutation command)
+
+test('a poll tick that RETURNS a rejected promise is logged with the window\'s label (PR #256 Dexter 4)', async (t) => {
+  t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] });
+  const { timers, logs } = rig();
+  timers.startPoll(100, () => Promise.reject(new Error('poll rejected')));
+  t.mock.timers.tick(100);
+  await new Promise((r) => setImmediate(r));
+  assert.strictEqual(logs.length, 1);
+  assert.match(logs[0], /^\[Proj\] poll failed: .*poll rejected/);
+  timers.dispose();
+});

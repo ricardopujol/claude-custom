@@ -1702,7 +1702,7 @@ function createProjectWindow({ launchCwd, electron, config, services, launch }) 
 
   /** The poll and the issue-list warm-up that follow a window which stayed up. */
   function startPoll() {
-    if (MODE === 'tabs') timers.startPoll(POLL_MS, () => { reloadMarks(); tabShell.poll(); });
+    if (MODE === 'tabs') timers.startPoll(POLL_MS, () => { reloadMarks(); return tabShell.poll(); });
     // #119 A6: read the repo's open issues once, a little after the window is up, so a tab whose branch came from an
     // issue already shows its link. Fire and forget: no gh, no login or no network is one dim line later, never a dialog.
     // Not under the probe driver, whose fake gh counts its calls.
