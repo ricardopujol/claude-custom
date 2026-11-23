@@ -12,6 +12,7 @@
  *       new window is made, registered, given its record and units, started and polled. A start that throws costs ITS window only: it is
  *       removed, its record, units and playback watch dropped, it is disposed and its window destroyed.
  *       NOTE for PR 3: a second launch of a project that is open in THIS process is routed here too (the per-process claim pipe).
+ *       After a successful start `onChanged` runs too (a window constructed visible fires no show event).
  *   projectClosed(pw)              a window closed: when another stays it is taken out of the registry and disposed (the registry decides:
  *       the LAST window is left for `window-all-closed` and the quit handlers) and everything main holds for it goes. Always tells
  *       `onChanged` (the tray's count, the Resources sampler's "who is looking").
@@ -55,6 +56,9 @@ function createProjectLifecycle({
       return { pw: null, existing: false, first: null, error: String((err && err.message) || err) };
     }
     afterStart(pw);
+    // A window made visible fires no show event (its listeners are added after it shows), so who is looking is asked again here: minimise A, open B,
+    // and Resources must wake (PR #256 Dexter 1).
+    onChanged();
     if (!launch) pw.startPoll();
     return { pw, existing: false, first };
   }
