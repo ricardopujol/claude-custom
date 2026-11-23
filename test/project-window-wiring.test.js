@@ -200,7 +200,12 @@ test('seam guard: `launchWindow` is named only where the launch itself is the po
   // ...and registerIpc names it ONLY in the vault probe
   const ipc = bodyAt(MAIN, MAIN.search(/function registerIpc\(/));
   assert.strictEqual((ipc.match(/\blaunchWindow\b/g) || []).length, 1);
-  assert.match(ipc, /projectRecords\.secretsOf\(launchWindow\);\s*\/\/ the launch window's service|projectRecords\.secretsOf\(launchWindow\)/);
+  // PR #256 Miguel B2: registerIpc runs BEFORE startProject makes the launch window's record, so reading it here is null. It is read at call time, inside the timer.
+  const probe = ipc.slice(ipc.indexOf('CLAUDE_CUSTOM_VAULT_PROBE'));
+  const timer = probe.indexOf('setTimeout(() => {');
+  const read = probe.search(/projectRecords\.secretsOf\(launchWindow\)/);
+  assert.ok(timer !== -1 && read > timer, 'the launch window\'s secret service is read inside the timer, after startProject made the record');
+  assert.match(probe, /if \(secrets === null\) \{ console\.log\('\[vault-probe\] no secret service/, 'and a missing record is said, not thrown');
 });
 
 test('seam guard: no handler reaches a per-project record except through the owner (secretsOf(viewOwner(..)) / scopeFor(viewOwner, ..) / windowUnits via the resolvers)', () => {

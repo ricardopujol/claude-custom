@@ -945,8 +945,10 @@ function registerIpc() {
   // BOOLEANS -- never the secret, which would defeat the thing being tested.
   if (process.env.CLAUDE_CUSTOM_VAULT_PROBE) {
     const value = process.env.CLAUDE_CUSTOM_VAULT_PROBE;
-    const secrets = projectRecords.secretsOf(launchWindow);     // the launch window's service
     setTimeout(() => {
+      // Read now, not at registration: registerIpc runs before startProject makes the launch window's record (PR #256 Miguel B2).
+      const secrets = projectRecords.secretsOf(launchWindow);     // the launch window's service
+      if (secrets === null) { console.log('[vault-probe] no secret service for the launch window'); return; }
       console.log('[vault-probe] available:', secrets.available());
       const added = secrets.add({ label: 'probe entry', secret: value });
       console.log('[vault-probe] stored:', added.ok, added.error || '');
