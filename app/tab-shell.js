@@ -763,7 +763,8 @@ function createShell(deps) {
       if (tab.closed || tab.started || tab.starting || destroyed) return;
       let chosen = null;
       try { chosen = await hosts.choosePort(tab); } catch (err) { log('[shell] port probe failed:', err && err.message); }
-      if (!chosen || chosen.action !== 'attach' || tab.closed || tab.started || tab.starting) return;
+      // destroyed too: the window can close during the port walk, and a view made now would belong to nobody (PR #256 Dexter 5)
+      if (!chosen || chosen.action !== 'attach' || tab.closed || tab.started || tab.starting || destroyed) return;
       const token = hosts.tokenFor(chosen.port);
       if (!token) { log(`[shell] ${tab.key}: a host is on ${chosen.port} but its token can't be read`); return; }
       // A retry after a start whose spawn timed out: the host it waited for is up, so the start's leftovers go (a stale `pending`

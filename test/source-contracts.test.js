@@ -786,3 +786,12 @@ test('the probe driver\'s server is the process\'s: loopback only, once, and the
   const win = fs.readFileSync(path.join(__dirname, '..', 'app', 'project-window.js'), 'utf8');
   assert.doesNotMatch(win, /net\.createServer|\.listen\(port/, 'a second window would collide on PROBE_PORT');
 });
+
+// PR #256 Dexter 5: an attach that is already INSIDE its port walk when the window closes must not present a view afterwards. The shell's
+// harness cannot hold one there (the queue runs the selected tab's start first), so the guard is pinned as text.
+test('Dexter 5: attachIfRunning checks `destroyed` again after its port walk, before it presents a view', () => {
+  const shell = fs.readFileSync(path.join(__dirname, '..', 'app', 'tab-shell.js'), 'utf8').replace(/\r\n/g, '\n');
+  const at = shell.indexOf('function attachIfRunning(');
+  const after = shell.slice(shell.indexOf('await hosts.choosePort(tab)', at));
+  assert.match(after.slice(0, after.indexOf('present(tab')), /tab\.closed \|\| tab\.started \|\| tab\.starting \|\| destroyed\) return;/);
+});
