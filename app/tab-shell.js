@@ -212,6 +212,7 @@ const HOST_DEPS = ['choosePort', 'probe', 'spawn', 'wait', 'tokenFor', 'tokenFil
 // #222: how long a start waits for the identity file of the host that bound (BOUND_POLLS x BOUND_POLL_MS = 5 s).
 const BOUND_POLLS = 50;
 const BOUND_POLL_MS = 100;
+const BOUND_SKEW_MS = 5000;      // an identity stamped further ahead than this is not from a clock that agrees with ours
 // The same, for the worktree contract scripts (PR 3).
 const OPS_DEPS = ['available', 'create', 'setup', 'remove'];
 
@@ -793,17 +794,28 @@ function createShell(deps) {
     }
   }
 
-  // #222: which token a window presents after its own spawn answered. The identity file is written by the host that bound,
-  // right after its token files: our child's pid there means our token is right; a fresh identity of another pid means
-  // another host won the bind, so its token file is right. Nothing proven in time: our own token (the likeliest truth).
-  async function tokenForOwnSpawn(port, own, { child, spawnAt }) {
-    const mine = child && Number.isInteger(child.pid) ? child.pid : null;
-    if (mine === null || typeof hosts.boundBy !== 'function') return hosts.tokenFile(port) || own;   // nothing to compare with
+  // #222: which token a window presents for a host IT spawned (`rec` = { port, token, child, spawnAt }), once the port answers.
+  // `hosts/<port>.token` may still hold the PREVIOUS host's token, so it is taken only on proof. The identity file is written
+  // by the host that bound, right after its token files, and `startedAt` is the time of that write (a republish rewrites it).
+  // A FRESH identity (written since `rec.spawnAt`, which is stamped before the port walk, and not in the future) of our child's
+  // pid means our token is right; a fresh one of another pid, or our child's exit before it bound (EADDRINUSE), means another
+  // host holds the port, so its token file is right. An identity older than the spawn is a leftover and proves nothing.
+  // Nothing proven in time: our own token (the likeliest truth).
+  async function tokenForOwnSpawn(port, own, rec) {
+    const mine = rec.child && Number.isInteger(rec.child.pid) ? rec.child.pid : null;
+    if (mine === null || typeof hosts.boundBy !== 'function') {
+      log(`[shell] port ${port}: no spawn pid or no hosts.boundBy, so the token file is used unproven`);
+      return hosts.tokenFile(port) || own;
+    }
     for (let i = 0; i < BOUND_POLLS; i++) {
       let id = null;
       try { id = hosts.boundBy(port); } catch { id = null; }
-      if (id && id.pid === mine) return own;
-      if (id && Number.isInteger(id.pid) && typeof id.startedAt === 'number' && id.startedAt >= spawnAt) {
+      const fresh = !!id && Number.isInteger(id.pid) && Number.isFinite(id.startedAt)
+        && id.startedAt >= rec.spawnAt && id.startedAt <= now() + BOUND_SKEW_MS;
+      if (fresh && id.pid === mine) return own;
+      if (fresh) return hosts.tokenFile(port) || own;
+      if (exitedHosts.has(rec)) {
+        log(`[shell] port ${port}: the host this window spawned exited before it bound, so another host holds the port`);
         return hosts.tokenFile(port) || own;
       }
       await sleep(BOUND_POLL_MS);
@@ -827,7 +839,8 @@ function createShell(deps) {
       let spawned = false;
       let port = null;
       let token = null;
-      let ownSpawn = null;                         // { child, spawnAt } when this start spawned the host and it answered
+      let ownSpawn = null;                         // the record of a host this window spawned (its child and stamp) once it answered
+      const stamp = now();                         // BEFORE the port walk: a host that binds during the walk still writes its identity after this
       try {
         if (tab.closed || destroyed) return;
         if (tab.started) return;
@@ -843,6 +856,7 @@ function createShell(deps) {
         tab.pending = null;
         if (pend && chosen.action === 'attach') {
           token = pend.token;                      // the ORIGINAL host, its ORIGINAL token
+          ownSpawn = pend;
         } else if (pend) {
           // Still not answering: give that host one more wait, spawn nothing.
           // A second failure forgets it, so the next Retry may spawn afresh
@@ -855,14 +869,15 @@ function createShell(deps) {
             throw new Error(`the host did not come up on port ${port} in time`);
           }
           token = pend.token;
+          ownSpawn = pend;
         } else if (chosen.action === 'attach') {
           token = hosts.tokenFor(port);
           if (!token) throw new Error(`a host is on port ${port} but its token can't be read`);
         } else {
           token = hosts.newToken();
-          const rec = { port, token };
-          const spawnAt = Date.now();
+          const rec = { port, token, child: null, spawnAt: stamp };
           const child = hosts.spawn({ tab, port, token });
+          rec.child = child || null;
           // The window spawned it, so the child's exit is proof the host is dead (PR #231 Dexter M2): a host that crashed while
           // starting leaves no file and no listener, and a close must not wait on it for ever.
           if (child && typeof child.once === 'function') {
@@ -877,15 +892,12 @@ function createShell(deps) {
             if (tab.closed && isCompanionEntry(tab)) stopFromStart(tab, port, token);
             throw new Error(`the host did not come up on port ${port} in time`);
           }
-          ownSpawn = { child, spawnAt };
+          ownSpawn = rec;
         }
-        // Dexter, PR #75 R2-2: present the token of whoever BOUND the port. Only
-        // the winner of the bind writes `hosts/<port>.token` (F2), so the file
-        // names the host actually listening; a token kept or generated here is
-        // only a guess about who that is. It stands in only while the file isn't
-        // written yet -- our own host, just past its bind.
-        // #222: for OUR OWN spawn the file may still hold the PREVIOUS host's token (no host deletes it, and ours writes its own
-        // only after its bind and a shared file lock). So the file is taken only when the identity file proves another host bound.
+        // Present the token of whoever BOUND the port (Dexter, PR #75 R2-2). Only the winner of the bind writes `hosts/<port>.token`
+        // (F2), but the file may be the PREVIOUS host's until that winner writes it (#222). So: for a host THIS window spawned
+        // (a fresh spawn or a pending one), the file is taken only when the identity file, or our child's exit, shows another host
+        // won the bind, else our own token stands; for a host found running, the file names it and is read as it is.
         if (ownSpawn) token = await tokenForOwnSpawn(port, token, ownSpawn);
         else token = hosts.tokenFile(port) || token;
         if (tab.closed || destroyed) {
