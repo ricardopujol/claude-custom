@@ -2303,12 +2303,11 @@ function endHost(exitCode, signal, extra = {}, lingerMs = 0) {
   for (const ws of clients) {
     if (ws.readyState === ws.OPEN) ws.send(endedFrame);
   }
-  const leave = () => { removeOwnFiles(); process.exit(exitCode ?? 0); };
-  if (lingerMs > 0) { setTimeout(leave, lingerMs); return; }
+  if (lingerMs > 0) { setTimeout(() => process.exit(exitCode ?? 0), lingerMs); return; }
   // A stop's KILL is answered by the job helper, which dies with this host (libuv's kill-on-close job): a host that exited at once
   // lost it (measured, PR #235 K4). So the host waits for the answer, at most KILL_ANSWER_MS; with no stop waiting, it exits at once.
   // A stop still held or unanswered by then is said in host.log and the stop's outcome (K4a).
-  jobGuard.leave(KILL_ANSWER_MS).then(leave, leave);
+  jobGuard.leave(KILL_ANSWER_MS).then(() => process.exit(exitCode ?? 0), () => process.exit(exitCode ?? 0));
 }
 
 // The machine is deliberately passive: it schedules nothing itself, so the host
@@ -3420,7 +3419,8 @@ wss.on('error', (err) => {
 // doing (host/bounded-shutdown.js). The order is the order it always had: the pty is ended FIRST and the session lock and the
 // identity file are released AFTER it, because both mean "a live claude is in this worktree" (PR #217 Dexter F1, F2). The watchdog's
 // kill makes them stale within the bound.
-function shutdown({ removeIdentity = boundPort === PORT } = {}) {
+function shutdown({ removeIdentity = true } = {}) {
+  removeIdentity = removeIdentity && boundPort === PORT;     // #222: a process that never bound the port never deletes the winner's files (a bare SIGTERM of a loser)
   runShutdown({
     logFile: path.join(HARNESS_DIR, 'host.log'),
     start: ownStartTime(),
@@ -3460,6 +3460,8 @@ process.on('exit', () => { killTree(healthChild); releaseSessionLock(SESSION_LOC
 process.on('exit', () => { hostQuota.release(); });
 // This session's scheduled work is over with it: neighbours see "session ended" at once (and a durable cron job stays on the list).
 process.on('exit', () => { schedulesControl.end(); });
+// #222: ... and so are its identity and token files, on EVERY exit path that runs JS, endHost's (claude exited) included; a host that never bound leaves the winner's.
+process.on('exit', removeOwnFiles);
 
 // --- the claude-custom mod (BACKLOG #119 A2) ------------------------------------------------------------------------
 // mods/claude-custom is loaded into `claude` with --plugin-dir. It reads the CLI's own usage, subagent states and permission asks and

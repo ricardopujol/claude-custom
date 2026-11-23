@@ -122,16 +122,13 @@ test('#222: shutdown() unlinks this host\'s token file with its identity, and th
 });
 
 test('#222 (Miguel Y1): shutdown() defaults removeIdentity to "this process bound the port", so a bare SIGTERM of a loser keeps the winner\'s files', () => {
-  assert.match(HOST, /function shutdown\(\{ removeIdentity = boundPort === PORT \} = \{\}\)/);
+  const at = HOST.indexOf('function shutdown(');
+  assert.match(HOST.slice(at, at + 400), /removeIdentity = removeIdentity && boundPort === PORT;/);
 });
 
-test('#222 (Dexter 4): when claude exits (endHost) the host removes its token file and identity, only when it bound, before every process.exit', () => {
-  const at = HOST.indexOf('function endHost(');
-  assert.ok(at !== -1);
-  const body = fnBody(at);
-  assert.strictEqual(body.split('process.exit(').length - 1, 1, 'one exit point inside endHost, so no exit can skip the removal');
-  const exitAt = body.indexOf('process.exit(');
-  assert.ok(body.lastIndexOf('removeOwnFiles()', exitAt) !== -1, 'removeOwnFiles() runs just before it');
+test('#222 (Dexter 4): when claude exits (endHost) the host removes its token file and identity, only when it bound: on the process exit event, so no exit path skips it', () => {
+  assert.match(HOST, /process\.on\('exit', removeOwnFiles\)/);
+  assert.match(fnBody(HOST.indexOf('function endHost(')), /process\.exit\(/, 'endHost ends through process.exit, which runs the exit handlers');
   const fnAt = HOST.indexOf('function removeOwnFiles(');
   assert.ok(fnAt !== -1);
   const fn = fnBody(fnAt);
