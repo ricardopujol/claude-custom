@@ -115,3 +115,20 @@ test('webContents is the process\'s own command: it answers the count of pages t
   assert.deepStrictEqual([r.ok, r.count, r.pid], [true, 7, process.pid]);
   assert.deepStrictEqual(await t.route({ cmd: 'webContents', token: 'wrong' }), { ok: false, error: 'bad token' });
 });
+
+test('isInside compares real paths: a junction inside the temp folder that points outside it is NOT inside (PR #256 Miguel S1)', () => {
+  const fs = require('fs');
+  const { tmpDir } = require('./tmp-dir');
+  const root = tmpDir('pd-root-');
+  const outside = tmpDir('pd-outside-');
+  fs.mkdirSync(path.join(outside, 'real-project'));
+  const link = path.join(root, 'escape');
+  fs.symlinkSync(outside, link, 'junction');
+  assert.strictEqual(isInside(root, path.join(link, 'real-project')), false, 'the junction leads out of the folder');
+  assert.strictEqual(isInside(root, link), false);
+  // a real folder inside stays inside, and a folder not made yet (ENOENT) is judged by its nearest existing parent
+  fs.mkdirSync(path.join(root, 'ok'));
+  assert.strictEqual(isInside(root, path.join(root, 'ok')), true);
+  assert.strictEqual(isInside(root, path.join(root, 'ok', 'not-made-yet', 'dev')), true);
+  assert.strictEqual(isInside(root, path.join(link, 'not-made-yet')), false);
+});

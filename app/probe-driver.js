@@ -17,14 +17,34 @@
  */
 const net = require('net');
 const path = require('path');
+const fs = require('fs');
 const { handleProbeCommand, probeAuthError, probeLineReader } = require('./tab-shell');
 
 const TOKEN_MIN = 16;
 
-/** Whether `child` is `parent` or inside it (path-wise, case-insensitive on Windows). */
+/**
+ * The real path of `p`: junctions, symlinks and 8.3 short names resolved. A folder not made yet (ENOENT) is the real path of its nearest
+ * existing parent plus the rest. Any other failure falls back to the lexical path (guarded: a probe helper never throws).
+ */
+function realPath(p) {
+  const resolved = path.resolve(p);
+  let existing = resolved;
+  const rest = [];
+  for (;;) {
+    try { return path.join(fs.realpathSync.native(existing), ...rest); }
+    catch (err) {
+      const parent = path.dirname(existing);
+      if (!err || err.code !== 'ENOENT' || parent === existing) return resolved;
+      rest.unshift(path.basename(existing));
+      existing = parent;
+    }
+  }
+}
+
+/** Whether `child` is `parent` or inside it (by real path, so a junction out of the folder is not inside; case-insensitive on Windows). */
 function isInside(parent, child) {
   if (typeof child !== 'string' || child === '' || typeof parent !== 'string' || parent === '') return false;
-  const norm = (p) => (process.platform === 'win32' ? path.resolve(p).toLowerCase() : path.resolve(p));
+  const norm = (p) => (process.platform === 'win32' ? realPath(p).toLowerCase() : realPath(p));
   const rel = path.relative(norm(parent), norm(child));
   return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
 }
