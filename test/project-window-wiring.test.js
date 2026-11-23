@@ -89,8 +89,8 @@ test('a window\'s own lean unit and indexing overlay are made per window and att
   assert.match(body, /windowUnits\.set\(pw, \{ lean, overlay \}\);\s*pw\.attach\(\{ leanBridge: lean, indexing: overlay \}\);/, 'the window sees both the moment main has them');
   const ready = MAIN.slice(MAIN.indexOf('app.whenReady().then('));
   assert.match(ready, /startIndexing\(seams\);\s*startTray\(\);\s*const \{ first \} = await startProject\(LAUNCH_CWD/, 'the service exists before the first window (and so its overlay)');
-  const sp = bodyAt(MAIN, MAIN.search(/async function startProject\(/));
-  assert.ok(sp.search(/makeWindowUnits\(pw\)/) < sp.search(/await pw\.start\(appStart\)/), 'attached before the window starts');
+  // the order (record, then units, then start) is app/project-lifecycle.js's, pinned by behaviour in test/project-lifecycle.test.js
+  assert.match(MAIN, /makeUnits: \(pw\) => makeWindowUnits\(pw\),/, 'the lifecycle makes the units before it starts the window');
   assert.match(MAIN, /onWindowCreated: \(pw\) => windowCreated\(pw\),/);
 });
 
@@ -166,12 +166,14 @@ test('startProject: the launch window is the process\'s own; any other project i
   const make = bodyAt(MAIN, MAIN.search(/function makeWindow\(/));
   assert.match(make, /EXPLICIT_PORT: launch \? EXPLICIT_PORT : null,/, 'a port-named launch is its own process: no second window inherits its port (CLAUDE_CUSTOM_PORT)');
   assert.match(make, /launch,/, 'the window is told whether it is the launch window (it alone holds the claim)');
-  const sp = bodyAt(MAIN, MAIN.search(/async function startProject\(/));
-  assert.match(sp, /const pw = launch \? launchWindow : makeWindow\(cwd, false\);/);
-  assert.match(sp, /registry\.get\(pw\.root\);\s*if \(open !== null\) \{ open\.focusWindow\(\); return \{ pw: open, existing: true, first: null \}; \}\s*registry\.add\(pw\);/,
-    'a project that already has a window is brought forward, not opened twice');
-  assert.match(sp, /projectRecords\.make\(pw\);\s*makeWindowUnits\(pw\);\s*let first;\s*try \{\s*first = await pw\.start\(appStart\);/, 'its record and units exist before its window starts');
-  assert.match(sp, /if \(!launch\) pw\.startPoll\(\);/, 'the launch window\'s poll starts after the claim\'s ready and the launch exits (whenReady)');
+  // The order and the failure paths are app/project-lifecycle.js's, pinned by BEHAVIOUR in test/project-lifecycle.test.js (PR #256 Miguel Y2).
+  // Here: main wires the lifecycle to the real registry, the launch window and the one window maker, and its entry point is startProject.
+  const lc = MAIN.slice(MAIN.search(/const lifecycle = createProjectLifecycle\(\{/));
+  assert.match(lc, /^const lifecycle = createProjectLifecycle\(\{\s*registry, launchWindow,/, 'the real registry and the process\'s own launch window');
+  assert.match(lc, /makeWindow: \(cwd\) => makeWindow\(cwd, false\),/, 'any other project is a window made with launch false (no claim, no port)');
+  assert.match(lc, /dropWatch: \(pw\) => \{ const unwatch = playbackWatched\.get\(pw\);/);
+  assert.match(MAIN, /const startProject = lifecycle\.startProject;/);
+  assert.match(WINDOW, /^    showLane,$/m, 'the window offers showLane(cwd): the lifecycle calls it when a project is already open (S3), and a missing one would be a silent no-op');
   assert.strictEqual((MAIN.match(/\bcreateProjectWindow\(/g) || []).length, 1, 'one maker');
   // per-launch env (plan risk 6): the token and the side-tab switch are only a port-named launch's, and that launch never gets a second window
   // PR #256 Miguel Y4: "never gets a second window" is ENFORCED, not assumed: the probe driver refuses openProject in a port-named process
@@ -192,7 +194,6 @@ test('seam guard: `launchWindow` is named only where the launch itself is the po
   const allowed = {
     'const launchWindow': 'its construction',
     'app.whenReady': 'the launch order: claim, markReady, the refusals, the poll, the screenshot and the probe driver',
-    startProject: 'launch ? launchWindow : makeWindow(...)',
     startTray: 'the label the tray names before any window exists',
     startIndexing: 'warming the chip\'s list for the launch project',
     registerIpc: 'the vault probe, which uses the launch window\'s service',
@@ -203,8 +204,8 @@ test('seam guard: `launchWindow` is named only where the launch itself is the po
   const ipc = bodyAt(MAIN, MAIN.search(/function registerIpc\(/));
   assert.strictEqual((ipc.match(/\blaunchWindow\b/g) || []).length, 1);
   // PR #256 Miguel B2: registerIpc runs BEFORE startProject makes the launch window's record, so reading it here is null. It is read at call time, inside the timer.
-  const probe = ipc.slice(ipc.indexOf('CLAUDE_CUSTOM_VAULT_PROBE'));
-  const timer = probe.indexOf('setTimeout(() => {');
+  const probe = ipc.slice(ipc.search(/process\.env\.CLAUDE_CUSTOM_VAULT_PROBE\) \{/));
+  const timer = probe.search(/setTimeout\(\(\) => \{/);
   const read = probe.search(/projectRecords\.secretsOf\(launchWindow\)/);
   assert.ok(timer !== -1 && read > timer, 'the launch window\'s secret service is read inside the timer, after startProject made the record');
   assert.match(probe, /if \(secrets === null\) \{ console\.log\('\[vault-probe\] no secret service/, 'and a missing record is said, not thrown');
@@ -226,13 +227,10 @@ test('seam guard: no handler reaches a per-project record except through the own
 
 test('close vs quit (P3 at the wiring level): a closed window tells main; main disposes it only when another stays, and drops everything it holds for it', () => {
   assert.match(WINDOW, /win\.on\('closed', \(\) => \{ win = null; if \(tabShell\) tabShell\.destroy\(\); onClosed\(self\); \}\);/);
-  assert.match(MAIN, /onClosed: \(pw\) => projectClosed\(pw\),/);
-  const closed = bodyAt(MAIN, MAIN.search(/function projectClosed\(/));
-  assert.match(closed, /if \(registry\.closed\(pw\)\) \{\s*projectRecords\.stop\(pw\);\s*windowUnits\.delete\(pw\);/, 'the registry decides (it keeps the last window); main drops the record and units only for a disposed one');
-  assert.match(closed, /unwatch\(\);/, 'its playback watch goes');
-  assert.match(closed, /trayController\.sync\(\)/);
-  assert.match(closed, /windowServices\.seenChanged\(\)/, 'the Resources sampler asks again who is looking');
-  assert.doesNotMatch(closed, /quitting/, 'a quit cancelled by one window\'s prompt has already closed another: it must not stay registered with no window');
+  assert.match(MAIN, /onClosed: \(pw\) => lifecycle\.projectClosed\(pw\),/);
+  // what a close drops, and that the registry decides (the last window is kept), is behaviour: test/project-lifecycle.test.js (P3)
+  assert.match(MAIN, /onChanged: \(\) => \{ if \(trayController\) trayController\.sync\(\); windowServices\.seenChanged\(\); \},/, 'the tray and the Resources sampler are told');
+  assert.doesNotMatch(MAIN, /projectClosed[^;\n]*quitting/, 'a quit cancelled by one window\'s prompt has already closed another: it must not stay registered with no window');
   // the quit path is the last window\'s and is unchanged: window-all-closed quits, the quit handlers stop each window
   assert.match(MAIN, /app\.on\('window-all-closed', \(\) => \{\s*app\.quit\(\);\s*\}\);/);
 });
@@ -251,9 +249,9 @@ test('dispose() stops what a window runs on its own, and the poll and the issue 
 });
 
 test('the crash guard: a non-launch project that fails to start costs its own window only; the launch window\'s failure is whenReady\'s', () => {
-  const sp = bodyAt(MAIN, MAIN.search(/async function startProject\(/));
-  assert.match(sp, /\} catch \(err\) \{[\s\S]*?if \(launch\) throw err;[\s\S]*?registry\.remove\(pw\);\s*projectRecords\.stop\(pw\);\s*windowUnits\.delete\(pw\);\s*pw\.dispose\(\);/);
-  assert.match(sp, /return \{ pw: null, existing: false, first: null, error:/);
+  // the failure path (nothing left behind, the playback watch included) is behaviour: test/project-lifecycle.test.js (PR #256 Miguel Y2)
+  assert.match(MAIN, /dropWatch: \(pw\) => \{ const unwatch = playbackWatched\.get\(pw\); if \(unwatch\) \{ playbackWatched\.delete\(pw\); unwatch\(\); \} \},/, 'the lifecycle can drop a window\'s playback watch');
+  assert.match(MAIN, /await startProject\(LAUNCH_CWD, \{ launch: true \}\)/, 'the launch window\'s failure reaches whenReady, which exits');
 });
 
 test('the project window is made after every app-wide constant it is handed (a const read before its line is a TDZ error)', () => {

@@ -23,6 +23,7 @@ const { createPushers } = require('./push-targets');
 const { createBusyGate } = require('./busy-gate');
 const { createSeenGate } = require('./seen-gate');
 const { createAppApi, startProbeServer } = require('./probe-driver');
+const { createProjectLifecycle } = require('./project-lifecycle');
 const { createProjectRecords } = require('./project-records');
 const { armQuitWatchdog } = require('./quit-watchdog');
 const { createQuitLog, wireQuitLog, markWillQuitEnd } = require('./quit-log');
@@ -1237,7 +1238,7 @@ const windowServices = {
   isQuitting: () => quitting,
   setQuitting: (v) => { quitting = v; },
   onWindowCreated: (pw) => windowCreated(pw),
-  onClosed: (pw) => projectClosed(pw),
+  onClosed: (pw) => lifecycle.projectClosed(pw),
   getResources: () => resources,
   getTray: () => trayController,
   seenChanged: createSeenGate({ registry, getResources: () => resources }),
@@ -1246,23 +1247,6 @@ const windowServices = {
 // The project window (app/project-window.js): everything that is one project's. Made HERE, after every app-wide constant it is handed (a
 // const read before its line is a TDZ error). Construction has no side effects: the claim hooks `exit` inside run(), and the window itself
 // is made by start(). `launch` is this process's own launch window (the one-window claim and an explicit port are its alone, §3.1).
-/**
- * A window closed. When another window stays, this one is taken out of the registry and disposed (its poll, timers, dev servers, occupancy
- * watchers and claim stop) and everything main holds for it goes (its record and watchers, its units, its playback watch). The LAST window is
- * left registered: `window-all-closed` and the quit handlers tear it down exactly as they did when a process held one window. Ignores `quitting`
- * on purpose: a quit cancelled by one window's unsaved prompt has already closed another, which must not stay registered with no window.
- */
-function projectClosed(pw) {
-  if (registry.closed(pw)) {
-    projectRecords.stop(pw);
-    windowUnits.delete(pw);
-    const unwatch = playbackWatched.get(pw);
-    if (unwatch) { playbackWatched.delete(pw); unwatch(); }
-  }
-  if (trayController) trayController.sync();     // the count and the tooltip speak for the first window that is left
-  windowServices.seenChanged();                  // ...and the Resources sampler asks again who is looking
-}
-
 function makeWindow(cwd, launch) {
   return createProjectWindow({
     launchCwd: cwd,
@@ -1278,42 +1262,28 @@ registry.add(launchWindow);
 // What a window's start() is handed: the probe's seams and the open-PR reader (set in whenReady).
 let appStart = null;
 
-/**
- * Open a project in this process: its record (secrets, layout), its units (lean, indexing), then the window's own start(). `launch` is the
- * process's own launch window (made above; its claim, poll and refusals are whenReady's); any other project gets a window of its own, or the
- * one it already has is brought forward. Answers { pw, existing, first }.
- */
-async function startProject(cwd, { launch = false } = {}) {
-  const pw = launch ? launchWindow : makeWindow(cwd, false);
-  if (!launch) {
-    const open = registry.get(pw.root);
-    if (open !== null) { open.focusWindow(); return { pw: open, existing: true, first: null }; }
-    registry.add(pw);
-  }
-  projectRecords.make(pw);
-  makeWindowUnits(pw);
-  let first;
-  try {
-    first = await pw.start(appStart);
-  } catch (err) {
-    // The crash guard (DESIGN_SINGLE_INSTANCE.md 3.2): a project that fails to start costs ITS window, never the process or the others. The launch
-    // window is the process's own: its failure is whenReady's (it exits), so it is rethrown there.
-    if (launch) throw err;
-    console.error(`[main] ${pw.label}: start failed:`, (err && err.stack) || err);
-    const w = pw.win;
-    registry.remove(pw);
-    projectRecords.stop(pw);
-    windowUnits.delete(pw);
-    pw.dispose();
-    try { if (w && !w.isDestroyed()) w.destroy(); } catch { /* already gone */ }
-    return { pw: null, existing: false, first: null, error: String((err && err.message) || err) };
-  }
+// Opening a project in this process and closing one (app/project-lifecycle.js, pure and tested for behaviour): the window's record
+// (secrets, layout), its units (lean, indexing), then its own start(); a window that closed while another stays is disposed and everything
+// main holds for it goes. `launch` is the process's own launch window (made above).
+const lifecycle = createProjectLifecycle({
+  registry, launchWindow,
+  rootOf: (cwd) => { const p = projectOf(cwd); return p ? p.root : cwd; },
+  makeWindow: (cwd) => makeWindow(cwd, false),
+  makeRecord: (pw) => projectRecords.make(pw),
+  stopRecord: (pw) => projectRecords.stop(pw),
+  makeUnits: (pw) => makeWindowUnits(pw),
+  dropUnits: (pw) => windowUnits.delete(pw),
+  dropWatch: (pw) => { const unwatch = playbackWatched.get(pw); if (unwatch) { playbackWatched.delete(pw); unwatch(); } },
+  getAppStart: () => appStart,
   // Started hidden but no icon could be made (no tray area): a window nobody can reach is worse than a visible one.
-  const w = pw.win;
-  if (trayController && !trayController.state().exists && w && !w.isDestroyed() && !w.isVisible()) pw.focusWindow();
-  if (!launch) pw.startPoll();
-  return { pw, existing: false, first };
-}
+  afterStart: (pw) => {
+    const w = pw.win;
+    if (trayController && !trayController.state().exists && w && !w.isDestroyed() && !w.isVisible()) pw.focusWindow();
+  },
+  // the count and the tooltip speak for the first window that is left, and the Resources sampler asks again who is looking
+  onChanged: () => { if (trayController) trayController.sync(); windowServices.seenChanged(); },
+});
+const startProject = lifecycle.startProject;
 
 app.whenReady().then(async () => {
   console.log('[main] project       :', launchWindow.root, `(${launchWindow.mode})`);

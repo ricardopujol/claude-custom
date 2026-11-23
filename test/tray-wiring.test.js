@@ -52,8 +52,8 @@ test('close hides to the tray only through hidesOnClose, ahead of the unsaved-te
 
 test('start minimised: the window is created without being shown, only when startsHidden says so', () => {
   assert.match(MAIN, /show: !startHidden,/);
-  // the check is each window's own, made right after the window exists (single-instance PR 2: startProject; the tray itself is made before any window)
-  assert.match(bodyOf(/async function startProject\(/), /trayController && !trayController\.state\(\)\.exists && w && !w\.isDestroyed\(\) && !w\.isVisible\(\)\) pw\.focusWindow\(\);/,
+  // the check is each window's own, made right after the window exists (single-instance PR 2: the lifecycle's afterStart; the tray itself is made before any window)
+  assert.match(MAIN, /afterStart: \(pw\) => \{[\s\S]*?trayController && !trayController\.state\(\)\.exists && w && !w\.isDestroyed\(\) && !w\.isVisible\(\)\) pw\.focusWindow\(\);/,
     'no icon could be made: the hidden window is shown, never left unreachable');
 });
 

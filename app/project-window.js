@@ -1525,6 +1525,14 @@ function createProjectWindow({ launchCwd, electron, config, services, launch }) 
     console.log(`[main] a second launch asked for this window (${JSON.stringify(msg.cwd || null)}${msg.port ? `, port ${msg.port}` : ''}): ${key ? 'selected a lane' : 'focused'}`);
   }
 
+  /** Show the lane a cwd names (a second open of this project from a lane's folder): the project's own `dev` or root names none. */
+  function showLane(cwd) {
+    const lane = windowOwner.forwardedCwd(cwd, PROJECT);
+    if (lane === undefined || !tabShell) return;
+    const key = windowOwner.pickLane(tabShell.snapshot().tabs, { cwd: lane });
+    if (key) tabShell.select(key);
+  }
+
   const windowClaim = createWindowClaim({
     // The claim pipe is named per pid (host/window-focus.js), so a second window in this process would collide on it: only the launch window
     // holds the claim. PR 3 routes a second launch to the right window of the process (DESIGN_SINGLE_INSTANCE.md, Q2).
@@ -1770,6 +1778,7 @@ function createProjectWindow({ launchCwd, electron, config, services, launch }) 
     backgroundModel,
     showBackgroundMenu,
     focusWindow,
+    showLane,
     viewTop: currentViewTop,
     focusSelected,
     setIndexFieldFocused,
