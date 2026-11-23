@@ -174,7 +174,9 @@ test('startProject: the launch window is the process\'s own; any other project i
   assert.match(sp, /if \(!launch\) pw\.startPoll\(\);/, 'the launch window\'s poll starts after the claim\'s ready and the launch exits (whenReady)');
   assert.strictEqual((MAIN.match(/\bcreateProjectWindow\(/g) || []).length, 1, 'one maker');
   // per-launch env (plan risk 6): the token and the side-tab switch are only a port-named launch's, and that launch never gets a second window
-  assert.match(WINDOW, /process\.env\.CLAUDE_CUSTOM_TOKEN/);
+  // PR #256 Miguel Y4: "never gets a second window" is ENFORCED, not assumed: the probe driver refuses openProject in a port-named process
+  // (behaviour tested in test/probe-driver.test.js) and main tells it whether this launch named a port.
+  assert.match(MAIN, /createAppApi\(\{[^}]*portNamed: !!EXPLICIT_PORT/, 'main hands the driver whether the launch named a port');
 });
 
 test('seam guard: `launchWindow` is named only where the launch itself is the point (an allow-list of constructs)', () => {

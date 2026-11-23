@@ -1370,7 +1370,7 @@ app.whenReady().then(async () => {
   if (PROBE_PORT) {
     startProbeServer({
       port: PROBE_PORT, token: PROBE_TOKEN, lineMax: PROBE_LINE_MAX,
-      appApi: createAppApi({ probePort: PROBE_PORT, token: PROBE_TOKEN, tempRoot: os.tmpdir(), registry, launchWindow, startProject, countWebContents: () => webContents.getAllWebContents().length }),
+      appApi: createAppApi({ probePort: PROBE_PORT, token: PROBE_TOKEN, tempRoot: os.tmpdir(), registry, launchWindow, startProject, countWebContents: () => webContents.getAllWebContents().length, portNamed: !!EXPLICIT_PORT }),
       windowApi: (root) => { const pw = root === undefined ? registry.get(launchWindow.root) : registry.get(root); return pw ? pw.probeApi() : null; },
     });
   }

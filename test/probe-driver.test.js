@@ -132,3 +132,14 @@ test('isInside compares real paths: a junction inside the temp folder that point
   assert.strictEqual(isInside(root, path.join(root, 'ok', 'not-made-yet', 'dev')), true);
   assert.strictEqual(isInside(root, path.join(link, 'not-made-yet')), false);
 });
+
+test('openProject is refused in a process that was launched with a port: its CLAUDE_CUSTOM_TOKEN is the launch window\'s alone (plan risk 6; PR #256 Miguel Y4)', async () => {
+  const opened = [];
+  const api = createAppApi({ probePort: 51000, token: TOKEN, tempRoot: os.tmpdir(), registry: createProjectRegistry(), launchWindow: null, portNamed: true, startProject: async (c) => { opened.push(c); return { pw: { root: c } }; } });
+  const r = await api.openProject(path.join(os.tmpdir(), 'cc-probe-two', 'B'));
+  assert.strictEqual(r.ok, false);
+  assert.match(r.error, /port/);
+  assert.deepStrictEqual(opened, [], 'no second window for a port-named launch');
+  const free = createAppApi({ probePort: 51000, token: TOKEN, tempRoot: os.tmpdir(), registry: createProjectRegistry(), launchWindow: null, portNamed: false, startProject: async (c) => { opened.push(c); return { pw: { root: c } }; } });
+  assert.strictEqual((await free.openProject(path.join(os.tmpdir(), 'cc-probe-two', 'B'))).ok, true);
+});

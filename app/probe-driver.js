@@ -71,7 +71,7 @@ async function routeProbeLine(line, { token, windowApi, appApi }) {
 }
 
 /** The process's own commands. */
-function createAppApi({ probePort, token, tempRoot, registry, launchWindow, startProject, countWebContents = () => null }) {
+function createAppApi({ probePort, token, tempRoot, registry, launchWindow, startProject, countWebContents = () => null, portNamed = false }) {
   return {
     async webContents() {
       return { ok: true, count: countWebContents(), pid: process.pid };
@@ -84,6 +84,8 @@ function createAppApi({ probePort, token, tempRoot, registry, launchWindow, star
     },
     async openProject(cwd) {
       if (!probePort || typeof token !== 'string' || token.length < TOKEN_MIN) return { ok: false, error: 'openProject needs the probe driver (its port and token)' };
+      // A port-named launch is its own process with its own CLAUDE_CUSTOM_TOKEN (read by every window): a second window would reuse it (plan risk 6).
+      if (portNamed) return { ok: false, error: 'openProject is refused in a process launched with a port (its token belongs to the launch window alone)' };
       if (!isInside(tempRoot, cwd)) return { ok: false, error: 'openProject is for a probe\'s own scratch folder, inside the temp folder' };
       const r = await startProject(cwd, { launch: false });
       if (!r.pw) return { ok: false, error: r.error || 'the project did not start' };
