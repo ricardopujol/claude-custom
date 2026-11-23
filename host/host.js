@@ -2108,7 +2108,7 @@ const wss = new WebSocketServer({
     const token = new URL(req.url, 'ws://127.0.0.1').searchParams.get('token');
     const verdict = allowConnection({ origin, token }, { expectedToken: SESSION_TOKEN });
     if (!verdict.ok) {
-      console.log('[host] refused a connection:', verdict.reason);
+      console.log(`[host] refused a connection on port ${PORT}:`, verdict.reason);
       return done(false, 403, 'Forbidden');
     }
     done(true);
@@ -2281,6 +2281,17 @@ function wireTerm(t, watch = null, retryFresh = null) {
     }
     endHost(exitCode, signal);
   });
+}
+
+// #222: a host that bound its port takes its identity file and its token file with it when it ends without shutdown() (claude exited),
+// so the next host on this port finds no leftover token to mistake for its own. A host that never bound leaves the winner's files alone.
+// Best effort, and wrapped whole: it must never keep the host from exiting.
+function removeOwnFiles() {
+  try {
+    if (boundPort !== PORT) return;
+    try { fs.unlinkSync(fileFor(HARNESS_DIR, PORT)); } catch { /* already gone */ }
+    try { fs.unlinkSync(PORT_TOKEN_FILE); } catch { /* already gone */ }
+  } catch { /* boundPort not initialised yet: nothing was bound */ }
 }
 
 // The session is over: tell every client, then end the host. `extra` rides on the exit frame (a failed shell start says why).
@@ -3342,9 +3353,10 @@ let boundPort = null;                 // set only once the bind has succeeded
 
 wss.on('listening', () => {
   boundPort = PORT;
-  schedulesControl.start();                   // BACKLOG #119 A7: only a host that owns its port keeps an entry in the shared schedules file
-  console.log(`[host] listening on ws://127.0.0.1:${PORT}`);
+  // #222: the token files, then the identity (the window's proof of who bound), BEFORE schedulesControl.start(), which can wait up to 3 s
+  // on a shared file lock. A window reads them the moment the port answers.
   writeTokenFiles();
+  console.log(`[host] listening on ws://127.0.0.1:${PORT}`);
   try {
     console.log('[host] identity     :', writeIdentity({ dir: HARNESS_DIR, port: PORT, cwd: CWD, ...identityFor(),
       processStartedAt: lockOwner ? lockOwner.processStartedAt : undefined, claudePid: term ? term.pid : undefined }));
@@ -3355,6 +3367,7 @@ wss.on('listening', () => {
     // because "why did it open a second host" is otherwise unanswerable.
     console.error('[host] could not publish identity:', err.message);
   }
+  schedulesControl.start();                   // BACKLOG #119 A7: only a host that owns its port keeps an entry in the shared schedules file
 });
 
 // Once claude starts (or restarts): the identity again, now naming it. Only by
@@ -3407,6 +3420,7 @@ wss.on('error', (err) => {
 // identity file are released AFTER it, because both mean "a live claude is in this worktree" (PR #217 Dexter F1, F2). The watchdog's
 // kill makes them stale within the bound.
 function shutdown({ removeIdentity = true } = {}) {
+  removeIdentity = removeIdentity && boundPort === PORT;     // #222: a process that never bound the port never deletes the winner's files (a bare SIGTERM of a loser)
   runShutdown({
     logFile: path.join(HARNESS_DIR, 'host.log'),
     start: ownStartTime(),
@@ -3426,6 +3440,8 @@ function shutdown({ removeIdentity = true } = {}) {
       // pid is gone, so this is tidiness rather than correctness -- which is why it
       // is safe to swallow, and why the pid check exists instead of relying on it.
       () => { if (removeIdentity) fs.unlinkSync(fileFor(HARNESS_DIR, PORT)); },
+      // #222: and its token file, so the next host on this port finds none to mistake for its own (a killed host still leaves one).
+      () => { if (removeIdentity && boundPort === PORT) fs.unlinkSync(PORT_TOKEN_FILE); },
     ],
   });
 }
@@ -3444,6 +3460,8 @@ process.on('exit', () => { killTree(healthChild); releaseSessionLock(SESSION_LOC
 process.on('exit', () => { hostQuota.release(); });
 // This session's scheduled work is over with it: neighbours see "session ended" at once (and a durable cron job stays on the list).
 process.on('exit', () => { schedulesControl.end(); });
+// #222: ... and so are its identity and token files, on EVERY exit path that runs JS, endHost's (claude exited) included; a host that never bound leaves the winner's.
+process.on('exit', removeOwnFiles);
 
 // --- the claude-custom mod (BACKLOG #119 A2) ------------------------------------------------------------------------
 // mods/claude-custom is loaded into `claude` with --plugin-dir. It reads the CLI's own usage, subagent states and permission asks and

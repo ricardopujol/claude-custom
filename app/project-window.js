@@ -1625,6 +1625,8 @@ function createProjectWindow({ launchCwd, electron, config, services, launch }) 
         wait: (port) => waitForHost(port),
         tokenFor: tokenForRunningHost,
         tokenFile: tokenFileFor,
+        // #222: the identity of the host that bound a port, so a window knows whose token file it is reading
+        boundBy: (port) => readIdentity({ dir: HARNESS_DIR, port }),
         // One secret, handed to the host AND the tab's page. In a single-tab window
         // a named CLAUDE_CUSTOM_TOKEN still wins, as it always did.
         newToken: () => (MODE === 'single' && process.env.CLAUDE_CUSTOM_TOKEN)

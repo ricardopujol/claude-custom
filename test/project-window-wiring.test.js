@@ -265,6 +265,12 @@ test('the project window is made after every app-wide constant it is handed (a c
   }
 });
 
+test('#222: the shell is handed hosts.boundBy, which reads the identity file of this install (HARNESS_DIR) by port', () => {
+  assert.match(WINDOW, /boundBy: \(port\) => readIdentity\(\{ dir: HARNESS_DIR, port \}\)/);
+  const at = WINDOW.indexOf('boundBy:');
+  assert.ok(at > WINDOW.indexOf('tokenFile: tokenFileFor'), 'it sits in the hosts block, next to tokenFile');
+});
+
 test('the two files together still hold what each pin above reads (the combined source is the main process)', () => {
   const both = mainProcessSource();
   assert.ok(both.length > MAIN.length && both.length > WINDOW.length);
