@@ -2283,6 +2283,17 @@ function wireTerm(t, watch = null, retryFresh = null) {
   });
 }
 
+// #222: a host that bound its port takes its identity file and its token file with it when it ends without shutdown() (claude exited),
+// so the next host on this port finds no leftover token to mistake for its own. A host that never bound leaves the winner's files alone.
+// Best effort, and wrapped whole: it must never keep the host from exiting.
+function removeOwnFiles() {
+  try {
+    if (boundPort !== PORT) return;
+    try { fs.unlinkSync(fileFor(HARNESS_DIR, PORT)); } catch { /* already gone */ }
+    try { fs.unlinkSync(PORT_TOKEN_FILE); } catch { /* already gone */ }
+  } catch { /* boundPort not initialised yet: nothing was bound */ }
+}
+
 // The session is over: tell every client, then end the host. `extra` rides on the exit frame (a failed shell start says why).
 // `lingerMs`: stay up that long first (a failed start: the window must get to see the host, and a late client is sent the frame too).
 let endedFrame = null;
@@ -2292,11 +2303,12 @@ function endHost(exitCode, signal, extra = {}, lingerMs = 0) {
   for (const ws of clients) {
     if (ws.readyState === ws.OPEN) ws.send(endedFrame);
   }
-  if (lingerMs > 0) { setTimeout(() => process.exit(exitCode ?? 0), lingerMs); return; }
+  const leave = () => { removeOwnFiles(); process.exit(exitCode ?? 0); };
+  if (lingerMs > 0) { setTimeout(leave, lingerMs); return; }
   // A stop's KILL is answered by the job helper, which dies with this host (libuv's kill-on-close job): a host that exited at once
   // lost it (measured, PR #235 K4). So the host waits for the answer, at most KILL_ANSWER_MS; with no stop waiting, it exits at once.
   // A stop still held or unanswered by then is said in host.log and the stop's outcome (K4a).
-  jobGuard.leave(KILL_ANSWER_MS).then(() => process.exit(exitCode ?? 0), () => process.exit(exitCode ?? 0));
+  jobGuard.leave(KILL_ANSWER_MS).then(leave, leave);
 }
 
 // The machine is deliberately passive: it schedules nothing itself, so the host
@@ -3342,9 +3354,9 @@ let boundPort = null;                 // set only once the bind has succeeded
 
 wss.on('listening', () => {
   boundPort = PORT;
-  // #222: the token files FIRST. A window reads them the moment the port answers, and schedulesControl.start() below can wait up to 3 s on a shared file lock.
+  // #222: the token files, then the identity (the window's proof of who bound), BEFORE schedulesControl.start(), which can wait up to 3 s
+  // on a shared file lock. A window reads them the moment the port answers.
   writeTokenFiles();
-  schedulesControl.start();                   // BACKLOG #119 A7: only a host that owns its port keeps an entry in the shared schedules file
   console.log(`[host] listening on ws://127.0.0.1:${PORT}`);
   try {
     console.log('[host] identity     :', writeIdentity({ dir: HARNESS_DIR, port: PORT, cwd: CWD, ...identityFor(),
@@ -3356,6 +3368,7 @@ wss.on('listening', () => {
     // because "why did it open a second host" is otherwise unanswerable.
     console.error('[host] could not publish identity:', err.message);
   }
+  schedulesControl.start();                   // BACKLOG #119 A7: only a host that owns its port keeps an entry in the shared schedules file
 });
 
 // Once claude starts (or restarts): the identity again, now naming it. Only by
@@ -3407,7 +3420,7 @@ wss.on('error', (err) => {
 // doing (host/bounded-shutdown.js). The order is the order it always had: the pty is ended FIRST and the session lock and the
 // identity file are released AFTER it, because both mean "a live claude is in this worktree" (PR #217 Dexter F1, F2). The watchdog's
 // kill makes them stale within the bound.
-function shutdown({ removeIdentity = true } = {}) {
+function shutdown({ removeIdentity = boundPort === PORT } = {}) {
   runShutdown({
     logFile: path.join(HARNESS_DIR, 'host.log'),
     start: ownStartTime(),
@@ -3428,7 +3441,7 @@ function shutdown({ removeIdentity = true } = {}) {
       // is safe to swallow, and why the pid check exists instead of relying on it.
       () => { if (removeIdentity) fs.unlinkSync(fileFor(HARNESS_DIR, PORT)); },
       // #222: and its token file, so the next host on this port finds none to mistake for its own (a killed host still leaves one).
-      () => { if (removeIdentity) fs.unlinkSync(PORT_TOKEN_FILE); },
+      () => { if (removeIdentity && boundPort === PORT) fs.unlinkSync(PORT_TOKEN_FILE); },
     ],
   });
 }

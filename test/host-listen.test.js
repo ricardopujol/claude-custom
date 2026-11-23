@@ -95,12 +95,49 @@ test('#222: the token files are written first in the listening handler, before s
   assert.ok(token < schedules, 'writeTokenFiles() must come before schedulesControl.start()');
 });
 
-test('#222: a clean shutdown removes this host\'s own token file next to its identity, only when it bound', () => {
-  const idx = HOST.indexOf('fs.unlinkSync(fileFor(HARNESS_DIR, PORT))');
+// A top-level function's text, from its `function` keyword to its closing brace at column 0 (the file has CRLF endings).
+function fnBody(at) {
+  const rest = HOST.slice(at);
+  const end = rest.search(/\r?\n\}\r?\n/);
+  return end === -1 ? rest : rest.slice(0, end);
+}
+
+// Dexter 5 / Miguel Y2: the window waits for the identity file as its proof of who bound, so it comes right after the token files.
+test('#222: the identity is written right after the token files, before schedulesControl.start() (the 3 s lock wait)', () => {
+  const start = HOST.indexOf("wss.on('listening'");
+  const body = HOST.slice(start, HOST.indexOf('\n});', start));
+  const token = body.indexOf('writeTokenFiles();');
+  const identity = body.indexOf('writeIdentity({');
+  const schedules = body.indexOf('schedulesControl.start();');
+  assert.ok(token !== -1 && identity !== -1 && schedules !== -1);
+  assert.ok(token < identity && identity < schedules, 'order: token files, identity, then schedulesControl.start()');
+});
+
+test('#222: shutdown() unlinks this host\'s token file with its identity, and the token unlink has the bound guard ON ITS OWN', () => {
+  const idx = HOST.indexOf('unlinkSync(PORT_TOKEN_FILE)', HOST.indexOf('function shutdown('));     // the one inside shutdown()
   assert.ok(idx !== -1);
   const line = HOST.slice(HOST.lastIndexOf('\n', idx), HOST.indexOf('\n', idx));
-  assert.match(line, /if \(removeIdentity\)/, 'the same bound-only guard');
-  assert.ok(HOST.slice(idx, idx + 400).includes('PORT_TOKEN_FILE'), 'the token file is unlinked beside the identity');
+  assert.match(line, /removeIdentity/, 'guarded by removeIdentity');
+  assert.match(line, /boundPort === PORT/, 'and by "this process bound the port" itself: a loser must never delete the winner\'s secret');
+});
+
+test('#222 (Miguel Y1): shutdown() defaults removeIdentity to "this process bound the port", so a bare SIGTERM of a loser keeps the winner\'s files', () => {
+  assert.match(HOST, /function shutdown\(\{ removeIdentity = boundPort === PORT \} = \{\}\)/);
+});
+
+test('#222 (Dexter 4): when claude exits (endHost) the host removes its token file and identity, only when it bound, before every process.exit', () => {
+  const at = HOST.indexOf('function endHost(');
+  assert.ok(at !== -1);
+  const body = fnBody(at);
+  assert.strictEqual(body.split('process.exit(').length - 1, 1, 'one exit point inside endHost, so no exit can skip the removal');
+  const exitAt = body.indexOf('process.exit(');
+  assert.ok(body.lastIndexOf('removeOwnFiles()', exitAt) !== -1, 'removeOwnFiles() runs just before it');
+  const fnAt = HOST.indexOf('function removeOwnFiles(');
+  assert.ok(fnAt !== -1);
+  const fn = fnBody(fnAt);
+  assert.match(fn, /boundPort !== PORT/, 'only when this process bound the port');
+  assert.match(fn, /unlinkSync\(fileFor\(HARNESS_DIR, PORT\)\)/);
+  assert.match(fn, /unlinkSync\(PORT_TOKEN_FILE\)/);
 });
 
 test('#222: the refusal line names the port, so a shared host.log can say which host refused', () => {

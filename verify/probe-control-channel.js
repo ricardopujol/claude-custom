@@ -81,8 +81,8 @@ host.stderr.on('data', d => { log += d.toString(); });
   check('the token never reaches the host log', !log.includes(TOKEN));
 
   check('every refusal was logged with a reason',
-    (log.match(/refused a connection( on port \d+)?:/g) || []).length >= 4,
-    (log.match(/refused a connection( on port \d+)?:.*/g) || []).slice(0, 2).join(' | '));
+    (log.match(/refused a connection on port \d+:/g) || []).length >= 4,
+    (log.match(/refused a connection on port \d+:.*/g) || []).slice(0, 2).join(' | '));
 
   try { host.kill(); } catch {}
   console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILED`);
