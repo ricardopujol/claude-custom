@@ -258,3 +258,15 @@ test('P2 (indexing): random submits from A\'s and B\'s strips file only in their
     assert.ok(w.A.submits.every(([root]) => root === 'A') && w.B.submits.every(([root]) => root === 'B'));
   }
 });
+
+test('indexing: dispose() closes the overlay\'s views (a closed window of several keeps no page of it; PR #256 Miguel B1)', async () => {
+  const w = indexingWorld();
+  await w.ipcMain.invoke('strip:indexSubmit', w.A.strip, 'a');
+  assert.ok(w.A.views.length >= 1);
+  const closed = [];
+  for (const v of w.A.views) v.webContents.close = () => closed.push(v);
+  w.A.overlay.dispose();
+  assert.strictEqual(closed.length, w.A.views.length, 'every view it made was closed');
+  assert.doesNotThrow(() => w.A.overlay.dispose(), 'idempotent');
+  assert.strictEqual(closed.length, w.A.views.length, 'and not closed twice');
+});

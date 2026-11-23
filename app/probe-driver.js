@@ -8,6 +8,7 @@
  * it (the launch window when absent). Two commands are the process's, not a window's:
  *
  *   windows               { windows: [{ root, label, mode, launch, selectedKey }], pid }
+ *   webContents           { count } how many pages the process holds (a closed window must give its pages back; PR #256 Miguel B1)
  *   openProject { cwd }   open `cwd` as a project window of THIS process (or focus the one it already has: existing: true). Refused unless
  *                         the probe driver's port AND token are set, and for any folder outside the machine's temp folder: a probe's own
  *                         scratch project, never a real one.
@@ -39,7 +40,7 @@ async function routeProbeLine(line, { token, windowApi, appApi }) {
   if (denied !== null) return denied;
   if (typeof cmd.cmd !== 'string') return { ok: false, error: 'no cmd' };
   let api;
-  if (cmd.cmd === 'windows' || cmd.cmd === 'openProject') {
+  if (cmd.cmd === 'windows' || cmd.cmd === 'openProject' || cmd.cmd === 'webContents') {
     api = appApi;
   } else {
     if (cmd.window !== undefined && typeof cmd.window !== 'string') return { ok: false, error: 'window must be a project root' };
@@ -50,8 +51,11 @@ async function routeProbeLine(line, { token, windowApi, appApi }) {
 }
 
 /** The process's own commands. */
-function createAppApi({ probePort, token, tempRoot, registry, launchWindow, startProject }) {
+function createAppApi({ probePort, token, tempRoot, registry, launchWindow, startProject, countWebContents = () => null }) {
   return {
+    async webContents() {
+      return { ok: true, count: countWebContents(), pid: process.pid };
+    },
     async windows() {
       return {
         pid: process.pid,

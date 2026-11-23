@@ -97,6 +97,7 @@ const { menuTemplate, createBackgroundActions, popupUntilClosed, stopAllDetail }
 const { hidesOnClose, startsHidden } = require('./tray-model');
 const { readTraySettings, writeTraySetting } = require('./tray-settings');
 const { createWindowTimers } = require('./window-timers');
+const { closeViews } = require('./view-closer');
 
 // What main must hand a window. A missing one throws AT CONSTRUCTION, naming itself: a silent default (isQuitting () => false) would
 // instead change behaviour far away (a hidden-to-tray window that never closes on a real quit). canvasProbeResolve is the one
@@ -1713,6 +1714,9 @@ function createProjectWindow({ launchCwd, electron, config, services, launch }) 
     stopDevServers();
     closeOccupancy();
     windowClaim.stop();
+    // Electron never closes a WebContentsView's page with its window: every page this window made goes here (PR #256 Miguel B1)
+    closeViews(liveViews, { canvasViews, previewViews, dropOwner: leanBridge ? (id) => leanBridge.dropOwner(id) : null });
+    if (indexing && typeof indexing.dispose === 'function') indexing.dispose();
   }
 
   /** Hand over this window's own lean unit and indexing overlay, before start(). An unknown key throws: a typo must not be a silent no-op. */

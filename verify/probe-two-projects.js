@@ -202,6 +202,7 @@ async function main() {
   check('2: openProject refuses a folder outside the temp folder (never a real project)', refused.ok === false && /scratch folder/.test(refused.error || ''), JSON.stringify(refused));
   const noWin = await command(app, { cmd: 'state', window: path.join(tmp, 'nope') });
   check('2: an unknown `window` is refused', noWin.ok === false && noWin.error === 'no such window', JSON.stringify(noWin));
+  const wcBefore = await command(app, { cmd: 'webContents' });
   const opened = await command(app, { cmd: 'openProject', cwd: B.dev }, 120000);
   check('2: openProject B opened a second project window in this process', opened.ok === true && opened.existing === false && opened.pid === pid, JSON.stringify(opened));
   const bRoot = opened.root;
@@ -216,6 +217,8 @@ async function main() {
   check('2: A\'s state did not move', stA1.selectedKey === aDevKey && stA1.hosts.length === 2, `selected=${stA1.selectedKey}`);
   const again = await command(app, { cmd: 'openProject', cwd: B.dev });
   check('2: openProject on an open root focuses it instead (existing: true), still two windows', again.ok === true && again.existing === true && (await command(app, { cmd: 'windows' })).windows.length === 2, JSON.stringify(again));
+  const wcOpen = await command(app, { cmd: 'webContents' });
+  check('2: opening B added pages to the process (the count to give back)', wcBefore.ok === true && wcOpen.ok === true && wcOpen.count > wcBefore.count, `before=${wcBefore.count} open=${wcOpen.count}`);
   if (!stB) return;
   const bDevKey = (stB.hosts.find(h => h.label === 'develop') || {}).key;
   const bFeatKey = (stB.hosts.find(h => h.label === 'feat/a') || {}).key;
@@ -269,6 +272,9 @@ async function main() {
   const closed = await win(app, bRoot, { cmd: 'win-close' });
   const w6 = await waitFor(async () => { const w = await command(app, { cmd: 'windows' }); return w.ok && w.windows.length === 1 ? w : null; }, 30000);
   check('6: closing B leaves one window, and it is A', closed.ok === true && !!w6 && w6.windows[0].root === aRoot, JSON.stringify(w6));
+  // Electron never closes a WebContentsView's page with its window: B's tabs, panels and overlay must be closed by dispose (PR #256 Miguel B1)
+  const wcAfter = await waitFor(async () => { const c = await command(app, { cmd: 'webContents' }); return c.ok && c.count <= wcBefore.count ? c : null; }, 30000, 500);
+  check('6: ...and closing B gave its pages back (the process holds no more pages than before B opened)', !!wcAfter, `before=${wcBefore.count} open=${wcOpen.count} after=${wcAfter ? wcAfter.count : (await command(app, { cmd: 'webContents' })).count}`);
   check('6: ...the process is still alive', isRunning(pid) && !app.exited);
   check('6: ...and B\'s session hosts are still running (a window closing detaches, it does not end the session)', bHostPids.length > 0 && bHostPids.every(isRunning), `pids=${bHostPids.join(',')}`);
   const noB = await win(app, bRoot, { cmd: 'state' });

@@ -107,3 +107,11 @@ test('the server is the process\'s: it listens on loopback only, once, and the w
   const win = fs.readFileSync(path.join(__dirname, '..', 'app', 'project-window.js'), 'utf8');
   assert.doesNotMatch(win, /net\.createServer|\.listen\(port/, 'a second window would collide on PROBE_PORT');
 });
+
+test('webContents is the process\'s own command: it answers the count of pages the process holds, picking no window (PR #256 Miguel B1)', async () => {
+  const t = rig();
+  const api = createAppApi({ probePort: 51000, token: TOKEN, tempRoot: os.tmpdir(), registry: createProjectRegistry(), launchWindow: null, startProject: async () => ({}), countWebContents: () => 7 });
+  const r = await routeProbeLine(JSON.stringify({ cmd: 'webContents', token: TOKEN }), { token: TOKEN, windowApi: () => { throw new Error('must not pick a window'); }, appApi: api });
+  assert.deepStrictEqual([r.ok, r.count, r.pid], [true, 7, process.pid]);
+  assert.deepStrictEqual(await t.route({ cmd: 'webContents', token: 'wrong' }), { ok: false, error: 'bad token' });
+});

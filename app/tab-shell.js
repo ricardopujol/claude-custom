@@ -2747,6 +2747,7 @@ async function handleProbeCommand(line, api, expectedToken) {
       case 'state': return { ok: true, ...(await api.state()) };
       // single-instance PR 2: the process's own commands (app/probe-driver.js answers them): the windows it holds, and opening one more.
       case 'windows': return { ok: true, ...(await api.windows()) };
+      case 'webContents': return await api.webContents();
       case 'openProject':
         if (typeof cmd.cwd !== 'string' || cmd.cwd === '') return { ok: false, error: 'openProject needs a cwd' };
         return await api.openProject(cmd.cwd);

@@ -15,7 +15,7 @@
  * (host/tab-lifecycle.js, app/tab-model.js, app/tab-shell.js).
  */
 
-const { app, BrowserWindow, WebContentsView, Menu, Notification, Tray, clipboard, dialog, ipcMain, nativeImage, safeStorage, session, shell, powerMonitor } = require('electron');
+const { app, BrowserWindow, WebContentsView, Menu, Notification, Tray, clipboard, dialog, ipcMain, nativeImage, safeStorage, session, shell, powerMonitor, webContents } = require('electron');
 const { createToastHolder, clickFor } = require('./toast-holder');
 const { createProjectWindow } = require('./project-window');
 const { createProjectRegistry } = require('./project-registry');
@@ -1368,7 +1368,7 @@ app.whenReady().then(async () => {
   if (PROBE_PORT) {
     startProbeServer({
       port: PROBE_PORT, token: PROBE_TOKEN, lineMax: PROBE_LINE_MAX,
-      appApi: createAppApi({ probePort: PROBE_PORT, token: PROBE_TOKEN, tempRoot: os.tmpdir(), registry, launchWindow, startProject }),
+      appApi: createAppApi({ probePort: PROBE_PORT, token: PROBE_TOKEN, tempRoot: os.tmpdir(), registry, launchWindow, startProject, countWebContents: () => webContents.getAllWebContents().length }),
       windowApi: (root) => { const pw = root === undefined ? registry.get(launchWindow.root) : registry.get(root); return pw ? pw.probeApi() : null; },
     });
   }

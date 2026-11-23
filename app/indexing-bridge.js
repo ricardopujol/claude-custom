@@ -36,6 +36,7 @@
  */
 
 const { samePath } = require('../host/project-layout');
+const { closeOverlayViews } = require('./view-closer');
 
 const NOTE_MAX = 10_000;
 const ID_MAX = 64;
@@ -271,6 +272,11 @@ function createIndexingOverlay({
   return {
     push,
     partOf,
+    /** The window closed: close the overlay's pages (Electron keeps a WebContentsView's page alive past its window). Idempotent. */
+    dispose() {
+      closeOverlayViews(views, { removeChild: (v) => { const w = win(); if (w) w.contentView.removeChildView(v); } });
+      shown.toast = false; shown.list = false;
+    },
     strip: { submit, focus, leave, list: toggleList, chip },
     page: { undo, copy, open, dismiss, size, closeList, ready },
     raise() {

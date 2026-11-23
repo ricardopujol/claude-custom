@@ -233,6 +233,10 @@ test('close vs quit (P3 at the wiring level): a closed window tells main; main d
 test('dispose() stops what a window runs on its own, and the poll and the issue warm-up are guarded timers', () => {
   const dispose = bodyAt(WINDOW, WINDOW.search(/function dispose\(\)/));
   for (const piece of ['timers.dispose();', 'stopDevServers();', 'closeOccupancy();', 'windowClaim.stop();']) assert.ok(dispose.includes(piece), `dispose runs ${piece}`);
+  // PR #256 Miguel B1: Electron never closes a WebContentsView's page with its window, so dispose closes every page the window made
+  assert.match(dispose, /closeViews\(liveViews, \{ canvasViews, previewViews, dropOwner: leanBridge \? \(id\) => leanBridge\.dropOwner\(id\) : null \}\);/, 'every tab view (and its panels, previews and lean night)');
+  assert.match(dispose, /if \(indexing && typeof indexing\.dispose === 'function'\) indexing\.dispose\(\);/, 'the indexing overlay\'s views');
+  assert.match(WINDOW, /require\('\.\/view-closer'\)/);
   assert.match(WINDOW, /timers\.startPoll\(POLL_MS, \(\) => \{ reloadMarks\(\); tabShell\.poll\(\); \}\);/);
   assert.match(WINDOW, /timers\.later\('issue list warm-up', 20_000,/);
   assert.match(WINDOW, /win\.on\(ev, timers\.guard\('dev-servers sampling', syncDevServersSampling\)\);/);
