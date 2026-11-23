@@ -2108,7 +2108,7 @@ const wss = new WebSocketServer({
     const token = new URL(req.url, 'ws://127.0.0.1').searchParams.get('token');
     const verdict = allowConnection({ origin, token }, { expectedToken: SESSION_TOKEN });
     if (!verdict.ok) {
-      console.log('[host] refused a connection:', verdict.reason);
+      console.log(`[host] refused a connection on port ${PORT}:`, verdict.reason);
       return done(false, 403, 'Forbidden');
     }
     done(true);
@@ -3342,9 +3342,10 @@ let boundPort = null;                 // set only once the bind has succeeded
 
 wss.on('listening', () => {
   boundPort = PORT;
+  // #222: the token files FIRST. A window reads them the moment the port answers, and schedulesControl.start() below can wait up to 3 s on a shared file lock.
+  writeTokenFiles();
   schedulesControl.start();                   // BACKLOG #119 A7: only a host that owns its port keeps an entry in the shared schedules file
   console.log(`[host] listening on ws://127.0.0.1:${PORT}`);
-  writeTokenFiles();
   try {
     console.log('[host] identity     :', writeIdentity({ dir: HARNESS_DIR, port: PORT, cwd: CWD, ...identityFor(),
       processStartedAt: lockOwner ? lockOwner.processStartedAt : undefined, claudePid: term ? term.pid : undefined }));
@@ -3426,6 +3427,8 @@ function shutdown({ removeIdentity = true } = {}) {
       // pid is gone, so this is tidiness rather than correctness -- which is why it
       // is safe to swallow, and why the pid check exists instead of relying on it.
       () => { if (removeIdentity) fs.unlinkSync(fileFor(HARNESS_DIR, PORT)); },
+      // #222: and its token file, so the next host on this port finds none to mistake for its own (a killed host still leaves one).
+      () => { if (removeIdentity) fs.unlinkSync(PORT_TOKEN_FILE); },
     ],
   });
 }

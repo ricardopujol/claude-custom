@@ -83,6 +83,32 @@ test('the identity file is NOT removed by a host that never owned it', () => {
     'the error handler must distinguish "we never bound" from a normal shutdown');
 });
 
+// #222: the window reads `hosts/<port>.token` as soon as the port answers; a host that takes the shared schedules lock first
+// (up to 3 s) leaves the previous host's token there that long. The token files go first, before anything that can block.
+test('#222: the token files are written first in the listening handler, before schedulesControl.start()', () => {
+  const start = HOST.indexOf("wss.on('listening'");
+  assert.ok(start !== -1);
+  const body = HOST.slice(start, HOST.indexOf('\n});', start));
+  const token = body.indexOf('writeTokenFiles();');          // the calls end in `;`, so a comment naming them is not matched
+  const schedules = body.indexOf('schedulesControl.start();');
+  assert.ok(token !== -1 && schedules !== -1, 'both calls are in the handler');
+  assert.ok(token < schedules, 'writeTokenFiles() must come before schedulesControl.start()');
+});
+
+test('#222: a clean shutdown removes this host\'s own token file next to its identity, only when it bound', () => {
+  const idx = HOST.indexOf('fs.unlinkSync(fileFor(HARNESS_DIR, PORT))');
+  assert.ok(idx !== -1);
+  const line = HOST.slice(HOST.lastIndexOf('\n', idx), HOST.indexOf('\n', idx));
+  assert.match(line, /if \(removeIdentity\)/, 'the same bound-only guard');
+  assert.ok(HOST.slice(idx, idx + 400).includes('PORT_TOKEN_FILE'), 'the token file is unlinked beside the identity');
+});
+
+test('#222: the refusal line names the port, so a shared host.log can say which host refused', () => {
+  const idx = HOST.indexOf('[host] refused a connection');
+  assert.ok(idx !== -1);
+  assert.ok(/refused a connection[^\n]*PORT/.test(HOST.slice(idx, idx + 120)), 'the log line carries PORT');
+});
+
 // Dexter, PR 2 F1 (High): the ▾ list may stop a pid only on an EXACT proof,
 // the OS start time in the identity file. The host learns it asynchronously at
 // boot, so it publishes it both ways round: in the listening handler when boot
