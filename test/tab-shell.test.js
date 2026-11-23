@@ -48,7 +48,8 @@ function harness({ usage, mode = 'tabs', list = porcelain(THREE), running = {}, 
     // port -> the token file the host that BOUND that port wrote (host.js writes
     // it only on 'listening', PR #75 F2). Unset: a pre-existing host, `tok-<port>`.
     tokenFiles: {},
-    onSpawn: null,      // (spawn) => void, runs before a registering spawn binds
+    identities: {},     // port -> { pid, startedAt } | null: `hosts/<port>.json`, written by the host that bound (#222)
+    onSpawn: null,     // (spawn) => void, runs before a registering spawn binds
     hold: null,         // a promise every choosePort waits on while set
     // PR 3: normPath -> the branch /merged marked; the contract scripts' fakes.
     markers: {}, markerReads: [], opsCalls: [], probeOverride: null,
@@ -135,6 +136,7 @@ function harness({ usage, mode = 'tabs', list = porcelain(THREE), running = {}, 
       wait: async () => !h.failWait,
       tokenFor: fileToken,
       tokenFile: fileToken,
+      boundBy: (port) => (h.identities[port] === undefined ? null : h.identities[port]),
       newToken: () => `fresh-${++h.tokens}`,
       control: async (c) => { h.controls.push(c); return h.controlReply ? h.controlReply(c) : { ok: true, reply: null }; },
       // #129: the retry by pid. 'killed' | 'gone' end it; anything else (or a throw) means the host is still there.
@@ -555,8 +557,12 @@ test('R2-2: third Retry -- the FIRST host wins the bind while a new one is spawn
   h.spawnRegisters = true;
   // H2 is spawned, but H1 binds first; H2 loses and writes nothing.
   h.onSpawn = (s) => {
-    if (s.token !== first.token) { h.running[s.port] = wt('feat-a'); h.tokenFiles[s.port] = first.token; }
+    if (s.token !== first.token) {
+      h.running[s.port] = wt('feat-a'); h.tokenFiles[s.port] = first.token;
+      h.identities[s.port] = { pid: 999, startedAt: Date.now() };     // H1 wrote it: another pid than our child's
+    }
   };
+  h.spawnChild = () => ({ pid: 4242, once() {} });
   await h.shell.select(key('feat-a'));
   const tab = h.shell.tabByKey(key('feat-a'));
   assert.strictEqual(tab.started, true);
@@ -574,6 +580,53 @@ test('R2-2: our own spawn answers before its token file is written: present the 
   await h.shell.select(key('feat-a'));
   const tab = h.shell.tabByKey(key('feat-a'));
   assert.strictEqual(tab.started, true);
+  assert.strictEqual(tab.token, h.spawns[h.spawns.length - 1].token);
+});
+
+test('#222: our own spawn answers while hosts/<port>.token still holds the PREVIOUS host\'s token: present the token it was given', async () => {
+  const h = harness();
+  await h.shell.open();
+  await flush();
+  h.spawnRegisters = false;
+  h.spawnChild = () => ({ pid: 4242, once() {} });
+  h.onSpawn = (s) => {
+    h.running[s.port] = wt('feat-a');
+    h.tokenFiles[s.port] = 'T-previous-host';
+    h.identities[s.port] = { pid: 4242, startedAt: Date.now() };       // our child wrote its identity; the token file is still the old one
+  };
+  await h.shell.select(key('feat-a'));
+  const tab = h.shell.tabByKey(key('feat-a'));
+  assert.strictEqual(tab.started, true);
+  assert.strictEqual(tab.token, h.spawns[h.spawns.length - 1].token, 'the view must present the token its own host was spawned with');
+});
+
+test('#222: the identity file is not written yet (the host is still in its gap): keep our own token, and say so', async () => {
+  const h = harness();
+  await h.shell.open();
+  await flush();
+  h.spawnRegisters = false;
+  h.spawnChild = () => ({ pid: 4242, once() {} });
+  h.onSpawn = (s) => { h.running[s.port] = wt('feat-a'); h.tokenFiles[s.port] = 'T-previous-host'; };
+  await h.shell.select(key('feat-a'));
+  const tab = h.shell.tabByKey(key('feat-a'));
+  assert.strictEqual(tab.started, true);
+  assert.strictEqual(tab.token, h.spawns[h.spawns.length - 1].token);
+  assert.ok(h.logs.some((a) => /no host identity proved/.test(String(a[0]))), 'the fallback is logged');
+});
+
+test('#222: an identity written BEFORE the spawn (another pid, old) does not make the stale token file win', async () => {
+  const h = harness();
+  await h.shell.open();
+  await flush();
+  h.spawnRegisters = false;
+  h.spawnChild = () => ({ pid: 4242, once() {} });
+  h.onSpawn = (s) => {
+    h.running[s.port] = wt('feat-a');
+    h.tokenFiles[s.port] = 'T-previous-host';
+    h.identities[s.port] = { pid: 999, startedAt: Date.now() - 60000 };
+  };
+  await h.shell.select(key('feat-a'));
+  const tab = h.shell.tabByKey(key('feat-a'));
   assert.strictEqual(tab.token, h.spawns[h.spawns.length - 1].token);
 });
 

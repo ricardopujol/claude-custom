@@ -183,6 +183,7 @@ function sanitizeStatus(s) {
  *   hosts.tokenFor(port)   -> string | null     a RUNNING host's token
  *   hosts.tokenFile(port)  -> string | null     ONLY `hosts/<port>.token`: written by
  *                                               the host that won the bind, and nobody else
+ *   hosts.boundBy(port)    -> { pid, startedAt } | null   `hosts/<port>.json`, the identity of the host that bound (#222); optional
  *   hosts.newToken()       -> string
  *   hosts.control({ port, token, msg })    -> Promise<{ ok, reply? , error? }>
  *   hosts.identity({ install, port }), hosts.readToken(install, port)  (planGoTo's)
@@ -208,6 +209,9 @@ function sanitizeStatus(s) {
 // start, where it became a tab error and a view that never appeared.
 const HOST_DEPS = ['choosePort', 'probe', 'spawn', 'wait', 'tokenFor', 'tokenFile', 'newToken', 'control',
   'identity', 'readToken'];
+// #222: how long a start waits for the identity file of the host that bound (BOUND_POLLS x BOUND_POLL_MS = 5 s).
+const BOUND_POLLS = 50;
+const BOUND_POLL_MS = 100;
 // The same, for the worktree contract scripts (PR 3).
 const OPS_DEPS = ['available', 'create', 'setup', 'remove'];
 
@@ -789,6 +793,25 @@ function createShell(deps) {
     }
   }
 
+  // #222: which token a window presents after its own spawn answered. The identity file is written by the host that bound,
+  // right after its token files: our child's pid there means our token is right; a fresh identity of another pid means
+  // another host won the bind, so its token file is right. Nothing proven in time: our own token (the likeliest truth).
+  async function tokenForOwnSpawn(port, own, { child, spawnAt }) {
+    const mine = child && Number.isInteger(child.pid) ? child.pid : null;
+    if (mine === null || typeof hosts.boundBy !== 'function') return hosts.tokenFile(port) || own;   // nothing to compare with
+    for (let i = 0; i < BOUND_POLLS; i++) {
+      let id = null;
+      try { id = hosts.boundBy(port); } catch { id = null; }
+      if (id && id.pid === mine) return own;
+      if (id && Number.isInteger(id.pid) && typeof id.startedAt === 'number' && id.startedAt >= spawnAt) {
+        return hosts.tokenFile(port) || own;
+      }
+      await sleep(BOUND_POLL_MS);
+    }
+    log(`[shell] port ${port}: no host identity proved who bound it in time; presenting the token this window spawned with`);
+    return own;
+  }
+
   // First selection: choose the port NOW, spawn if nobody serves this folder,
   // wait for it, then draw. One chain, so two tabs can't take one port.
   function start(tab) {
@@ -804,6 +827,7 @@ function createShell(deps) {
       let spawned = false;
       let port = null;
       let token = null;
+      let ownSpawn = null;                         // { child, spawnAt } when this start spawned the host and it answered
       try {
         if (tab.closed || destroyed) return;
         if (tab.started) return;
@@ -837,6 +861,7 @@ function createShell(deps) {
         } else {
           token = hosts.newToken();
           const rec = { port, token };
+          const spawnAt = Date.now();
           const child = hosts.spawn({ tab, port, token });
           // The window spawned it, so the child's exit is proof the host is dead (PR #231 Dexter M2): a host that crashed while
           // starting leaves no file and no listener, and a close must not wait on it for ever.
@@ -852,13 +877,17 @@ function createShell(deps) {
             if (tab.closed && isCompanionEntry(tab)) stopFromStart(tab, port, token);
             throw new Error(`the host did not come up on port ${port} in time`);
           }
+          ownSpawn = { child, spawnAt };
         }
         // Dexter, PR #75 R2-2: present the token of whoever BOUND the port. Only
         // the winner of the bind writes `hosts/<port>.token` (F2), so the file
         // names the host actually listening; a token kept or generated here is
         // only a guess about who that is. It stands in only while the file isn't
         // written yet -- our own host, just past its bind.
-        token = hosts.tokenFile(port) || token;
+        // #222: for OUR OWN spawn the file may still hold the PREVIOUS host's token (no host deletes it, and ours writes its own
+        // only after its bind and a shared file lock). So the file is taken only when the identity file proves another host bound.
+        if (ownSpawn) token = await tokenForOwnSpawn(port, token, ownSpawn);
+        else token = hosts.tokenFile(port) || token;
         if (tab.closed || destroyed) {
           // Closed while starting: don't leave the host we just made behind. A side tab's host is its own even when it was
           // FOUND (attached): nobody else will end it once its branch tab is gone (PR #149 Dexter 4).
