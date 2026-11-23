@@ -65,9 +65,20 @@ function bodyAt(src, at) {
 function uniqueAt(src, needle) {
   const first = src.indexOf(needle);
   assert.ok(first !== -1, `uniqueAt: ${JSON.stringify(needle)} not found`);
-  const second = src.indexOf(needle, first + needle.length);
+  const second = src.indexOf(needle, first + 1);     // by ONE, not by the needle's length: overlapping occurrences count too
   assert.ok(second === -1, `uniqueAt: ${JSON.stringify(needle)} occurs more than once (at ${first} and ${second})`);
   return first;
 }
 
-module.exports = { mainProcessSource, mainOnly, windowOnly, bodyAt, stripComments, uniqueAt };
+/** The index of the one match of `regex` in `src` (a bare `.search` silently takes the first). Fails on none or on a second (overlapping starts count). */
+function uniqueMatch(src, regex) {
+  const re = new RegExp(regex.source, regex.flags.replace(/[gy]/g, '') + 'g');
+  const first = re.exec(src);
+  assert.ok(first !== null, `uniqueMatch: ${regex} not found`);
+  re.lastIndex = first.index + 1;
+  const second = re.exec(src);
+  assert.ok(second === null, `uniqueMatch: ${regex} matches more than once (at ${first.index} and ${second && second.index})`);
+  return first.index;
+}
+
+module.exports = { mainProcessSource, mainOnly, windowOnly, bodyAt, stripComments, uniqueAt, uniqueMatch };
