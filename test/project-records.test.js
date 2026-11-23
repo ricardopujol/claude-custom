@@ -145,3 +145,38 @@ test('seam: the secret service and the layout store are no longer built inside r
   assert.match(main, /createSecretService\(\{/);
   assert.match(main, /createProjectLayoutStore\(\{/);
 });
+
+// PR #256 Dexter 8: P2 (no cross-talk) over layout and secrets: random messages from A's and B's pages, and B's state moves only on B's messages.
+test('P2 (layout, secrets): random messages from either window\'s pages change only that window\'s own state', async () => {
+  const rand = (seed) => { let s = seed >>> 0; return () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 4294967296; }; };
+  for (let seed = 1; seed <= 40; seed++) {
+    const r = rand(seed);
+    const { records, registry, a, b, sends, stores } = rig();
+    const handlers = new Map();
+    registerLayoutHandlers({ ipcMain: { handle: (c, f) => handlers.set(c, f) }, scopeFor: records.scopeFor((s) => registry.viewOwner(s), 'layoutSync') });
+    const model = { A: { writes: 0, last: undefined, labels: [], sends: 0 }, B: { writes: 0, last: undefined, labels: [], sends: 0 } };
+    const wins = { A: a, B: b };
+    for (let step = 0; step < 30; step++) {
+      const who = r() < 0.5 ? 'A' : 'B';
+      const m = model[who];
+      if (r() < 0.6) {
+        const layout = { zones: [`${seed}-${step}-${who}`] };
+        await handlers.get('layout:set')({ sender: wins[who].view }, layout);
+        m.writes += 1; m.last = JSON.stringify(layout);
+      } else {
+        const label = `k${step}${who}`;
+        records.secretsOf(wins[who]).add({ label, secret: 'x' });
+        m.labels.push(label);
+      }
+      for (const w of ['A', 'B']) {
+        assert.strictEqual(stores.get(w).writes.length, model[w].writes, `seed ${seed} step ${step}: ${w}'s layout writes`);
+        assert.strictEqual(records.get(wins[w]).layoutSync.last, model[w].last, `${w}'s sync`);
+        assert.deepStrictEqual(records.secretsOf(wins[w]).list().map((e) => e.label), model[w].labels, `${w}'s secrets`);
+      }
+      for (const [root] of sends) assert.ok(root === 'A' || root === 'B');
+    }
+    const sentTo = (w) => sends.filter(([root]) => root === w).length;
+    assert.strictEqual(sentTo('A') + sentTo('B'), sends.length);
+    assert.ok(sentTo('A') <= model.A.writes && sentTo('B') <= model.B.writes, 'a window is pushed to only for its own sets');
+  }
+});
