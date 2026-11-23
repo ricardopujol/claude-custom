@@ -204,12 +204,14 @@ async function main() {
   check('2: an unknown `window` is refused', noWin.ok === false && noWin.error === 'no such window', JSON.stringify(noWin));
   // A's own pages (its strip, its selected tab) come up a moment after `windows` answers: the baseline is the count once it has stopped moving
   let wcBefore = await command(app, { cmd: 'webContents' });
-  for (let same = 0, i = 0; same < 4 && i < 40; i++) {
+  let wcSame = 0;
+  for (let i = 0; wcSame < 4 && i < 40; i++) {
     await sleep(1000);
     const c = await command(app, { cmd: 'webContents' });
-    same = c.ok && c.count === wcBefore.count ? same + 1 : 0;
+    wcSame = c.ok && c.count === wcBefore.count ? wcSame + 1 : 0;
     wcBefore = c;
   }
+  check('2: the page-count baseline settled (the pages of the first window stopped coming up) before B opened', wcSame >= 4 && wcBefore.ok === true, `count=${wcBefore.count} stable reads=${wcSame}`);
   const opened = await command(app, { cmd: 'openProject', cwd: B.dev }, 120000);
   check('2: openProject B opened a second project window in this process', opened.ok === true && opened.existing === false && opened.pid === pid, JSON.stringify(opened));
   const bRoot = opened.root;
