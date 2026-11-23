@@ -110,7 +110,4 @@ test('closing a window that is no longer registered does nothing', () => {
   assert.strictEqual(a.disposed, 1);
 });
 
-test('the registry module requires no Electron (it loads under plain node)', () => {
-  const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'app', 'project-registry.js'), 'utf8');
-  assert.doesNotMatch(src, /require\(\s*['"]electron['"]\s*\)/);
-});
+// (the "requires no Electron" source assertion lives in test/source-contracts.test.js: this file is in the mutation command)

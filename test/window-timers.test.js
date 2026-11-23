@@ -84,6 +84,4 @@ test('a tick that throws costs one tick, not the poll: the next interval still r
   timers.dispose();
 });
 
-test('the module needs no Electron', () => {
-  assert.doesNotMatch(require('fs').readFileSync(require('path').join(__dirname, '..', 'app', 'window-timers.js'), 'utf8'), /require\(\s*['"]electron['"]\s*\)/);
-});
+// (the "needs no Electron" source assertion lives in test/source-contracts.test.js: this file is in the mutation command)

@@ -771,3 +771,18 @@ test('Miguel S2: one "pinnable" rule serves pin and pinMenu, and the menu click 
   const menu = main.slice(main.indexOf('function tabMenuTemplate('), main.indexOf('let win = null;'));
   assert.match(menu, /const done = \(r\) => \{ if \(r && r\.ok === false\) console\.log\(`\[menu\] pin: \$\{r\.error\}`\); \};/);
 });
+
+// --- PR #256 (Miguel Y1): moved here from project-registry / window-timers / probe-driver tests, which are in the mutation command and so can't read a mutated module as text ---
+test('the process-level helpers need no Electron (they load under plain node)', () => {
+  for (const f of ['project-registry', 'window-timers', 'project-lifecycle', 'view-closer']) {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'app', f + '.js'), 'utf8');
+    assert.doesNotMatch(src, /require\(\s*['"]electron['"]\s*\)/, f);
+  }
+});
+
+test('the probe driver\'s server is the process\'s: loopback only, once, and the window no longer opens a port of its own', () => {
+  const driver = fs.readFileSync(path.join(__dirname, '..', 'app', 'probe-driver.js'), 'utf8');
+  assert.match(driver, /server\.listen\(port, '127\.0\.0\.1'/);
+  const win = fs.readFileSync(path.join(__dirname, '..', 'app', 'project-window.js'), 'utf8');
+  assert.doesNotMatch(win, /net\.createServer|\.listen\(port/, 'a second window would collide on PROBE_PORT');
+});

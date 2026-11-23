@@ -100,13 +100,7 @@ test('isInside: the folder itself and anything under it, nothing beside or above
   assert.strictEqual(isInside('/a/b', null), false);
 });
 
-test('the server is the process\'s: it listens on loopback only, once, and the window no longer opens a port of its own', () => {
-  const fs = require('fs');
-  const driver = fs.readFileSync(path.join(__dirname, '..', 'app', 'probe-driver.js'), 'utf8');
-  assert.match(driver, /server\.listen\(port, '127\.0\.0\.1'/);
-  const win = fs.readFileSync(path.join(__dirname, '..', 'app', 'project-window.js'), 'utf8');
-  assert.doesNotMatch(win, /net\.createServer|\.listen\(port/, 'a second window would collide on PROBE_PORT');
-});
+// (the "listens on loopback only, once" source assertions live in test/source-contracts.test.js: this file is in the mutation command)
 
 test('webContents is the process\'s own command: it answers the count of pages the process holds, picking no window (PR #256 Miguel B1)', async () => {
   const t = rig();
