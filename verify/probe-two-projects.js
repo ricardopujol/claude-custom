@@ -202,7 +202,14 @@ async function main() {
   check('2: openProject refuses a folder outside the temp folder (never a real project)', refused.ok === false && /scratch folder/.test(refused.error || ''), JSON.stringify(refused));
   const noWin = await command(app, { cmd: 'state', window: path.join(tmp, 'nope') });
   check('2: an unknown `window` is refused', noWin.ok === false && noWin.error === 'no such window', JSON.stringify(noWin));
-  const wcBefore = await command(app, { cmd: 'webContents' });
+  // A's own pages (its strip, its selected tab) come up a moment after `windows` answers: the baseline is the count once it has stopped moving
+  let wcBefore = await command(app, { cmd: 'webContents' });
+  for (let same = 0, i = 0; same < 4 && i < 40; i++) {
+    await sleep(1000);
+    const c = await command(app, { cmd: 'webContents' });
+    same = c.ok && c.count === wcBefore.count ? same + 1 : 0;
+    wcBefore = c;
+  }
   const opened = await command(app, { cmd: 'openProject', cwd: B.dev }, 120000);
   check('2: openProject B opened a second project window in this process', opened.ok === true && opened.existing === false && opened.pid === pid, JSON.stringify(opened));
   const bRoot = opened.root;
