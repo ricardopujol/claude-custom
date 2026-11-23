@@ -113,7 +113,9 @@ test('every strip channel is gated on the window\'s own page, and only they', ()
 });
 
 test('every other channel is gated on "one of this window\'s tab views"', () => {
-  assert.deepStrictEqual(ungated(MAIN, /isTabView\(|fromWindow\(/, c => !c.name.startsWith('strip:')), []);
+  // secretsFor(e) IS a gate: its definition below is `fromWindow(event) ? <that window's service> : null`, and every secrets:* handler answers a refusal on null
+  assert.match(MAIN, /const secretsFor = \(event\) => \(fromWindow\(event\) \? projectRecords\.secretsOf\(viewOwner\(event\.sender\)\) : null\);/);
+  assert.deepStrictEqual(ungated(MAIN, /isTabView\(|fromWindow\(|secretsFor\(/, c => !c.name.startsWith('strip:')), []);
 });
 
 test('nothing compares a sender to the window\'s own webContents except the strip gate', () => {
@@ -121,26 +123,29 @@ test('nothing compares a sender to the window\'s own webContents except the stri
   assert.strictEqual(uses.length, 1, `only fromStrip may: ${uses.join(' | ')}`);
   assert.match(MAIN, /const isStrip = \(sender\) => [^\n]*sender === win\.webContents/);
   assert.match(MAIN, /const fromStrip = \(event\) => stripOwner\(event\) !== null;/);
-  assert.match(MAIN, /for \(const p of projectWindows\.values\(\)\) if \(p\.isStrip\(event && event\.sender\)\) return p;/);
+  assert.match(MAIN, /function stripOwner\(event\) \{ return registry\.stripOwner\(event\); \}/);
+  assert.match(require('fs').readFileSync(require('path').join(__dirname, '..', 'app', 'project-registry.js'), 'utf8'), /find\(\(p\) => p\.isStrip\(s\)\)/);
   assert.match(MAIN, /const isTabView = \(sender\) => viewOwner\(sender\) !== null;/, 'the gates stay boolean: every bridge requires isSender(...) === true');
 });
 
 test('the bridges that took `win` are handed the tab-view predicate', () => {
   assert.match(MAIN, /registerClipboardHandlers\(\{[^}]*isSender: isTabView[^}]*\}\)/);
   assert.match(MAIN, /registerFavouriteHandlers\(\{[^}]*isSender: isTabView[^}]*\}\)/);
-  assert.match(MAIN, /registerAvatarHandlers\(\{[^}]*isSender: isTabView[^}]*send: pushToViews[^}]*\}\)/);
-  assert.match(MAIN, /watchImagesEnabled\(\{[\s\S]*?send: pushToViews/);
+  assert.match(MAIN, /registerAvatarHandlers\(\{[^}]*isSender: isTabView[^}]*send: pushToAll[^}]*\}\)/);
+  assert.match(MAIN, /watchImagesEnabled\(\{[\s\S]*?send: pushToAll/);
   // Layout pass L2: the window-chrome settings, the same shape.
-  assert.match(MAIN, /registerChromeHandlers\(\{[^}]*isSender: isTabView[^}]*send: pushToViews[^}]*\}\)/);
-  assert.match(MAIN, /watchChromeSettings\(\{[\s\S]*?send: pushToViews[\s\S]*?`\$\{CHROME_KEY\}\.json`/);
+  assert.match(MAIN, /registerChromeHandlers\(\{[^}]*isSender: isTabView[^}]*send: pushToAll[^}]*\}\)/);
+  assert.match(MAIN, /watchChromeSettings\(\{[\s\S]*?send: pushToAll[\s\S]*?`\$\{CHROME_KEY\}\.json`/);
   // #34: the background video's play inputs (minimised, hidden, on battery), pushed to every view.
-  assert.match(MAIN, /registerPlaybackHandlers\(\{[^}]*powerMonitor[^}]*isSender: isTabView[^}]*send: pushToViews[^}]*\}\)/);
+  // single-instance PR 2: registered once; each window is watched (`playback.watch(pw.win, pushToProject(pw))`), the channel answers the asking page's own window
+  assert.match(MAIN, /playback = registerPlaybackHandlers\(\{ ipcMain, powerMonitor, isSender: isTabView, winOf: /);
+  assert.match(MAIN, /playback\.watch\(pw\.win, pushToProject\(pw\)\)/);
 });
 
 test('the window-wide broadcasts reach EVERY tab view', () => {
   assert.match(MAIN, /forEachView\(\(v\) => v\.webContents\.send\('window-focus'/);
   assert.match(MAIN, /forEachView\(\(v\) => v\.webContents\.send\('attention-cue'/);
-  assert.match(MAIN, /const pushToViews = \(channel, value\) => launchWindow\.forEachView/);
+  assert.match(MAIN, /const \{ pushToAll, pushToProject \} = createPushers\(registry\);/, 'install-wide settings reach every window; a project\'s own state only its own (app/push-targets.js)');
 });
 
 test('the per-window constants are gone: the port, token and cwd belong to a tab', () => {
@@ -176,8 +181,8 @@ test('an attach-only window (Open from ▾) never spawns: it refuses and says wh
   const body = MAIN.slice(at, MAIN.indexOf('function spawnHost(', at));
   assert.match(body, /attachOnlyDecision\(decideAttach\(\{/);
   assert.match(body, /attachOnlyRefusal = decision/);
-  const start = MAIN.indexOf('const first = await launchWindow.open();');
-  assert.ok(start !== -1, 'main opens the window and reads what came back');
+  const start = MAIN.indexOf('const { first } = await startProject(LAUNCH_CWD, { launch: true });');
+  assert.ok(start !== -1, 'main opens the launch window and reads what came back');
   const after = MAIN.slice(start, start + 1500);
   assert.match(after, /if \(launchWindow\.attachOnlyRefusal\)/);
   assert.match(after, /attachOnlyText\(launchWindow\.attachOnlyRefusal\)/);
@@ -191,7 +196,7 @@ test('explicitPort, occupantAt, isHostListening and waitForHost survive', () => 
 
 test('CLAUDE_CUSTOM_PORT keeps a window single-tab, so every existing probe works unchanged', () => {
   assert.match(MAIN, /const MODE = \(PROJECT && PROJECT\.kind === 'container' && EXPLICIT_PORT === null\) \? 'tabs' : 'single'/);
-  assert.match(MAIN, /if \(MODE === 'tabs'\) setInterval\(/);
+  assert.match(MAIN, /if \(MODE === 'tabs'\) timers\.startPoll\(/);   // the window's own guarded timer (app/window-timers.js), cleared by dispose()
 });
 
 test('the worktree list runs with LC_ALL=C and a 5 s timeout, from dev', () => {
@@ -206,13 +211,14 @@ test('the worktree list runs with LC_ALL=C and a 5 s timeout, from dev', () => {
 test('the poller runs every 3 s', () => {
   assert.match(MAIN, /const POLL_MS = 3000/);
   // #40: each poll re-reads the tab marks first, so another window's mark shows by the next one.
-  assert.match(MAIN, /setInterval\(\(\) => \{ reloadMarks\(\); tabShell\.poll\(\); \}, POLL_MS\)/);
+  assert.match(MAIN, /timers\.startPoll\(POLL_MS, \(\) => \{ reloadMarks\(\); return tabShell\.poll\(\); \}\)/);
 });
 
 test('the probe driver does nothing without its env var, and only listens locally', () => {
   assert.match(MAIN, /const PROBE_PORT = Number\(process\.env\.CLAUDE_CUSTOM_TABS_PROBE\) \|\| 0/);
-  assert.match(MAIN, /if \(PROBE_PORT\) launchWindow\.startProbeDriver\(PROBE_PORT\)/);
-  assert.match(MAIN, /server\.listen\(port, '127\.0\.0\.1'/);
+  // single-instance PR 2: one server for the process (app/probe-driver.js), started only under a probe port; the window offers its api
+  assert.match(MAIN, /if \(PROBE_PORT\) \{\s*startProbeServer\(\{/);
+  assert.match(fs.readFileSync(path.join(__dirname, '..', 'app', 'probe-driver.js'), 'utf8'), /server\.listen\(port, '127\.0\.0\.1'/);
   assert.match(MAIN, /if \(PROBE_PORT\) \{\r?\n\s+probeConfirms\.push\(\{ label: tab\.branch \|\| projectLabel\(tab\.cwd\), reason, unsaved \}\);\r?\n\s+return reason === '';/,
     'the confirm is auto-yes only under the driver, and only for a close that had no reason to ask');
 });
@@ -240,7 +246,8 @@ test('#77: Ctrl+click reaches the shell as ifSafe, only when the strip sent exac
 test('there is NO application menu bar: it is nulled once, before the window, and never set', () => {
   const calls = MAIN.match(/Menu\.setApplicationMenu\([^)]*\)/g) || [];
   assert.deepStrictEqual(calls, ['Menu.setApplicationMenu(null)']);
-  assert.ok(MAIN.indexOf('Menu.setApplicationMenu(null)') < MAIN.indexOf('launchWindow.createWindow();'),
+  // the window is made by start() inside startProject (single-instance PR 2), and the bar is removed before the first one
+  assert.match(MAIN, /Menu\.setApplicationMenu\(null\);\s*registerIpc\(\);[\s\S]*?await startProject\(LAUNCH_CWD, \{ launch: true \}\)/,
     'the bar is removed before the window is created');
   assert.doesNotMatch(MAIN, /buildAppMenu|accelerator:/);
 });
@@ -289,8 +296,8 @@ test('the screenshot path captures the SELECTED view and the strip beside it', (
 
 test('the notification click goes to the tab that raised it', () => {
   // ...through the holder (app/toast-holder.js), which keeps the toast alive until clicked (#145).
-  assert.match(MAIN, /onClick: \(sender\) => \{ const ts = launchWindow\.tabShell; if \(ts\) ts\.attentionClick\(sender\); \}/);
-  assert.match(MAIN, /toasts\.show\(surfaces\.toast, event\.sender\)/);
+  assert.match(MAIN, /onClick: clickFor\(registry\),/, 'the click goes to the window recorded when the toast was shown');
+  assert.match(MAIN, /toasts\.show\(surfaces\.toast, \{ sender: event\.sender, owner \}\)/);
   assert.doesNotMatch(MAIN, /new Notification\(/);
 });
 
@@ -346,10 +353,15 @@ test('R2-4 (Dexter, PR #75): the strip page taking focus means no view has the k
 });
 
 test('F4: the window-focus path records which view it focused, so applySelection does not repeat it', () => {
-  const i = MAIN.indexOf('const focusSelected = ()');
+  // single-instance PR 2 (S3): ONE focusSelected({ evenWithField }) serves the window's focus event and the indexing overlay's leave / close-list
+  const i = MAIN.indexOf('function focusSelected({ evenWithField = false } = {})');
   assert.ok(i !== -1);
-  const body = sliceTo(i, '};');
+  const body = bodyAt(MAIN, i);
   assert.ok(/lastFocusedView\s*=/.test(body));
+  assert.match(body, /if \(indexFieldFocused && !evenWithField\) return;/, 'coming back to the window keeps a half-typed note\'s keyboard, unless the field is being left');
+  assert.match(MAIN, /win\.on\('focus', \(\) => \{[\s\S]*?focusSelected\(\);/, 'the window\'s focus event asks plainly');
+  assert.match(MAIN, /focusSelected: \(\) => pw\.focusSelected\(\{ evenWithField: true \}\)/, 'the overlay\'s leave and close-list ask with evenWithField');
+  assert.doesNotMatch(MAIN, /focusSelectedView/, 'the second copy is gone');
 });
 
 // --- PR 3 -------------------------------------------------------------------------
@@ -526,10 +538,10 @@ test("L1: the project's own layout is served to this window's tab views and push
   const at = MAIN.indexOf('registerLayoutHandlers({');
   assert.ok(at !== -1, 'registerLayoutHandlers is called');
   const call = callText(MAIN, at);
-  assert.match(call, /isSender: isTabView/);
-  assert.match(call, /send: pushToViews/);
-  assert.match(call, /store: layoutStore/);       // #211: the project's own layout store; the install-wide file is only a default
-  assert.match(call, /sync: layoutSync/);
+  // single-instance PR 2: one registration, served from the asking page's window's own store, sync and send (app/project-records.js scopeFor);
+  // #211: the project's own layout store, the install-wide file is only a default (makeProjectLayoutStore)
+  assert.match(call, /scopeFor: projectRecords\.scopeFor\(viewOwner, 'layoutSync'\)/);
+  assert.doesNotMatch(call, /store:|isSender:|send:/, 'no store, gate or push of its own: the scope carries them');
 });
 
 test('L1: another project window\'s layout change reaches this one through the store file', () => {
@@ -537,7 +549,7 @@ test('L1: another project window\'s layout change reaches this one through the s
   assert.ok(at !== -1, 'watchLayout is started');
   const call = callText(MAIN, at);
   assert.match(call, /sync: layoutSync/);
-  assert.match(call, /send: pushToViews/);
+  assert.match(call, /send,/, "it pushes to THIS window's views only (the record's send)");
   assert.match(call, /layoutStore\.pathOf\(LAYOUT_KEY\)/);       // the project's own file, so another project's change is never followed
 });
 
@@ -552,12 +564,11 @@ test('D1: the tree layout is a second registration under TREE_NAMES, with its ow
   assert.match(MAIN, /const \{ registerLayoutHandlers, watchLayout, LAYOUT_KEY, TREE_NAMES, PRESET_NAMES \} = require\('\.\/layout-bridge'\);/);
   const reg = callText(MAIN, MAIN.indexOf('registerLayoutHandlers({', MAIN.indexOf('registerLayoutHandlers({') + 1));
   assert.match(reg, /names: TREE_NAMES/);
-  assert.match(reg, /sync: treeSync/);
-  assert.match(reg, /isSender: isTabView/);
-  assert.match(reg, /send: pushToViews/);
+  assert.match(reg, /scopeFor: projectRecords\.scopeFor\(viewOwner, 'treeSync'\)/);
   const watch = callText(MAIN, MAIN.indexOf('watchLayout({', MAIN.indexOf('watchLayout({') + 1));
   assert.match(watch, /names: TREE_NAMES/);
   assert.match(watch, /sync: treeSync/);
+  assert.match(watch, /send,/);
   assert.match(watch, /layoutStore\.pathOf\(TREE_NAMES\.key\)/);
   assert.strictEqual(MAIN.split('registerLayoutHandlers({').length - 1, 3, 'the L1 pair stays, for older windows and the one migration read; D3 adds the presets as the third');
   assert.strictEqual(MAIN.split('watchLayout({').length - 1, 4, 'the three layout records, plus the fonts record (#88), which reuses the same poll');
@@ -573,13 +584,13 @@ test('D3: the preset list is a third registration under PRESET_NAMES, with its o
   assert.match(reg, /sync: presetSync/);
   assert.match(reg, /store: uiStore/);
   assert.match(reg, /isSender: isTabView/);
-  assert.match(reg, /send: pushToViews/);
+  assert.match(reg, /send: pushToAll/, 'the presets are install-wide: every window hears a change');
   const w1 = MAIN.indexOf('watchLayout({');
   const watch = callText(MAIN, MAIN.indexOf('watchLayout({', MAIN.indexOf('watchLayout({', w1 + 1) + 1));
   assert.match(watch, /names: PRESET_NAMES/);
   assert.match(watch, /sync: presetSync/);
   assert.match(watch, /store: uiStore/);
-  assert.match(watch, /send: pushToViews/);
+  assert.match(watch, /send: pushToAll/);
   assert.match(watch, /`\$\{PRESET_NAMES\.key\}\.json`/);
 });
 

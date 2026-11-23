@@ -74,36 +74,45 @@ function readLayoutState(store, key = LAYOUT_KEY, valid = isPlainObject) {
   return valid(st.value) ? { status: 'ok', layout: st.value } : { status: 'corrupt', layout: null };
 }
 
-function registerLayoutHandlers({ ipcMain, store, sync = {}, isSender, send, names = DEFAULT_NAMES, newId }) {
-  const fromView = e => !!e && typeof isSender === 'function' && isSender(e.sender) === true;
+// `scopeFor(sender)` (several project windows, each with its own store, sync and send): the scope of the page that asked, or null for
+// a page that is not one of ours. With it the gate IS `scopeFor(sender) !== null` and `store` / `sync` / `send` / `isSender` are not used;
+// without it the one scope is { store, sync, send } for any sender `isSender` accepts, as before.
+function registerLayoutHandlers({ ipcMain, store, sync = {}, isSender, send, names = DEFAULT_NAMES, newId, scopeFor }) {
+  const single = { store, sync, send };
+  const scopeOf = (e) => {
+    if (!e) return null;
+    if (typeof scopeFor === 'function') return scopeFor(e.sender) || null;
+    return typeof isSender === 'function' && isSender(e.sender) === true ? single : null;
+  };
   const ids = newId === undefined ? {} : { newId };
 
   const valid = validFor(names);
   ipcMain.handle(names.get, (e) => {
-    if (!fromView(e)) return null;
-    const answer = readLayoutState(store, names.key, valid);
-    return names.op ? giveIds(answer) : answer;
+    const scope = scopeOf(e);
+    if (scope === null) return null;
+    const answer = readLayoutState(scope.store, names.key, valid);
+    return names.op ? giveIds(scope, answer) : answer;
   });
 
-  if (names.op) ipcMain.handle(names.op, (e, req) => (fromView(e) ? runOp(req) : null));
+  if (names.op) ipcMain.handle(names.op, (e, req) => { const scope = scopeOf(e); return scope === null ? null : runOp(scope, req); });
 
   // Presets stored before they had ids (BACKLOG #59) get theirs the first time a window reads the list, so every
   // question the page asks can name the preset it is about. Written back as one locked read-modify-write; if that
   // fails the list is answered as it was read (an id-less preset is still asked about by name, as null).
   let saidIdsFailed = false;
-  function giveIds(answer) {
+  function giveIds({ store: st0, sync: sy, send: sd }, answer) {
     if (answer.status !== 'ok' || !needsIds(answer.layout)) return answer;
     try {
-      const list = store.withLock(names.key, () => {
-        const st = store.readState(names.key);
+      const list = st0.withLock(names.key, () => {
+        const st = st0.readState(names.key);
         if (st.status !== 'ok' || !Array.isArray(st.value)) return null;
         const next = withIds(st.value, ids.newId);
-        if (next !== st.value) store.write(names.key, next);
+        if (next !== st.value) st0.write(names.key, next);
         return next;
       });
       if (list === null) return answer;
-      sync.last = JSON.stringify(list);
-      try { send(names.push, list); } catch { /* window is going away */ }
+      sy.last = JSON.stringify(list);
+      try { sd(names.push, list); } catch { /* window is going away */ }
       return { status: 'ok', layout: list };
     } catch (err) {
       if (!saidIdsFailed) { saidIdsFailed = true; console.error('[main] could not give the presets their ids (said once; each read tries again):', err && err.message); }
@@ -113,19 +122,19 @@ function registerLayoutHandlers({ ipcMain, store, sync = {}, isSender, send, nam
 
   // ONE read-modify-write on the store: under its lock, on a read made now, never on a list the page remembers.
   // Anything but ok or missing (unreadable, corrupt, not a list) is refused and the file is left as it is.
-  function runOp(req) {
+  function runOp({ store: st0, sync: sy, send: sd }, req) {
     let result;
     try {
-      result = store.withLock(names.key, () => {
+      result = st0.withLock(names.key, () => {
         let raw;
         try {
-          const st = store.readState(names.key);
+          const st = st0.readState(names.key);
           if (st.status === 'missing' || (st.status === 'ok' && (st.value === null || st.value === undefined))) raw = [];
           else if (st.status === 'ok' && Array.isArray(st.value)) raw = st.value;
           else return { ok: false, reason: 'unreadable' };
         } catch { return { ok: false, reason: 'unreadable' }; }
         const r = applyOp(raw, req, ids);
-        if (r.ok) store.write(names.key, r.list);
+        if (r.ok) st0.write(names.key, r.list);
         return r;
       });
     } catch (err) {
@@ -134,27 +143,28 @@ function registerLayoutHandlers({ ipcMain, store, sync = {}, isSender, send, nam
     }
     if (!result.ok) return { ok: false, reason: result.reason };
     // The watcher must know what this window was just told (see `set` below).
-    sync.last = JSON.stringify(result.list);
-    try { send(names.push, result.list); } catch { /* window is going away */ }
+    sy.last = JSON.stringify(result.list);
+    try { sd(names.push, result.list); } catch { /* window is going away */ }
     return { ok: true, list: result.list };
   }
 
   if (!names.set) return;
   ipcMain.handle(names.set, (e, value) => {
-    if (!fromView(e) || !valid(value)) return null;
+    const scope = scopeOf(e);
+    if (scope === null || !valid(value)) return null;
     let json;
     try { json = JSON.stringify(value); } catch { return null; }
     if (Buffer.byteLength(json, 'utf8') > MAX_LAYOUT_BYTES) return null;
     try {
-      store.update(names.key, null, () => value);
+      scope.store.update(names.key, null, () => value);
     } catch (err) {
       console.error('[main] could not save the layout:', err && err.message);
       return null;
     }
     // The watcher must know what this window was just told, or it would push
     // the same layout back when its own write lands in the file.
-    sync.last = json;
-    try { send(names.push, value); } catch { /* window is going away */ }
+    scope.sync.last = json;
+    try { scope.send(names.push, value); } catch { /* window is going away */ }
     return value;
   });
 }

@@ -171,7 +171,7 @@ test('the preload sends the desired state, not a bare toggle -- no favourites:to
 test('main.js actually registers the handlers, against its own uiStore and window', () => {
   const main = app('main.js');
   assert.match(main, /require\(['"]\.\/favourites-bridge['"]\)/);
-  assert.match(main, /registerFavouriteHandlers\(\s*\{[^}]*ipcMain[^}]*store[^}]*win[^}]*\}\s*\)/);
+  assert.match(main, /registerFavouriteHandlers\(\s*\{[^}]*ipcMain[^}]*store[^}]*isSender[^}]*\}\s*\)/);
 });
 
 test('main.js does not widen look:setDim into a generic store-key setter', () => {

@@ -85,7 +85,8 @@ test('Open issue is in the tab\'s right-click menu, and its link leaves the app 
 });
 
 test('the startup read of the issue list is not done under the probe driver, and never blocks the window', () => {
-  assert.match(MAIN, /if \(MODE === 'tabs' && !PROBE_PORT\) setTimeout\(\(\) => \{ issueService\.list\(HOST_PROJECT\.dev\)\.catch\(\(\) => \{\}\); \}, 20_000\)\.unref\(\);/);
+  // a window's own guarded one-shot (app/window-timers.js later(): unref'd, cleared by dispose())
+  assert.match(MAIN, /if \(MODE === 'tabs' && !PROBE_PORT\) timers\.later\('issue list warm-up', 20_000, \(\) => issueService\.list\(HOST_PROJECT\.dev\)\.catch\(\(\) => \{\}\)\);/);
 });
 
 test('gh is run with an argv array and no shell, and the issue text never reaches the command line', () => {

@@ -128,4 +128,10 @@ function trayTemplate(view, actions) {
   return template;
 }
 
-module.exports = { needsYouKeys, tooltipText, badgeText, trackCues, clickTarget, windowlessItems, trayTemplate, hidesOnClose, startsHidden, MAX_DIGIT, APP };
+/** Whether the tray should offer "Show all windows": ANY window is hidden (or there is none to show). `wins` are BrowserWindows (or null). */
+function anyWindowHidden(wins) {
+  if (!Array.isArray(wins) || wins.length === 0) return true;
+  return wins.some((w) => !w || w.isDestroyed() || !w.isVisible());
+}
+
+module.exports = { anyWindowHidden, needsYouKeys, tooltipText, badgeText, trackCues, clickTarget, windowlessItems, trayTemplate, hidesOnClose, startsHidden, MAX_DIGIT, APP };

@@ -9,8 +9,10 @@
  *   - main.js keeps no per-project state of its own: its top-level `let`s are an ALLOW-LIST, so a new one has to be argued for
  *   - every ipcMain handler in main reaches a window's state only through stripOwner(e) / viewOwner(sender), never by a bare
  *     `win` / `tabShell` / ... nor through `launchWindow.` (that is "the" window, which is the thing a second window breaks)
- *   - each late service is attached in the statement right after main assigns it
- *   - projectWindows is the one registry, and whenReady runs the window's phases in the order they ran before the move
+ *   - the window's own units (lean, indexing overlay) are attached before it starts; the Resources service and the tray are read live
+ *   - `registry` (app/project-registry.js) is the one registry; whenReady runs the launch in a fixed order and the window's own phases
+ *     are its start() (single-instance PR 2: several windows in one process, so "the" window is named only where it must be)
+ *   - `launchWindow` (the process's own launch window) is named only where the launch is the point: an allow-list of functions below
  *
  * Repo-scanning, so deliberately NOT in Stryker's command.
  */
@@ -27,10 +29,10 @@ const PROJECT_LETS = ['attachOnlyRefusal', 'marks', 'win', 'tabShell', 'issueSer
   'stripWasBusy', 'lastStripAccent', 'closeAsking'];
 const PROJECT_CONSTS = ['readerUnsaved', 'liveViews', 'canvasViews', 'previewViews', 'previewKeyOf', 'stripAccent', 'backgroundActions', 'windowClaim'];
 // The ONLY top-level `let`s main may have: app-wide, one per process. A new one fails here until someone says why it isn't a window's.
-const APP_LETS = ['repoDragIcon', 'resources', 'resourceSampler', 'indexing', 'trayController', 'quitting', 'canvasAskSeq', 'pausedWoken'];
-// The late services a window is handed by attach(), and the statement in main that makes each.
-const LATE = [['trayController', 'trayController = createTrayController({'], ['leanBridge', 'const leanBridge = registerLeanHandlers({'],
-  ['indexing', 'indexing = createIndexingBridge({'], ['resources', 'resources = createResourcesService({']];
+const APP_LETS = ['repoDragIcon', 'resources', 'resourceSampler', 'indexingApp', 'playback', 'appStart', 'sharedLean', 'trayController', 'quitting', 'canvasAskSeq', 'pausedWoken'];
+// The late app-wide services a window is handed by attach(), and the statement in main that makes each. (A window's OWN lean unit and
+// indexing overlay are made by makeWindowUnits and attached together: pinned in the next test.)
+const LATE = [['trayController', 'trayController = createTrayController({'], ['resources', 'resources = createResourcesService({']];
 
 // The end of the call whose `(` is the first one at or after `at`: string-aware.
 function callEnd(src, at) {
@@ -49,7 +51,7 @@ test('the window module touches no ipcMain and requires no electron', () => {
   assert.doesNotMatch(WINDOW, /\bipcMain\b/, 'a window never registers a channel: main does, once');
   assert.doesNotMatch(WINDOW, /require\(\s*['"]electron['"]\s*\)/, 'electron is handed in, so the module loads under plain node');
   assert.doesNotMatch(WINDOW, /\bregisterCanvasIpc\b|\bcreateIndexingBridge\b|\bregister\w+Handlers\b/, 'no bridge registers from inside a window');
-  assert.match(WINDOW, /function createProjectWindow\(\{ launchCwd, electron, config, services \}\)/);
+  assert.match(WINDOW, /function createProjectWindow\(\{ launchCwd, electron, config, services, launch \}\)/);
 });
 
 test('main keeps no per-project binding: its top-level lets are exactly the app-wide allow-list', () => {
@@ -68,16 +70,28 @@ test('the window owns each of those bindings, as a closure variable', () => {
   for (const name of PROJECT_CONSTS) assert.match(WINDOW, new RegExp(`^  const ${name}\\b`, 'm'), `the window declares \`const ${name}\``);
 });
 
-test('what is app-wide stays in main; a late service is attached in the very next statement after main makes it', () => {
+test('the window is handed its two own units by attach(), and reads the Resources service and the tray LIVE through getters', () => {
   assert.match(WINDOW, /function attach\(parts\) \{/);
   assert.match(WINDOW, /else throw new Error\(`attach: unknown service "\$\{key\}"`\);/, 'a typo in an attach key must not be a silent no-op');
-  for (const [name, assignment] of LATE) {
-    assert.match(WINDOW, new RegExp(`key === '${name}'\\) ${name} = parts\\.${name};`), `attach hands the window ${name}`);
-    const at = MAIN.indexOf(assignment);
-    assert.ok(at !== -1, `main makes ${name}`);
-    const rest = MAIN.slice(callEnd(MAIN, at));
-    assert.match(rest, new RegExp(`^;\\s*launchWindow\\.attach\\(\\{ ${name} \\}\\);`), `nothing may sit between main's ${name} and its attach: the window must see it become non-null at the same moment main does`);
-  }
+  assert.match(WINDOW, /key === 'leanBridge'\) leanBridge = parts\.leanBridge;/);
+  assert.match(WINDOW, /else if \(key === 'indexing'\) indexing = parts\.indexing;/);
+  assert.doesNotMatch(WINDOW, /key === 'resources'|key === 'trayController'|^  let resources\b|^  let trayController\b/m, 'a later window sees them with no extra call');
+  // main's two lets are what the getters read: a window sees each become non-null at the same moment main does
+  assert.match(MAIN, /getResources: \(\) => resources,/);
+  assert.match(MAIN, /getTray: \(\) => trayController,/);
+  for (const [name, assignment] of LATE) assert.ok(MAIN.includes(assignment), `main makes ${name}`);
+});
+
+test('a window\'s own lean unit and indexing overlay are made per window and attached together, before the window opens', () => {
+  const body = bodyAt(MAIN, MAIN.indexOf('function makeWindowUnits('));
+  assert.match(body, /const lean = createLeanUnit\(\{/);
+  assert.match(body, /const overlay = makeIndexingOverlay\(pw\);/);
+  assert.match(body, /windowUnits\.set\(pw, \{ lean, overlay \}\);\s*pw\.attach\(\{ leanBridge: lean, indexing: overlay \}\);/, 'the window sees both the moment main has them');
+  const ready = MAIN.slice(MAIN.indexOf('app.whenReady().then('));
+  assert.match(ready, /startIndexing\(seams\);\s*startTray\(\);\s*const \{ first \} = await startProject\(LAUNCH_CWD/, 'the service exists before the first window (and so its overlay)');
+  // the order (record, then units, then start) is app/project-lifecycle.js's, pinned by behaviour in test/project-lifecycle.test.js
+  assert.match(MAIN, /makeUnits: \(pw\) => makeWindowUnits\(pw\),/, 'the lifecycle makes the units before it starts the window');
+  assert.match(MAIN, /onWindowCreated: \(pw\) => windowCreated\(pw\),/);
 });
 
 test('main hands the window its quit state as live callbacks, never as a copy', () => {
@@ -100,33 +114,42 @@ test('every ipcMain handler in main reaches window state through stripOwner(e) /
   }
   assert.deepStrictEqual(leaks, [], 'a handler that names the window directly is a handler a second window breaks');
   // and the two resolvers exist, with gates that stay boolean (every bridge requires isSender(...) === true)
-  assert.match(MAIN, /function stripOwner\(event\) \{/);
-  assert.match(MAIN, /function viewOwner\(sender\) \{/);
+  assert.match(MAIN, /function stripOwner\(event\) \{ return registry\.stripOwner\(event\); \}/);
+  assert.match(MAIN, /function viewOwner\(sender\) \{ return registry\.viewOwner\(sender\); \}/);
   assert.match(MAIN, /const fromStrip = \(event\) => stripOwner\(event\) !== null;/);
   assert.match(MAIN, /const isTabView = \(sender\) => viewOwner\(sender\) !== null;/);
 });
 
-test('projectWindows is the one registry of project windows, with one window made from the launch', () => {
-  assert.strictEqual((MAIN.match(/\bnew Map\(\[\[launchWindow\.root, launchWindow\]\]\)/g) || []).length, 1);
-  assert.strictEqual((MAIN.match(/\bconst projectWindows = /g) || []).length, 1);
-  assert.strictEqual((MAIN.match(/\bcreateProjectWindow\(/g) || []).length, 1, 'main makes one window from the launch');
-  // every place main walks the windows goes through the Map
-  assert.match(MAIN, /function forEachProject\(fn\) \{ for \(const p of projectWindows\.values\(\)\) fn\(p\); \}/);
+test('registry is the one registry of project windows (app/project-registry.js), with the launch window added to it', () => {
+  assert.strictEqual((MAIN.match(/\bconst registry = createProjectRegistry\(\);/g) || []).length, 1);
+  assert.strictEqual((MAIN.match(/^registry\.add\(launchWindow\);/gm) || []).length, 1);
+  assert.doesNotMatch(MAIN, /\bprojectWindows\b/, 'the old Map is gone');
+  assert.strictEqual((MAIN.match(/\bcreateProjectWindow\(/g) || []).length, 1, 'main makes one window from the launch (startProject makes the rest in step 6)');
+  // every place main walks the windows goes through the registry
+  assert.match(MAIN, /function forEachProject\(fn\) \{ registry\.forEach\(fn\); \}/);
   assert.doesNotMatch(MAIN, /\blaunchWindow\b[^;\n]*=\s*null/, 'launchWindow is a const');
 });
 
-test('whenReady runs the window\'s phases in the order they ran when this was one file', () => {
+test('whenReady runs the launch in this order (single-instance PR 2: the window\'s own phases are its start())', () => {
   const ready = MAIN.slice(MAIN.indexOf('app.whenReady().then('));
-  const order = ['launchWindow.claim.run()', 'launchWindow.startServices(', 'resources = createResourcesService(', 'launchWindow.attach({ resources })',
-    'launchWindow.startDevServers()', 'Menu.setApplicationMenu(null)', 'launchWindow.createWindow()', 'launchWindow.syncDevServersSampling()',
-    'registerIpc()', 'startIndexing(seams)', 'startTray()', 'await launchWindow.open()', 'launchWindow.claim.markReady()',
-    'launchWindow.startPoll()', 'launchWindow.runScreenshotPath()', 'launchWindow.startProbeDriver('];
+  const order = ['launchWindow.claim.run()', 'await startResources(seams)', 'Menu.setApplicationMenu(null)', 'registerIpc()', 'startIndexing(seams)', 'startTray()',
+    'await startProject(LAUNCH_CWD, { launch: true })', 'launchWindow.claim.markReady()', 'launchWindow.attachOnlyRefusal',
+    'launchWindow.startPoll()', 'launchWindow.runScreenshotPath()', 'startProbeServer({'];
   let from = -1;
   for (const step of order) {
     const at = ready.indexOf(step);
     assert.ok(at !== -1, `whenReady must call ${step}`);
     assert.ok(at > from, `${step} must come after the step before it`);
     from = at;
+  }
+  // The window's own phases, in the one order they can run (win.on('focus') calls the shell, so the services come first; the dev servers'
+  // sampling is read after the window exists): they are start() in the window, not main's interleaving.
+  const startBody = bodyAt(WINDOW, WINDOW.indexOf('async function start('));
+  let p = -1;
+  for (const step of ['startServices({ seams, openPrsReader })', 'startDevServers()', 'createWindow()', 'syncDevServersSampling()', 'return open()']) {
+    const at = startBody.indexOf(step);
+    assert.ok(at !== -1 && at > p, `start() must run ${step} after the one before it`);
+    p = at;
   }
   // The quit listeners keep their REGISTRATION order in the source (at runtime before-quit fires ahead of every will-quit):
   // dev servers, the paused hold, before-quit, then the tray / sampler / occupancy close, then the watchdog.
@@ -139,9 +162,102 @@ test('whenReady runs the window\'s phases in the order they ran when this was on
   }
 });
 
+test('startProject: the launch window is the process\'s own; any other project is a window with no port and no claim of its own, or the open one brought forward', () => {
+  const make = bodyAt(MAIN, MAIN.search(/function makeWindow\(/));
+  assert.match(make, /EXPLICIT_PORT: launch \? EXPLICIT_PORT : null,/, 'a port-named launch is its own process: no second window inherits its port (CLAUDE_CUSTOM_PORT)');
+  assert.match(make, /launch,/, 'the window is told whether it is the launch window (it alone holds the claim)');
+  // The order and the failure paths are app/project-lifecycle.js's, pinned by BEHAVIOUR in test/project-lifecycle.test.js (PR #256 Miguel Y2).
+  // Here: main wires the lifecycle to the real registry, the launch window and the one window maker, and its entry point is startProject.
+  const lc = MAIN.slice(MAIN.search(/const lifecycle = createProjectLifecycle\(\{/));
+  assert.match(lc, /^const lifecycle = createProjectLifecycle\(\{\s*registry, launchWindow,/, 'the real registry and the process\'s own launch window');
+  assert.match(lc, /makeWindow: \(cwd\) => makeWindow\(cwd, false\),/, 'any other project is a window made with launch false (no claim, no port)');
+  assert.match(lc, /dropWatch: \(pw\) => \{ const unwatch = playbackWatched\.get\(pw\);/);
+  assert.match(MAIN, /const startProject = lifecycle\.startProject;/);
+  assert.match(WINDOW, /^    showLane,$/m, 'the window offers showLane(cwd): the lifecycle calls it when a project is already open (S3), and a missing one would be a silent no-op');
+  assert.strictEqual((MAIN.match(/\bcreateProjectWindow\(/g) || []).length, 1, 'one maker');
+  // per-launch env (plan risk 6): the token and the side-tab switch are only a port-named launch's, and that launch never gets a second window
+  // PR #256 Miguel Y4: "never gets a second window" is ENFORCED, not assumed: the probe driver refuses openProject in a port-named process
+  // (behaviour tested in test/probe-driver.test.js) and main tells it whether this launch named a port.
+  assert.match(MAIN, /createAppApi\(\{[^}]*portNamed: !!EXPLICIT_PORT/, 'main hands the driver whether the launch named a port');
+});
+
+test('seam guard: `launchWindow` is named only where the launch itself is the point (an allow-list of constructs)', () => {
+  // The construct that encloses each mention: the last top-level `function name(` / `async function name(` / `app.whenReady` / `const launchWindow` before it.
+  const owners = new Map();
+  const marks = [...MAIN.matchAll(/^(?:async )?function (\w+)\(|^(app\.whenReady)\(|^(const launchWindow) =|^(const windowServices) =/gm)]
+    .map((m) => ({ at: m.index, name: m[1] || m[2] || m[3] || m[4] }));
+  for (const m of MAIN.matchAll(/\blaunchWindow\b/g)) {
+    let owner = '(top level)';
+    for (const mk of marks) if (mk.at < m.index) owner = mk.name;
+    owners.set(owner, (owners.get(owner) || 0) + 1);
+  }
+  const allowed = {
+    'const launchWindow': 'its construction',
+    'app.whenReady': 'the launch order: claim, markReady, the refusals, the poll, the screenshot and the probe driver',
+    startTray: 'the label the tray names before any window exists',
+    startIndexing: 'warming the chip\'s list for the launch project',
+    registerIpc: 'the vault probe, which uses the launch window\'s service',
+  };
+  const names = [...owners.keys()].filter((k) => k !== '(top level)').sort();
+  assert.deepStrictEqual(names, Object.keys(allowed).sort(), 'a new place that names the launch window is a place a second window breaks: argue for it here');
+  // ...and registerIpc names it ONLY in the vault probe
+  const ipc = bodyAt(MAIN, MAIN.search(/function registerIpc\(/));
+  assert.strictEqual((ipc.match(/\blaunchWindow\b/g) || []).length, 1);
+  // PR #256 Miguel B2: registerIpc runs BEFORE startProject makes the launch window's record, so reading it here is null. It is read at call time, inside the timer.
+  const probe = ipc.slice(ipc.search(/process\.env\.CLAUDE_CUSTOM_VAULT_PROBE\) \{/));
+  const timer = probe.search(/setTimeout\(\(\) => \{/);
+  const read = probe.search(/projectRecords\.secretsOf\(launchWindow\)/);
+  assert.ok(timer !== -1 && read > timer, 'the launch window\'s secret service is read inside the timer, after startProject made the record');
+  assert.match(probe, /if \(secrets === null\) \{ console\.log\('\[vault-probe\] no secret service/, 'and a missing record is said, not thrown');
+});
+
+test('seam guard: no handler reaches a per-project record except through the owner (secretsOf(viewOwner(..)) / scopeFor(viewOwner, ..) / windowUnits via the resolvers)', () => {
+  const ipc = bodyAt(MAIN, MAIN.search(/function registerIpc\(/));
+  const used = [...ipc.matchAll(/projectRecords\.(\w+)/g)].map((m) => m[1]);
+  assert.deepStrictEqual([...new Set(used)].sort(), ['scopeFor', 'secretsOf']);
+  for (const m of ipc.matchAll(/projectRecords\.secretsOf\(([^)]*\))?/g)) assert.match(m[0], /viewOwner\(event\.sender\)|launchWindow/, 'secrets are reached through the sender\'s window');
+  assert.match(ipc, /scopeFor\(viewOwner, 'layoutSync'\)/);
+  assert.match(ipc, /scopeFor\(viewOwner, 'treeSync'\)/);
+  // windowUnits: only the two unit resolvers (lean here; the indexing overlay's are in startIndexing) read it, always from an owner found by sender
+  const reads = [...ipc.matchAll(/windowUnits\.get\((\w+)\)/g)].map((m) => m[1]);
+  assert.deepStrictEqual(reads, ['v', 'st']);
+  assert.match(ipc, /const v = viewOwner\(sender\);/);
+  assert.match(ipc, /const st = registry\.stripOwner\(\{ sender \}\);/);
+});
+
+test('close vs quit (P3 at the wiring level): a closed window tells main; main disposes it only when another stays, and drops everything it holds for it', () => {
+  assert.match(WINDOW, /win\.on\('closed', \(\) => \{ win = null; if \(tabShell\) tabShell\.destroy\(\); onClosed\(self\); \}\);/);
+  assert.match(MAIN, /onClosed: \(pw\) => lifecycle\.projectClosed\(pw\),/);
+  // what a close drops, and that the registry decides (the last window is kept), is behaviour: test/project-lifecycle.test.js (P3)
+  assert.match(MAIN, /onChanged: \(\) => \{ if \(trayController\) trayController\.sync\(\); windowServices\.seenChanged\(\); \},/, 'the tray and the Resources sampler are told');
+  assert.doesNotMatch(MAIN, /projectClosed[^;\n]*quitting/, 'a quit cancelled by one window\'s prompt has already closed another: it must not stay registered with no window');
+  // the quit path is the last window\'s and is unchanged: window-all-closed quits, the quit handlers stop each window
+  assert.match(MAIN, /app\.on\('window-all-closed', \(\) => \{\s*app\.quit\(\);\s*\}\);/);
+});
+
+test('dispose() stops what a window runs on its own, and the poll and the issue warm-up are guarded timers', () => {
+  const dispose = bodyAt(WINDOW, WINDOW.search(/function dispose\(\)/));
+  for (const piece of ['timers.dispose();', 'stopDevServers();', 'closeOccupancy();', 'windowClaim.stop();']) assert.ok(dispose.includes(piece), `dispose runs ${piece}`);
+  // PR #256 Miguel B1: Electron never closes a WebContentsView's page with its window, so dispose closes every page the window made
+  assert.match(dispose, /closeViews\(liveViews, \{ canvasViews, previewViews, dropOwner: leanBridge \? \(id\) => leanBridge\.dropOwner\(id\) : null \}\);/, 'every tab view (and its panels, previews and lean night)');
+  assert.match(dispose, /if \(indexing && typeof indexing\.dispose === 'function'\) indexing\.dispose\(\);/, 'the indexing overlay\'s views');
+  assert.match(WINDOW, /require\('\.\/view-closer'\)/);
+  assert.match(WINDOW, /timers\.startPoll\(POLL_MS, \(\) => \{ reloadMarks\(\); return tabShell\.poll\(\); \}\);/, 'the tick RETURNS the poll\'s promise: guard() logs a rejected poll with the window\'s label (PR #256 Dexter 4)');
+  assert.match(WINDOW, /timers\.later\('issue list warm-up', 20_000,/);
+  assert.match(WINDOW, /win\.on\(ev, timers\.guard\('dev-servers sampling', syncDevServersSampling\)\);/);
+  assert.doesNotMatch(WINDOW, /\bsetInterval\(/, 'no bare interval: a timer that outlives its window ticks a dead shell');
+});
+
+test('the crash guard: a non-launch project that fails to start costs its own window only; the launch window\'s failure is whenReady\'s', () => {
+  // the failure path (nothing left behind, the playback watch included) is behaviour: test/project-lifecycle.test.js (PR #256 Miguel Y2)
+  assert.match(MAIN, /dropWatch: \(pw\) => \{ const unwatch = playbackWatched\.get\(pw\); if \(unwatch\) \{ playbackWatched\.delete\(pw\); unwatch\(\); \} \},/, 'the lifecycle can drop a window\'s playback watch');
+  assert.match(MAIN, /await startProject\(LAUNCH_CWD, \{ launch: true \}\)/, 'the launch window\'s failure reaches whenReady, which exits');
+});
+
 test('the project window is made after every app-wide constant it is handed (a const read before its line is a TDZ error)', () => {
-  const made = MAIN.indexOf('const launchWindow = createProjectWindow({');
+  const made = MAIN.indexOf('const windowServices = {');
   assert.ok(made !== -1);
+  assert.ok(MAIN.indexOf('const launchWindow = makeWindow(LAUNCH_CWD, true);') > made, 'the launch window is made after the services it is handed');
   for (const dep of ['const stopHostByPid = ', 'const toasts = ', 'const canvasAsks = ', 'const canvasProbeResolve = ', 'const probeConfirms = ', 'const logShellError = ',
     'const stripFileFor = ', 'const ownStartTime = ', 'const INSTALL_DIR = ', 'const uiStore = ', 'const usageCounters = ']) {
     const at = MAIN.indexOf(dep);

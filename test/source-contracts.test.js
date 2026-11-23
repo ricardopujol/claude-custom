@@ -392,7 +392,7 @@ test('#50 (PR #155 Miguel I3): the reader\'s probe hooks (type, confirmAnswer...
   assert.match(renderer, /case 'repoProbe': \{\s*const r = repoBrowser\.probe\(a\.what, a\);/);
   // that case is inside the view-action switch, which only the probe driver's `view` command reaches, behind a whitelist
   assert.match(read('app', 'tab-shell.js'), /VIEW_PROBE_ACTIONS = new Set\(\[[^\]]*'repoProbe'/);
-  assert.match(read('app', 'main.js').replace(/\r\n/g, '\n'), /if \(PROBE_PORT\) launchWindow\.startProbeDriver\(PROBE_PORT\)/);
+  assert.match(read('app', 'main.js').replace(/\r\n/g, '\n'), /if \(PROBE_PORT\) \{\s*startProbeServer\(\{/);   // single-instance PR 2: one server for the process (app/probe-driver.js)
   // the answer hook is read in exactly one place besides probe(): confirmLeave
   const reader = read('app', 'repo-reader.js');
   const uses = (reader.match(/probeAnswer/g) || []).length;
@@ -770,4 +770,28 @@ test('Miguel S2: one "pinnable" rule serves pin and pinMenu, and the menu click 
   const main = require('./main-source').mainProcessSource();
   const menu = main.slice(main.indexOf('function tabMenuTemplate('), main.indexOf('let win = null;'));
   assert.match(menu, /const done = \(r\) => \{ if \(r && r\.ok === false\) console\.log\(`\[menu\] pin: \$\{r\.error\}`\); \};/);
+});
+
+// --- PR #256 (Miguel Y1): moved here from project-registry / window-timers / probe-driver tests, which are in the mutation command and so can't read a mutated module as text ---
+test('the process-level helpers need no Electron (they load under plain node)', () => {
+  for (const f of ['project-registry', 'window-timers', 'project-lifecycle', 'view-closer']) {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'app', f + '.js'), 'utf8');
+    assert.doesNotMatch(src, /require\(\s*['"]electron['"]\s*\)/, f);
+  }
+});
+
+test('the probe driver\'s server is the process\'s: loopback only, once, and the window no longer opens a port of its own', () => {
+  const driver = fs.readFileSync(path.join(__dirname, '..', 'app', 'probe-driver.js'), 'utf8');
+  assert.match(driver, /server\.listen\(port, '127\.0\.0\.1'/);
+  const win = fs.readFileSync(path.join(__dirname, '..', 'app', 'project-window.js'), 'utf8');
+  assert.doesNotMatch(win, /net\.createServer|\.listen\(port/, 'a second window would collide on PROBE_PORT');
+});
+
+// PR #256 Dexter 5: an attach that is already INSIDE its port walk when the window closes must not present a view afterwards. The shell's
+// harness cannot hold one there (the queue runs the selected tab's start first), so the guard is pinned as text.
+test('Dexter 5: attachIfRunning checks `destroyed` again after its port walk, before it presents a view', () => {
+  const shell = fs.readFileSync(path.join(__dirname, '..', 'app', 'tab-shell.js'), 'utf8').replace(/\r\n/g, '\n');
+  const at = shell.indexOf('function attachIfRunning(');
+  const after = shell.slice(shell.indexOf('await hosts.choosePort(tab)', at));
+  assert.match(after.slice(0, after.indexOf('present(tab')), /tab\.closed \|\| tab\.started \|\| tab\.starting \|\| destroyed\) return;/);
 });

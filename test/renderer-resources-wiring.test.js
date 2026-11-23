@@ -92,14 +92,17 @@ test('the bridge exposes what the page calls, and main answers it behind the tab
 
 test('main kills by pid through the vetted path, and the strip learns of a warning through the shell\'s refresh', () => {
   assert.match(MAIN, /kill: \(targets\) => killVerified\(targets, \{ exec: createPowerShellExec\(20000\) \}\)/);
-  assert.match(MAIN, /refreshStrip: \(\) => \{ const ts = launchWindow\.tabShell; if \(ts\) ts\.refresh\(\); \}/);
-  assert.match(MAIN, /resources: \{ warnFor: \(key\) => \(resources \? resources\.warnFor\(key\) : null\) \}/);
+  assert.match(MAIN, /refreshStrip: \(\) => registry\.forEach\(\(p\) => \{ const ts = p\.tabShell; if \(ts\) ts\.refresh\(\); \}\)/);
+  assert.match(MAIN, /resources: \{ warnFor: \(key\) => \(getResources\(\) \? getResources\(\)\.warnFor\(key\) : null\) \}/);
   assert.doesNotMatch(MAIN, /taskkill|killPidTree/);
 });
 
 test('the sampler always runs, and only a minimised window pauses it', () => {
   assert.match(MAIN, /if \(resources\) resources\.refresh\(\);/);
-  assert.match(MAIN, /win\.on\('minimize', \(\) => \{ focused = false; if \(resources\) resources\.setMinimised\(true\); \}\);/);
+  // single-instance PR 2: a window event only says "seen state changed"; main sets Resources minimised only when EVERY window is unseen (app/seen-gate.js)
+  assert.match(MAIN, /win\.on\('minimize', \(\) => \{ focused = false; seenChanged\(\); \}\);/);
+  assert.match(fs.readFileSync(path.join(__dirname, '..', 'app', 'seen-gate.js'), 'utf8'), /resources\.setMinimised\(registry\.list\(\)\.every\(\(pw\) => pw\.isUnseen\(\)\)\)/, 'one window minimising does not sleep the sampler under another in view');
+  assert.match(MAIN, /seenChanged: createSeenGate\(\{ registry, getResources: \(\) => resources \}\),/);
 });
 
 test('the probe may read and click the Resources panel, by name only', () => {
@@ -138,7 +141,7 @@ test('Leftovers Stop (B): the bridge, the gated IPC handler and the page\'s clic
 test('Leftovers task logs (#74 F(3)): main hands the service the stat-only scan of %TEMP%\\claude, the CLI registry, and the one guarded delete', () => {
   assert.match(MAIN, /taskLogsRoot = path\.join\(require\('os'\)\.tmpdir\(\), 'claude'\)/);
   assert.match(MAIN, /scan: \(\) => taskLogsFs\.scanTaskFiles\(taskLogsRoot\)/);
-  assert.match(MAIN, /registry: \(\) => taskLogsFs\.readRegistries\(taskLogsFs\.registryDirs\(launchWindow\.tabShell\.snapshot\(\)\.tabs\.map\(t => t\.cwd\), claudeConfigDir\)\)/);
+  assert.match(MAIN, /registry: \(\) => taskLogsFs\.readRegistries\(taskLogsFs\.registryDirs\(allTabs\(\)\.map\(t => t\.cwd\), claudeConfigDir\)\)/);
   assert.match(MAIN, /remove: \(row\) => taskLogsFs\.deleteTaskLog\(taskLogsRoot, row\)/);
   assert.doesNotMatch(MAIN, /\bunlink|rmSync|\.rm\(/, 'main never deletes a file itself');
 });

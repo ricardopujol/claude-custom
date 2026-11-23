@@ -16,15 +16,16 @@ const noop = () => {};
 // Everything main hands a window, as stubs. canvasProbeResolve is deliberately absent: it is undefined in a normal run.
 const stubs = (config = {}) => ({
   electron: { app: {}, BrowserWindow: {}, WebContentsView: {}, Menu: {}, dialog: {}, session: {} },
-  config: { EXPLICIT_PORT: null, STRIP_HEIGHT: 34, POLL_MS: 3000, PROBE_PORT: 0, PROBE_TOKEN: null, PROBE_LINE_MAX: 65536, TRAY_ON: false, ONE_WINDOW_ON: false, ...config },
+  config: { EXPLICIT_PORT: null, STRIP_HEIGHT: 34, POLL_MS: 3000, PROBE_PORT: 0, TRAY_ON: false, ONE_WINDOW_ON: false, ...config },
   services: {
     uiStore: {}, readDim: noop, usageCounters: {}, forProbe: (o) => o, openInBrowser: noop, probeConfirms: [], logShellError: noop,
     canvasAsks: new Map(), nextCanvasAskId: noop, previewProbeProxy: noop, stopHostByPid: noop, occupantAt: noop, tokenFileFor: noop,
     ownIdentities: noop, ownStartTime: noop, waitForHost: noop, HARNESS_DIR: 'h', INSTALL_DIR: 'i', listBackground: noop, capture: noop,
-    stripFileFor: noop, isQuitting: () => false, setQuitting: noop,
+    stripFileFor: noop, isQuitting: () => false, setQuitting: noop, onWindowCreated: noop, onClosed: noop,
+    getResources: () => null, getTray: () => null, seenChanged: noop,
   },
 });
-const make = (launchCwd, config) => createProjectWindow({ launchCwd, ...stubs(config) });
+const make = (launchCwd, config, launch = true) => createProjectWindow({ launchCwd, launch, ...stubs(config) });
 
 // <tmp>/p is a container: `dev` holds the repo, `feat-a` is a sibling worktree (a `.git` file).
 function container() {
@@ -64,14 +65,15 @@ test('a folder in no project is its own root and its own state, kind none', () =
   assert.strictEqual(pw.stateRoot, dir);
 });
 
-test('the identity bundle is the same facts the getters give', () => {
+test('a window states its facts once, as flat fields: there is no second "identity" bundle (single-instance PR 2, S3)', () => {
   const root = container();
   const pw = make(path.join(root, 'dev'));
-  const { PROJECT_ROOT, STATE_ROOT, MODE, WINDOW_LABEL, HOST_PROJECT, PROJECT, LAUNCH_CWD } = pw.identity;
-  assert.deepStrictEqual([PROJECT_ROOT, STATE_ROOT, MODE, WINDOW_LABEL, LAUNCH_CWD],
-    [pw.root, pw.stateRoot, pw.mode, pw.label, pw.launchCwd]);
-  assert.strictEqual(HOST_PROJECT, pw.hostProject);
-  assert.strictEqual(PROJECT, pw.project);
+  assert.strictEqual(pw.identity, undefined, 'the bundle repeated the flat fields; main reads the flat ones');
+  assert.strictEqual(pw.launchCwd, path.join(root, 'dev'));
+  assert.strictEqual(pw.root, root);
+  assert.strictEqual(pw.mode, 'tabs');
+  assert.ok(typeof pw.stateRoot === 'string' && typeof pw.label === 'string');
+  assert.ok(pw.hostProject && pw.hostProject.root === pw.root);
 });
 
 test('two windows share no state: their stores are distinct, and a report in one is absent from the other', () => {
@@ -114,8 +116,55 @@ test('isQuitting and setQuitting have no silent default: without them the window
   }
 });
 
-test('attach takes the four late services and throws on any other key', () => {
+test('attach takes only the window\'s own two units, and throws on any other key (the Resources service and the tray are read live now)', () => {
   const pw = make(tmpDir('pw-'));
-  pw.attach({ resources: {}, trayController: null, leanBridge: null, indexing: null });
+  pw.attach({ leanBridge: null, indexing: null });
   assert.throws(() => pw.attach({ resouces: {} }), /unknown service "resouces"/);
+  assert.throws(() => pw.attach({ resources: {} }), /unknown service "resources"/, 'resources is a getResources() service now, not attached');
+  assert.throws(() => pw.attach({ trayController: null }), /unknown service "trayController"/, 'so is the tray: getTray()');
+});
+
+test('getResources, getTray and seenChanged are required services, and the window reads them live', () => {
+  for (const name of ['getResources', 'getTray', 'seenChanged', 'onWindowCreated']) {
+    const d = stubs(); delete d.services[name];
+    assert.throws(() => createProjectWindow({ launchCwd: tmpDir('pw-'), launch: true, ...d }), new RegExp(`missing service "${name}"`));
+  }
+});
+
+test('launch is required, with no default: it decides who holds the one-window claim', () => {
+  assert.throws(() => createProjectWindow({ launchCwd: tmpDir('pw-'), ...stubs() }), /launch must be true/);
+  assert.throws(() => createProjectWindow({ launchCwd: tmpDir('pw-'), launch: 'yes', ...stubs() }), /launch must be true/);
+});
+
+test('only the launch window holds the claim: a window made for another project has it disabled (the pipe is per pid)', async () => {
+  const dir = tmpDir('pw-');
+  const launched = make(dir, { ONE_WINDOW_ON: true }, true);
+  const other = make(tmpDir('pw-'), { ONE_WINDOW_ON: true }, false);
+  assert.strictEqual(await other.claim.run(), 'proceed', 'a disabled claim lets the window proceed and listens on nothing');
+  assert.notStrictEqual(launched.claim, other.claim);
+  // with the rule off for everyone (a probe), the launch window's claim is off too
+  const off = make(tmpDir('pw-'), { ONE_WINDOW_ON: false }, true);
+  assert.strictEqual(await off.claim.run(), 'proceed');
+});
+
+test('dispose() is idempotent and leaves no poll running (single-instance PR 2, step 7)', () => {
+  const pw = make(tmpDir('pw-'));
+  assert.strictEqual(pw.pollActive, false);
+  assert.doesNotThrow(() => pw.dispose());
+  assert.doesNotThrow(() => pw.dispose());
+  assert.strictEqual(pw.pollActive, false);
+});
+
+test('onClosed is a required service: a closed window must tell main (a silent default would leave a dead window registered)', () => {
+  const d = stubs(); delete d.services.onClosed;
+  assert.throws(() => createProjectWindow({ launchCwd: tmpDir('pw-'), launch: true, ...d }), /missing service "onClosed"/);
+});
+
+test('a window\'s phases are one start(): its parts are not callable from outside', () => {
+  const pw = make(tmpDir('pw-'));
+  assert.strictEqual(typeof pw.start, 'function');
+  for (const gone of ['startServices', 'startDevServers', 'createWindow', 'syncDevServersSampling', 'open']) {
+    assert.strictEqual(pw[gone], undefined, `${gone} is the window's own phase, run by start() in order`);
+  }
+  assert.strictEqual(pw.isUnseen(), true, 'a window not made yet is unseen');
 });

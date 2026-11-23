@@ -86,7 +86,7 @@ test('the preload invokes the channel this module handles', () => {
 test('main.js actually registers the handlers for its window', () => {
   const main = app('main.js');
   assert.match(main, /require\(['"]\.\/clipboard-bridge['"]\)/);
-  assert.match(main, /registerClipboardHandlers\(\s*\{[^}]*ipcMain[^}]*clipboard[^}]*win[^}]*\}\s*\)/);
+  assert.match(main, /registerClipboardHandlers\(\s*\{[^}]*ipcMain[^}]*clipboard[^}]*isSender[^}]*\}\s*\)/);
 });
 
 // --- Ctrl+C copy: main writes the selection for the window, and only for it -

@@ -768,7 +768,8 @@ function createShell(deps) {
       if (tab.closed || tab.started || tab.starting || destroyed) return;
       let chosen = null;
       try { chosen = await hosts.choosePort(tab); } catch (err) { log('[shell] port probe failed:', err && err.message); }
-      if (!chosen || chosen.action !== 'attach' || tab.closed || tab.started || tab.starting) return;
+      // destroyed too: the window can close during the port walk, and a view made now would belong to nobody (PR #256 Dexter 5)
+      if (!chosen || chosen.action !== 'attach' || tab.closed || tab.started || tab.starting || destroyed) return;
       const token = hosts.tokenFor(chosen.port);
       if (!token) { log(`[shell] ${tab.key}: a host is on ${chosen.port} but its token can't be read`); return; }
       // A retry after a start whose spawn timed out: the host it waited for is up, so the start's leftovers go (a stale `pending`
@@ -2767,18 +2768,31 @@ const STRIP_ISSUE_ACTIONS = new Set(['read', 'open', 'pick', 'filter', 'submit']
  * POST a body to 127.0.0.1 -- and `screenshot` writes a file. A driver started
  * without a real token refuses everything rather than trusting anyone.
  */
-async function handleProbeCommand(line, api, expectedToken) {
-  let cmd;
-  try { cmd = JSON.parse(line); } catch { return { ok: false, error: 'not JSON' }; }
+/** The refusal for a command that doesn't carry the probe's secret, or null when it does (app/probe-driver.js checks it before it looks up a window). */
+function probeAuthError(cmd, expectedToken) {
   if (typeof expectedToken !== 'string' || expectedToken.length < PROBE_TOKEN_MIN) {
     return { ok: false, error: 'probe driver has no token' };
   }
   if (!cmd || typeof cmd !== 'object') return { ok: false, error: 'no cmd' };
   if (typeof cmd.token !== 'string' || !sameSecret(cmd.token, expectedToken)) return { ok: false, error: 'bad token' };
+  return null;
+}
+
+async function handleProbeCommand(line, api, expectedToken) {
+  let cmd;
+  try { cmd = JSON.parse(line); } catch { return { ok: false, error: 'not JSON' }; }
+  const denied = probeAuthError(cmd, expectedToken);
+  if (denied !== null) return denied;
   if (typeof cmd.cmd !== 'string') return { ok: false, error: 'no cmd' };
   try {
     switch (cmd.cmd) {
       case 'state': return { ok: true, ...(await api.state()) };
+      // single-instance PR 2: the process's own commands (app/probe-driver.js answers them): the windows it holds, and opening one more.
+      case 'windows': return { ok: true, ...(await api.windows()) };
+      case 'webContents': return await api.webContents();
+      case 'openProject':
+        if (typeof cmd.cwd !== 'string' || cmd.cwd === '') return { ok: false, error: 'openProject needs a cwd' };
+        return await api.openProject(cmd.cwd);
       case 'select': return await api.select(String(cmd.label));
       case 'close': return await api.close(String(cmd.label));
       case 'ctrlClick':
@@ -2970,6 +2984,6 @@ function probeLineReader(maxBytes) {
 
 module.exports = {
   createShell, createQueue, captureListening, observeWorktrees, sanitizeStatus,
-  handleProbeCommand, VIEW_PROBE_ACTIONS, probeLineReader, noWindowText, shortcutFor, shortcutWillAct, focusStep, menuText, NO_PORT_ERROR,
+  handleProbeCommand, probeAuthError, VIEW_PROBE_ACTIONS, probeLineReader, noWindowText, shortcutFor, shortcutWillAct, focusStep, menuText, NO_PORT_ERROR,
   lanesMenuTemplate, plusMenuTemplate,
 };

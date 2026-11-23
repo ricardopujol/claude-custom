@@ -2,19 +2,30 @@
 /**
  * claude-custom :: Electron main  -- the app-wide half of the tab shell
  *
- * One Electron process, one project window today (one entry in the projectWindows Map). Everything that belongs to ONE project's
- * window (its BrowserWindow, tab shell, marks, occupancy, views, dev servers, focus and cue state, the one-window claim, the
- * launch folder's MODE) lives in app/project-window.js, made by createProjectWindow(); the tabs/single modes are described there.
+ * One Electron process, any number of project windows (single-instance PR 2; one launch is still one process, the app lock is PR 3).
+ * Everything that belongs to ONE project's window (its BrowserWindow, tab shell, marks, occupancy, views, dev servers, focus and cue
+ * state, the one-window claim, the launch folder's MODE) lives in app/project-window.js, made by createProjectWindow() and started by
+ * its own start(); the tabs/single modes are described there. app/project-registry.js is the registry of the windows.
  *
  * This file keeps what is app-wide and what must be registered once per process: every ipcMain handler (each reaches a window
- * through stripOwner(e) / viewOwner(sender), never by naming "the" window), the UI store, the tray, the Resources service and
- * sampler, the secret vault, the indexing bridge, the launch order in whenReady and the quit handlers. The decisions themselves
- * are pure and tested elsewhere (host/tab-lifecycle.js, app/tab-model.js, app/tab-shell.js).
+ * through stripOwner(e) / viewOwner(sender) / registry.panelOwner(sender), or a per-window unit or record found the same way, never by
+ * naming "the" window), the UI store, the tray (it speaks for the first window), the Resources service and sampler (over every window),
+ * the per-project records (secrets, layout: app/project-records.js) and units (lean, indexing overlay), startProject (open a project in
+ * this process), the launch order in whenReady and the quit handlers. The decisions themselves are pure and tested elsewhere
+ * (host/tab-lifecycle.js, app/tab-model.js, app/tab-shell.js).
  */
 
-const { app, BrowserWindow, WebContentsView, Menu, Notification, Tray, clipboard, dialog, ipcMain, nativeImage, safeStorage, session, shell, powerMonitor } = require('electron');
-const { createToastHolder } = require('./toast-holder');
+const { app, BrowserWindow, WebContentsView, Menu, Notification, Tray, clipboard, dialog, ipcMain, nativeImage, safeStorage, session, shell, powerMonitor, webContents } = require('electron');
+const { createToastHolder, clickFor } = require('./toast-holder');
 const { createProjectWindow } = require('./project-window');
+const { createProjectRegistry } = require('./project-registry');
+const { createPushers } = require('./push-targets');
+const { createBusyGate } = require('./busy-gate');
+const { createSeenGate } = require('./seen-gate');
+const { createAppApi, startProbeServer } = require('./probe-driver');
+const { createProjectLifecycle } = require('./project-lifecycle');
+const { anyWindowHidden } = require('./tray-model');
+const { createProjectRecords } = require('./project-records');
 const { armQuitWatchdog } = require('./quit-watchdog');
 const { createQuitLog, wireQuitLog, markWillQuitEnd } = require('./quit-log');
 // BACKLOG #74 A: the quit's timeline, only when CLAUDE_CUSTOM_QUIT_LOG names a file (verify/probe-quit-linger.js); a no-op otherwise.
@@ -30,7 +41,7 @@ const { registerLayoutHandlers, watchLayout, LAYOUT_KEY, TREE_NAMES, PRESET_NAME
 const { registerFontHandlers, FONT_NAMES, uiFontScript, readFontSettings } = require('./fonts-bridge');
 const { registerChromeHandlers, watchChromeSettings, CHROME_KEY } = require('./window-chrome-bridge');
 const { registerPlaybackHandlers } = require('./playback-bridge');
-const { registerLeanHandlers, PUSH_CHANNEL: LEAN_PUSH, FACES_PUSH: LEAN_FACES_PUSH } = require('./lean-bridge');
+const { registerLeanHandlers, createLeanUnit, PUSH_CHANNEL: LEAN_PUSH, FACES_PUSH: LEAN_FACES_PUSH } = require('./lean-bridge');
 const { createLean, unionDismissed } = require('./lean-state');
 const { NO_PORT_ERROR } = require('./tab-shell');
 const fs = require('fs');
@@ -50,7 +61,7 @@ const { probePort } = require('../host/port-probe');
 // BACKLOG #119 A6: the + form's "From an issue" list (the strip:issues channel); the lane's brief and the tab's link are the window's (app/project-window.js).
 const { answerIssuesRequest, issueArg } = require('../host/issues');
 const { externalUrl } = require('./external-link');
-const { registerCanvasIpc, HOST_RESOLVER_RULES } = require('./canvas-views');
+const { registerCanvasIpc, panelDispatch, HOST_RESOLVER_RULES } = require('./canvas-views');
 const { readMcpSetting, writeMcpSetting } = require('../host/canvas-settings');
 const { readModSetting, writeModSetting } = require('../host/cc-mod-settings');
 const fileLink = require('./file-link');
@@ -114,7 +125,7 @@ const { createIndexingService } = require('../host/indexing-service');
 const { createJournal } = require('../host/indexing-journal');
 const indexWriter = require('../host/indexing-writer');
 const { projectChoices, readRecentsOffThread } = require('../host/indexing-projects');
-const { createIndexingBridge } = require('./indexing-bridge');
+const { createIndexingOverlay, registerIndexingHandlers } = require('./indexing-bridge');
 
 // Install-wide UI state that belongs to no one project: today only how dark an
 // unfocused window gets. The same .harness/state the host's store uses, under
@@ -264,30 +275,31 @@ let resources = null;              // the Resources panel's service (#63), built
 let resourceSampler = null;
 const indexingPages = new Set();       // the indexing overlay's pages (toast, list): they get the interface font like the strip does
 
-// Which project window a sender belongs to, or null (single-instance PR 1: the Map has one entry, so these are one lookup; the next lane
-// changes only these bodies). A gate is BOOLEAN, because every bridge requires `isSender(sender) === true` and an object-returning gate
-// would make each of them refuse silently; the owner comes from the resolver, after the gate.
-function stripOwner(event) {
-  for (const p of projectWindows.values()) if (p.isStrip(event && event.sender)) return p;
-  return null;
-}
-function viewOwner(sender) {
-  for (const p of projectWindows.values()) if (p.isTabView(sender)) return p;
-  return null;
-}
-function forEachProject(fn) { for (const p of projectWindows.values()) fn(p); }
+// Which project window a sender belongs to, or null: the resolvers are app/project-registry.js's. A gate is BOOLEAN, because every
+// bridge requires `isSender(sender) === true` and an object-returning gate would make each of them refuse silently; the owner comes
+// from the resolver, after the gate.
+const registry = createProjectRegistry();
+const { pushToAll, pushToProject } = createPushers(registry);
+function stripOwner(event) { return registry.stripOwner(event); }
+function viewOwner(sender) { return registry.viewOwner(sender); }
+function forEachProject(fn) { registry.forEach(fn); }
 const fromStrip = (event) => stripOwner(event) !== null;
 const isTabView = (sender) => viewOwner(sender) !== null;
 // Holds each OS toast until it's clicked or closed, so its click can't be lost to garbage collection (#145).
 const toasts = createToastHolder({
   Notification,
-  onClick: (sender) => { const ts = launchWindow.tabShell; if (ts) ts.attentionClick(sender); },   // not viewOwner(sender): the click can outlive its tab view (PR 2: record the owner at show time)
+  onClick: clickFor(registry),   // the owner is recorded at show time (not viewOwner(sender): the click can outlive its tab view)
   log: (m) => console.log(m),
 });
 
-// The indexing assistant (#66): main's half (startIndexing); the window gets it through attach(). Whether its field has the
-// keyboard is the window's (indexFieldFocused).
-let indexing = null;
+// The indexing assistant (#66): the app-wide half (startIndexing: the service, the chip's project list, the journal stamp). Each window's own
+// overlay is made with its units (makeWindowUnits) and handed to the window through attach(). Whether its field has the keyboard is the
+// window's (indexFieldFocused).
+let indexingApp = null;
+// The per-window units main makes for a window: its lean unit (over the process's one lean state, appLean) and its indexing overlay. Window -> { lean, overlay }.
+const windowUnits = new Map();
+// Backlog #34's playback bridge: one registration, watched per window (watchPlayback).
+let playback = null;
 
 // The tray icon's one controller (created in whenReady), and whether the app is really quitting: a close then goes through
 // even with "Minimise to tray on close" on.
@@ -366,46 +378,116 @@ function listBackground() {
 // --- the tray icon (BACKLOG #119 A8) ----------------------------------------------------------------------------------
 // One per window process (each project window is its own Electron main). The rules are app/tray-model.js, the pixels
 // app/tray-icon.js, the effects app/tray-controller.js; this hands them the real Electron and the shell.
+// The window the tray speaks for: the first one open (the launch window while it is). PR 3 sums and lists every window.
+const trayWindow = () => registry.first();
 function startTray() {
   if (!TRAY_ON) return;
+  const anyWindow = () => trayWindow() || launchWindow;     // before the first window exists the tray still has a project to name
   trayController = createTrayController({
     Tray, Menu, nativeImage, renderIcon: renderTrayIcon,
     getSettings: () => readTraySettings(uiStore),
-    tabs: () => (launchWindow.tabShell ? launchWindow.tabShell.snapshot().tabs : []),
-    windowLabel: () => launchWindow.label,
-    isHidden: () => { const w = launchWindow.win; return !w || w.isDestroyed() || !w.isVisible(); },
-    background: launchWindow.backgroundModel,
+    tabs: () => { const w = trayWindow(); return w && w.tabShell ? w.tabShell.snapshot().tabs : []; },
+    windowLabel: () => anyWindow().label,
+    // ANY window hidden: hideAll / showAll act on every window, so the menu must offer "Show all" while one of them is hidden (PR #256 Dexter 6)
+    isHidden: () => anyWindowHidden(registry.list().map((p) => p.win)),
+    background: () => { const w = trayWindow(); return w ? w.backgroundModel() : Promise.resolve(null); },
     now: () => Date.now(),
     log: (...a) => console.log(...a),
     actions: {
-      focusWindow: launchWindow.focusWindow,
-      selectTab: key => launchWindow.tabShell.select(key),
-      openBackground: o => launchWindow.backgroundActions.open(o),
+      focusWindow: () => { const w = trayWindow(); if (w) w.focusWindow(); },
+      selectTab: key => { const w = trayWindow(); if (w && w.tabShell) w.tabShell.select(key); },
+      openBackground: o => { const w = trayWindow(); return w ? w.backgroundActions.open(o) : undefined; },
       // The same Stop as the ▾ menu: it asks first, every time. Its question needs a visible window to sit on.
-      stopBackground: (row) => { launchWindow.focusWindow(); launchWindow.backgroundActions.stop(row).catch(() => {}); },
-      hideAll: () => { const w = launchWindow.win; if (w && !w.isDestroyed()) w.hide(); },
-      showAll: launchWindow.focusWindow,
+      stopBackground: (row) => { const w = trayWindow(); if (!w) return; w.focusWindow(); w.backgroundActions.stop(row).catch(() => {}); },
+      hideAll: () => registry.forEach((p) => { const w = p.win; if (w && !w.isDestroyed()) w.hide(); }),
+      showAll: () => registry.forEach((p) => p.focusWindow()),
       setStartMinimised: on => { writeTraySetting(uiStore, 'startMinimised', on === true); },
-      // Unsaved reader text asks Save / Discard / Cancel on the window, so the window has to be visible to be answered.
-      quit: () => { if (launchWindow.readerUnsaved.all().length > 0) launchWindow.focusWindow(); app.quit(); },
+      // Unsaved reader text asks Save / Discard / Cancel on the window, so that window has to be visible to be answered.
+      quit: () => { const dirty = registry.list().find((p) => p.readerUnsaved.all().length > 0); if (dirty) dirty.focusWindow(); app.quit(); },
     },
   });
-  launchWindow.attach({ trayController });
   trayController.sync();
-  // Started hidden but no icon could be made (no tray area): a window nobody can reach is worse than a visible one.
-  const w = launchWindow.win;
-  if (!trayController.state().exists && w && !w.isDestroyed() && !w.isVisible()) launchWindow.focusWindow();
 }
+
+
+  // The secret store lives HERE, in main. Not in the host: the host owns the
+  // pty, so keeping secrets out of it means no wiring mistake can put one into
+  // the session. Not in the renderer: the window would then hold the file and
+  // every value in it.
+function makeProjectSecrets(p) {
+  const { stateRoot: STATE_ROOT, root: PROJECT_ROOT, launchCwd: LAUNCH_CWD } = p;
+  return createSecretService({
+    // The project's STATE root: secrets are scoped to the project (every tab
+    // shares them) unless explicitly shared; the vault file itself is
+    // per-INSTALL, which is why the scope has to be enforced rather than implied
+    // by where the file lives. NEW entries go under it.
+    project: STATE_ROOT,
+    // ...and entries saved earlier stay visible: under the project root (the
+    // container path, before the 2026-09-28 layout move) or the folder this
+    // window was launched on. Visibility only; `add` still gets ONE path.
+    scopes: [PROJECT_ROOT, LAUNCH_CWD].filter((p) => !samePath(p, STATE_ROOT)),
+    // DELIBERATELY NOT WRAPPED IN try/catch, and that rests on an invariant:
+    // `createVault` CONSTRUCTS FOR ANY BYTES ON DISK, reporting the vault as
+    // healthy or damaged rather than throwing.
+    //
+    // Miguel asked for this line, and the history is why. When `load()` threw on
+    // a malformed lock record, this call took the whole window down with it --
+    // no panel, no damage message, no melt button (Dexter G3). Wrapping it here
+    // would have been worse: a window whose vault panel is silently dead is the
+    // class this repo has already paid for four times (careerDisplay,
+    // quotaDisplay, isPanelToggle, `.vault-row`). So the throw was removed
+    // instead of the crash being caught.
+    //
+    // The invariant is pinned as a RULE, not by example, in
+    // test/vault-damaged-path.test.js -- eighteen adversarial byte shapes
+    // including a UTF-8 BOM. If you add a throw to `load()`, that test fails and
+    // this comment is what it means.
+    vault: createVault({
+      file: path.join(__dirname, '..', '.harness', 'secrets.enc'),
+      crypto: safeStorage,
+    }),
+    clipboard: {
+      writeText: (t) => clipboard.writeText(t),
+      readText: () => clipboard.readText(),
+      clear: () => clipboard.writeText(''),
+    },
+  });
+}
+
+// The dock layout (layout pass L1, see layout-bridge.js). A tab's OWN layout is its host's business, not main's.
+// BACKLOG #211: the layout is each PROJECT's own, in its `.claude-custom` folder, so another project's window is never moved by this one; the
+// install-wide file only seeds a project that has none yet. Presets stay install-wide (registerIpc).
+function makeProjectLayoutStore(p) {
+  const STATE_ROOT = p.stateRoot;
+  return createProjectLayoutStore({
+    project: createStore({ dir: lookDir(STATE_ROOT) }), fallback: uiStore,
+    usable: () => lookDirState(STATE_ROOT, fs) !== 'foreign', log: (...a) => console.warn(...a),
+    prepare: () => {
+      if (lookDirState(STATE_ROOT, fs) === 'foreign') throw new Error('.claude-custom is a link to somewhere else');
+      ensureLookDir(STATE_ROOT, fs);
+    },
+  });
+}
+
+// Each project window's secrets, layout store and layout watchers (app/project-records.js). Made when a window is.
+const projectRecords = createProjectRecords({
+  makeSecrets: makeProjectSecrets,
+  makeLayoutStore: makeProjectLayoutStore,
+  pushToProject,
+  log: (...a) => console.log(...a),
+  // Other project windows are other mains sharing the store files: follow their change, live. The pair stays for older windows.
+  watch: ({ layoutStore, layoutSync, treeSync, send }) => [
+    watchLayout({ store: layoutStore, sync: layoutSync, send, file: layoutStore.pathOf(LAYOUT_KEY) }),
+    watchLayout({ store: layoutStore, sync: treeSync, names: TREE_NAMES, send, file: layoutStore.pathOf(TREE_NAMES.key) }),
+  ],
+});
 
 // --- IPC ---------------------------------------------------------------------------
 
 function registerIpc() {
-  // The secret service and the layout store are made once, from the launch's project (constants of the launch, so reading them off
-  // the window object is safe). PR 2 of the single-instance work: both become per project.
-  const { STATE_ROOT, PROJECT_ROOT } = launchWindow.identity;
   // Claude's panel (#71). The panel's own page talks on canvas:fetch / canvas:send only (registerCanvasIpc: main answers a
   // contents it made, nothing else). The channels below are the TAB's page, the trusted controller, and are gated on it.
-  registerCanvasIpc(ipcMain, launchWindow.canvasViews);   // its sender is the panel's own contents, not a tab view (PR 2: dispatch by panel owner)
+  registerCanvasIpc(ipcMain, panelDispatch((s) => registry.panelOwner(s)));   // its sender is the panel's own contents, not a tab view: routed by panel owner
   ipcMain.handle('canvas:show', (e, req) => (isTabView(e.sender) && req && typeof req === 'object'
     ? viewOwner(e.sender).canvasViews.show(e.sender, req) : { ok: false, error: 'refused' }));
   ipcMain.on('canvas:bounds', (e, rect) => { if (isTabView(e.sender)) viewOwner(e.sender).canvasViews.setBounds(e.sender, rect); });
@@ -554,13 +636,14 @@ function registerIpc() {
   });
   // The ▾ menu. Answers when it closes, so the strip can show it was busy
   // (the list takes two powershell.exe, ~1-2 s); one at a time.
-  let backgroundBusy = false;
+  const backgroundBusy = createBusyGate();     // per window's strip: a busy ▾ in one window never blocks another's
   ipcMain.handle('strip:background', async (e) => {
-    if (!fromStrip(e) || backgroundBusy) return;
-    backgroundBusy = true;
-    try { await stripOwner(e).showBackgroundMenu(); } catch (err) {
+    if (!fromStrip(e)) return;
+    const owner = stripOwner(e);
+    if (!backgroundBusy.enter(owner)) return;
+    try { await owner.showBackgroundMenu(); } catch (err) {
       console.log('[main] background menu failed:', err && err.message);
-    } finally { backgroundBusy = false; }
+    } finally { backgroundBusy.leave(owner); }
   });
   // STOP ALL (host/kill-switch.js): one confirm, then ~/.claude/STOP-ALL, the file every host polls. One at a time. The file comes from
   // the home folder, never the CLI's config dir, so it is the same one every host watches; the probe seam stands in for it.
@@ -719,7 +802,7 @@ function registerIpc() {
     if (!surfaces.toast) console.log(`[main] attention: suppressed (focused=${owner.focused})`);
     if (surfaces.toast && Notification.isSupported()) {
       // The click goes to the tab that raised it, and to the window; the holder keeps the toast alive until then.
-      toasts.show(surfaces.toast, event.sender);
+      toasts.show(surfaces.toast, { sender: event.sender, owner });
     }
     // Survives the toast: on Windows the taskbar button keeps flashing until
     // the window is looked at, which is the whole point for a blocked session.
@@ -735,54 +818,16 @@ function registerIpc() {
     if (surfaces.toast) console.log(`[main] attention body: ${surfaces.toast.body}`);
   });
 
-  // The secret store lives HERE, in main. Not in the host: the host owns the
-  // pty, so keeping secrets out of it means no wiring mistake can put one into
-  // the session. Not in the renderer: the window would then hold the file and
-  // every value in it.
-  const secrets = createSecretService({
-    // The project's STATE root: secrets are scoped to the project (every tab
-    // shares them) unless explicitly shared; the vault file itself is
-    // per-INSTALL, which is why the scope has to be enforced rather than implied
-    // by where the file lives. NEW entries go under it.
-    project: STATE_ROOT,
-    // ...and entries saved earlier stay visible: under the project root (the
-    // container path, before the 2026-09-28 layout move) or the folder this
-    // window was launched on. Visibility only; `add` still gets ONE path.
-    scopes: [PROJECT_ROOT, LAUNCH_CWD].filter((p) => !samePath(p, STATE_ROOT)),
-    // DELIBERATELY NOT WRAPPED IN try/catch, and that rests on an invariant:
-    // `createVault` CONSTRUCTS FOR ANY BYTES ON DISK, reporting the vault as
-    // healthy or damaged rather than throwing.
-    //
-    // Miguel asked for this line, and the history is why. When `load()` threw on
-    // a malformed lock record, this call took the whole window down with it --
-    // no panel, no damage message, no melt button (Dexter G3). Wrapping it here
-    // would have been worse: a window whose vault panel is silently dead is the
-    // class this repo has already paid for four times (careerDisplay,
-    // quotaDisplay, isPanelToggle, `.vault-row`). So the throw was removed
-    // instead of the crash being caught.
-    //
-    // The invariant is pinned as a RULE, not by example, in
-    // test/vault-damaged-path.test.js -- eighteen adversarial byte shapes
-    // including a UTF-8 BOM. If you add a throw to `load()`, that test fails and
-    // this comment is what it means.
-    vault: createVault({
-      file: path.join(__dirname, '..', '.harness', 'secrets.enc'),
-      crypto: safeStorage,
-    }),
-    clipboard: {
-      writeText: (t) => clipboard.writeText(t),
-      readText: () => clipboard.readText(),
-      clear: () => clipboard.writeText(''),
-    },
-  });
 
   const fromWindow = (event) => isTabView(event.sender);
-  ipcMain.handle('secrets:available', (e) => fromWindow(e) && secrets.available());
-  ipcMain.handle('secrets:list', (e, query) => (fromWindow(e) ? secrets.list({ query }) : []));
-  ipcMain.handle('secrets:add', (e, entry) => (fromWindow(e) ? secrets.add(entry || {}) : { ok: false }));
-  ipcMain.handle('secrets:remove', (e, id) => (fromWindow(e) ? secrets.remove(id) : { ok: false }));
-  ipcMain.handle('secrets:reveal', (e, id) => (fromWindow(e) ? secrets.reveal(id) : { ok: false }));
-  ipcMain.handle('secrets:copy', (e, id) => (fromWindow(e) ? secrets.copy(id) : { ok: false }));
+  // Each window's secrets are its own service over its own vault (Q1 default: unlocking in one window leaves another locked).
+  const secretsFor = (event) => (fromWindow(event) ? projectRecords.secretsOf(viewOwner(event.sender)) : null);
+  ipcMain.handle('secrets:available', (e) => { const s = secretsFor(e); return s !== null && s.available(); });
+  ipcMain.handle('secrets:list', (e, query) => { const s = secretsFor(e); return s !== null ? s.list({ query }) : []; });
+  ipcMain.handle('secrets:add', (e, entry) => { const s = secretsFor(e); return s !== null ? s.add(entry || {}) : { ok: false }; });
+  ipcMain.handle('secrets:remove', (e, id) => { const s = secretsFor(e); return s !== null ? s.remove(id) : { ok: false }; });
+  ipcMain.handle('secrets:reveal', (e, id) => { const s = secretsFor(e); return s !== null ? s.reveal(id) : { ok: false }; });
+  ipcMain.handle('secrets:copy', (e, id) => { const s = secretsFor(e); return s !== null ? s.copy(id) : { ok: false }; });
 
   // The lock. Same `fromWindow` gate as everything above it: a handler that
   // answers anyone is not a boundary.
@@ -791,33 +836,33 @@ function registerIpc() {
   // `hasKey: false` with `locked: true` was already safe, but it says "locked
   // vault with no key", which is not a state that exists. Now this default and
   // the service's (secret-service.js, Dexter F6 / Miguel A2) are the same object.
-  ipcMain.handle('secrets:lockState', (e) =>
-    (fromWindow(e) ? secrets.lockState() : { hasKey: true, locked: true, count: null }));
-  ipcMain.handle('secrets:setKey', (e, key) =>
-    (fromWindow(e) ? secrets.setKey(key) : { ok: false }));
-  ipcMain.handle('secrets:unlock', (e, key) =>
-    (fromWindow(e) ? secrets.unlock(key) : { ok: false }));
-  ipcMain.handle('secrets:lock', (e) => (fromWindow(e) ? secrets.lock() : { ok: false }));
-  ipcMain.handle('secrets:removeKey', (e) => (fromWindow(e) ? secrets.removeKey() : { ok: false }));
-  ipcMain.handle('secrets:melt', (e) => (fromWindow(e) ? secrets.melt() : { ok: false }));
+  ipcMain.handle('secrets:lockState', (e) => {
+    const s = secretsFor(e);
+    return s !== null ? s.lockState() : { hasKey: true, locked: true, count: null };
+  });
+  ipcMain.handle('secrets:setKey', (e, key) => { const s = secretsFor(e); return s !== null ? s.setKey(key) : { ok: false }; });
+  ipcMain.handle('secrets:unlock', (e, key) => { const s = secretsFor(e); return s !== null ? s.unlock(key) : { ok: false }; });
+  ipcMain.handle('secrets:lock', (e) => { const s = secretsFor(e); return s !== null ? s.lock() : { ok: false }; });
+  ipcMain.handle('secrets:removeKey', (e) => { const s = secretsFor(e); return s !== null ? s.removeKey() : { ok: false }; });
+  ipcMain.handle('secrets:melt', (e) => { const s = secretsFor(e); return s !== null ? s.melt() : { ok: false }; });
 
   // Ctrl+V (BACKLOG #12, #8): the page asks, main reads the clipboard.
-  registerClipboardHandlers({ ipcMain, clipboard, win: launchWindow.win, isSender: isTabView });
+  registerClipboardHandlers({ ipcMain, clipboard, isSender: isTabView });
 
   // Model favourites (BACKLOG E #5, #3): a star on an OpenRouter row or a
   // Claude choice, persisted GLOBALLY next to look-global -- see
   // favourites-bridge.js's header for why main owns this store directly.
-  registerFavouriteHandlers({ ipcMain, store: uiStore, win: launchWindow.win, isSender: isTabView });
+  registerFavouriteHandlers({ ipcMain, store: uiStore, isSender: isTabView });
 
   // Agent pictures (BACKLOG C #13, #18): the file picker for a portrait and the
   // install-wide "show agent images" toggle, persisted GLOBALLY next to
   // look-global -- see avatar-bridge.js. A push goes to EVERY tab view.
   const avatarSync = {};
-  const pushToViews = (channel, value) => launchWindow.forEachView((v) => v.webContents.send(channel, value));
-  registerAvatarHandlers({ ipcMain, store: uiStore, win: launchWindow.win, dialog, sync: avatarSync, isSender: isTabView, send: pushToViews });
+  const windowOf = (sender) => { const p = viewOwner(sender); return p ? p.win : null; };   // the asking page's own window (a dialog's parent)
+  registerAvatarHandlers({ ipcMain, store: uiStore, dialog, sync: avatarSync, isSender: isTabView, send: pushToAll, parentFor: windowOf });
   // Other project windows are other mains sharing this store: follow their toggle.
   watchImagesEnabled({
-    store: uiStore, win: launchWindow.win, sync: avatarSync, send: pushToViews,
+    store: uiStore, sync: avatarSync, send: pushToAll,
     file: path.join(UI_STATE_DIR, `${AVATAR_KEY}.json`),
   });
 
@@ -827,66 +872,39 @@ function registerIpc() {
   // The tray icon's switches (BACKLOG #119 A8), in the same record. Changing one applies at once: the icon appears or goes.
   registerTrayHandlers({ ipcMain, store: uiStore, isSender: isTabView, onChange: () => { if (trayController) trayController.sync(); } });
   const chromeSync = {};
-  registerChromeHandlers({ ipcMain, store: uiStore, sync: chromeSync, isSender: isTabView, send: pushToViews });
+  registerChromeHandlers({ ipcMain, store: uiStore, sync: chromeSync, isSender: isTabView, send: pushToAll });
   watchChromeSettings({
-    store: uiStore, sync: chromeSync, send: pushToViews,
+    store: uiStore, sync: chromeSync, send: pushToAll,
     file: path.join(UI_STATE_DIR, `${CHROME_KEY}.json`),
   });
 
   // Backlog #34: the background video plays only while the window is on screen and on mains.
-  // Main reports the facts only it knows (minimised, hidden, on battery); the page decides.
-  registerPlaybackHandlers({ ipcMain, win: launchWindow.win, powerMonitor, isSender: isTabView, send: pushToViews });
+  // Main reports the facts only it knows (minimised, hidden, on battery); the page decides. One registration; each window is watched.
+  playback = registerPlaybackHandlers({ ipcMain, powerMonitor, isSender: isTabView, winOf: (sender) => { const p = viewOwner(sender); return p ? p.win : null; } });
+  registry.forEach(watchPlayback);      // a window made before this ran (every later one is watched from its onWindowCreated)
 
-  // Lean mode (BACKLOG #62): one window-level state, told to every tab page and to the strip. The ☾ button and a
-  // /bedtime night (reported by the tab pages from their host's word) drive it; see app/lean-state.js for the rules.
-  // The nights the person sent Back to normal are kept across a restart (PR #140 Dexter F2), in the same install-wide record as the dim.
-  const leanKept = (uiStore.read(UI_KEY, {}) || {}).leanDismissed;
-  // Lean mode's bridge (app/lean-bridge.js): only the window reads it, through attach().
-  const leanBridge = registerLeanHandlers({
-    lean: createLean({
-      dismissed: Array.isArray(leanKept) ? leanKept : [],
-      onDismissed: (list) => {
-        try { uiStore.update(UI_KEY, {}, (prev) => ({ ...(prev && typeof prev === 'object' ? prev : {}), leanDismissed: unionDismissed(prev && prev.leanDismissed, list) })); }
-        catch (err) { console.error('[main] could not save the dismissed nights:', err && err.message); }
-      },
-    }),
-    ipcMain, isView: isTabView, isStrip: (sender) => fromStrip({ sender }),
-    push: (state) => { pushToViews(LEAN_PUSH, state); const w = launchWindow.win; if (w && !w.isDestroyed()) w.webContents.send(LEAN_PUSH, state); },
-    // the working agents' portraits go to the strip only (it draws them next to the lean chip)
-    pushFaces: (list) => { const w = launchWindow.win; if (w && !w.isDestroyed()) w.webContents.send(LEAN_FACES_PUSH, list); },
-  });
-  launchWindow.attach({ leanBridge });
-
-  // The dock layout (layout pass L1, see layout-bridge.js). A tab's OWN layout is its host's business, not main's.
-  // BACKLOG #211: the layout is each PROJECT's own, in its `.claude-custom\` (the install-wide file only seeds a project
-  // that has none yet), so another project's window is never moved by this one. Presets below stay install-wide.
-  const layoutStore = createProjectLayoutStore({
-    project: createStore({ dir: lookDir(STATE_ROOT) }), fallback: uiStore,
-    usable: () => lookDirState(STATE_ROOT, fs) !== 'foreign', log: (...a) => console.warn(...a),
-    prepare: () => {
-      if (lookDirState(STATE_ROOT, fs) === 'foreign') throw new Error('.claude-custom is a link to somewhere else');
-      ensureLookDir(STATE_ROOT, fs);
+  // Lean mode (BACKLOG #62): each window's own state, told to that window's tab pages and strip (app/lean-bridge.js createLeanUnit, made
+  // by makeWindowUnits). The channels are registered once and each message goes to the unit of the window it came from.
+  registerLeanHandlers({
+    ipcMain,
+    unitOf: (sender) => {
+      const v = viewOwner(sender);
+      if (v !== null) { const u = windowUnits.get(v); return u ? { unit: u.lean, isView: true } : null; }
+      const st = registry.stripOwner({ sender });
+      if (st !== null) { const u = windowUnits.get(st); return u ? { unit: u.lean, isView: false } : null; }
+      return null;
     },
   });
-  const layoutSync = {};
-  registerLayoutHandlers({ ipcMain, store: layoutStore, sync: layoutSync, isSender: isTabView, send: pushToViews });
-  watchLayout({
-    store: layoutStore, sync: layoutSync, send: pushToViews,
-    file: layoutStore.pathOf(LAYOUT_KEY),
-  });
-  // The split-tree layout (dockable panels D1) under its own key. The pair above stays: an older
-  // window still writes it, and it is read once to migrate into the tree, never written by this build.
-  const treeSync = {};
-  registerLayoutHandlers({ ipcMain, store: layoutStore, sync: treeSync, names: TREE_NAMES, isSender: isTabView, send: pushToViews });
-  watchLayout({
-    store: layoutStore, sync: treeSync, names: TREE_NAMES, send: pushToViews,
-    file: layoutStore.pathOf(TREE_NAMES.key),
-  });
+
+  // The dock layout and the split tree are each PROJECT's own: registered once, served from the asking page's window's own store
+  // (app/project-records.js; the watchers that follow the files are started with the window's record).
+  registerLayoutHandlers({ ipcMain, scopeFor: projectRecords.scopeFor(viewOwner, 'layoutSync') });
+  registerLayoutHandlers({ ipcMain, names: TREE_NAMES, scopeFor: projectRecords.scopeFor(viewOwner, 'treeSync') });
   // The layout presets (dockable panels D3): a list, install-wide, under its own key. Same bridge, an array.
   const presetSync = {};
-  registerLayoutHandlers({ ipcMain, store: uiStore, sync: presetSync, names: PRESET_NAMES, isSender: isTabView, send: pushToViews });
+  registerLayoutHandlers({ ipcMain, store: uiStore, sync: presetSync, names: PRESET_NAMES, isSender: isTabView, send: pushToAll });
   watchLayout({
-    store: uiStore, sync: presetSync, names: PRESET_NAMES, send: pushToViews,
+    store: uiStore, sync: presetSync, names: PRESET_NAMES, send: pushToAll,
     file: path.join(UI_STATE_DIR, `${PRESET_NAMES.key}.json`),
   });
 
@@ -895,16 +913,14 @@ function registerIpc() {
   // The tab strip and the indexing overlay are their own pages: they get the interface font as a --font-ui they read (uiFontScript).
   const fontsSync = {};
   const pushFonts = (channel, settings) => {
-    pushToViews(channel, settings);
+    pushToAll(channel, settings);
     const script = uiFontScript(settings);
-    for (const wc of [launchWindow.win && launchWindow.win.webContents, ...indexingPages]) {
+    const strips = []; registry.forEach((p) => strips.push(p.win && p.win.webContents));   // every window's strip page, then the overlays
+    for (const wc of [...strips, ...indexingPages]) {
       try { if (wc && !wc.isDestroyed()) wc.executeJavaScript(script).catch(() => {}); } catch { /* the page is going away */ }
     }
   };
-  const giveUiFont = (wc) => wc.on('did-finish-load', () => {
-    try { wc.executeJavaScript(uiFontScript(readFontSettings(uiStore))).catch(() => {}); } catch { /* the page is going away */ }
-  });
-  giveUiFont(launchWindow.win.webContents);
+  registry.forEach(giveUiFont);     // a window made before this ran (every later one gets it from its onWindowCreated)
   registerFontHandlers({ ipcMain, store: uiStore, sync: fontsSync, isSender: isTabView, send: pushFonts });
   watchLayout({
     store: uiStore, sync: fontsSync, names: FONT_NAMES, send: pushFonts,
@@ -933,6 +949,9 @@ function registerIpc() {
   if (process.env.CLAUDE_CUSTOM_VAULT_PROBE) {
     const value = process.env.CLAUDE_CUSTOM_VAULT_PROBE;
     setTimeout(() => {
+      // Read now, not at registration: registerIpc runs before startProject makes the launch window's record (PR #256 Miguel B2).
+      const secrets = projectRecords.secretsOf(launchWindow);     // the launch window's service
+      if (secrets === null) { console.log('[vault-probe] no secret service for the launch window'); return; }
       console.log('[vault-probe] available:', secrets.available());
       const added = secrets.add({ label: 'probe entry', secret: value });
       console.log('[vault-probe] stored:', added.ok, added.error || '');
@@ -988,7 +1007,8 @@ async function capture(wc, file) {
 const stripFileFor = (file) => file.replace(/(\.png)?$/i, '.strip.png');
 
 // --- the indexing assistant (#66) ----------------------------------------------------------
-// One per window, sharing one install-wide journal with the others. The probe seam points it at a throwaway journal.
+// The service and the journal are shared by every window; each window has its own overlay (project, toast, list, views). The probe seam points
+// the journal at a throwaway one.
 function startIndexing(seams) {
   const journalFile = seams.indexingJournal || path.join(HARNESS_DIR, 'state', 'indexing-notes.jsonl');
   const docsFor = (root) => { const p = projectOf(root); return indexWriter.docsOf(p || { root, dev: root }); };
@@ -1010,8 +1030,30 @@ function startIndexing(seams) {
       hasBacklog: (p) => { const d = indexWriter.docsOf(p); return d.ok === true && fs.existsSync(d.backlog); },
     });
   };
-  indexing = createIndexingBridge({
-    ipcMain, Menu, shell,
+  const journalStamp = () => { try { const st = fs.statSync(journalFile); return `${st.size}:${st.mtimeMs}`; } catch { return 'none'; } };
+  indexingApp = { service, docsFor, projects, journalStamp };
+  registerIndexingHandlers({
+    ipcMain,
+    overlayOfStrip: (sender) => { const p = registry.stripOwner({ sender }); const u = p !== null ? windowUnits.get(p) : null; return u ? u.overlay : null; },
+    overlayOfPage: (sender) => { for (const u of windowUnits.values()) if (u.overlay.partOf({ sender }) !== null) return u.overlay; return null; },
+  });
+  // ONE timer for the process: the service ticks once, then each window's overlay decides, by its own last stamp, whether that was news.
+  const timer = setInterval(() => {
+    Promise.resolve(service.tick()).catch(() => {}).then(() => {
+      const stamp = journalStamp();
+      for (const u of windowUnits.values()) u.overlay.tick(stamp);
+    });
+  }, 3000);
+  if (typeof timer.unref === 'function') timer.unref();
+  // Warm the chip's list off-thread, so the first click doesn't wait for it.
+  setTimeout(() => { projects(launchWindow.root).catch(() => {}); }, 15_000).unref();
+}
+
+/** One window's overlay (its own project, toast, list and views) over the shared service. */
+function makeIndexingOverlay(pw) {
+  const { service, docsFor, projects } = indexingApp;
+  return createIndexingOverlay({
+    Menu, shell,
     copyText: (text) => clipboard.writeText(text),
     makeView: () => {
       const v = new WebContentsView({
@@ -1029,23 +1071,73 @@ function startIndexing(seams) {
       return v;
     },
     overlayFile: path.join(__dirname, 'indexing-overlay.html'),
-    getWin: () => launchWindow.win,
-    isStrip: (sender) => fromStrip({ sender }),
+    getWin: () => pw.win,
     service,
-    project: { root: launchWindow.root, label: launchWindow.label },
+    project: { root: pw.root, label: pw.label },
     docsFor,
     projects,
-    viewTop: () => launchWindow.viewTop(),
-    focusSelected: () => launchWindow.focusSelected(),
-    setFieldFocused: (on) => launchWindow.setIndexFieldFocused(on),
-    journalStamp: () => { try { const s = fs.statSync(journalFile); return `${s.size}:${s.mtimeMs}`; } catch { return 'none'; } },
+    viewTop: () => pw.viewTop(),
+    focusSelected: () => pw.focusSelected({ evenWithField: true }),   // the overlay's own leave / close-list: the person is done with the field
+    setFieldFocused: (on) => pw.setIndexFieldFocused(on),
   });
-  launchWindow.attach({ indexing });
-  indexing.start(3000);
-  indexing.push(true);
-  // Warm the chip's list off-thread, so the first click doesn't wait for it.
-  setTimeout(() => { projects(launchWindow.root).catch(() => {}); }, 15_000).unref();
 }
+
+/** What a window gets when main makes it: its lean state and its indexing overlay, handed to the window before anything runs. */
+// Lean mode is ONE state for the whole process (Ricardo, 2026-11-11: "All of Jiandu"): lean on in any window, or a /bedtime night in any
+// project, makes every window lean, and a window opened while lean comes up lean. Nights are kept per tab view (owner = the view's id), so a
+// closed view still drops its own night; faces stay per window's strip. Made once, on first use.
+let sharedLean = null;
+function appLean() {
+  if (sharedLean !== null) return sharedLean;
+  // The nights the person sent Back to normal are kept across a restart (PR #140 Dexter F2), in the same install-wide record as the dim.
+  const leanKept = (uiStore.read(UI_KEY, {}) || {}).leanDismissed;
+  sharedLean = createLean({
+    dismissed: Array.isArray(leanKept) ? leanKept : [],
+    onDismissed: (list) => {
+      try { uiStore.update(UI_KEY, {}, (prev) => ({ ...(prev && typeof prev === 'object' ? prev : {}), leanDismissed: unionDismissed(prev && prev.leanDismissed, list) })); }
+      catch (err) { console.error('[main] could not save the dismissed nights:', err && err.message); }
+    },
+  });
+  return sharedLean;
+}
+// Every window's views and strip hear a lean change.
+function pushLeanToAll(state) {
+  registry.forEach((p) => {
+    pushToProject(p)(LEAN_PUSH, state);
+    const w = p.win;
+    if (w && !w.isDestroyed()) w.webContents.send(LEAN_PUSH, state);
+  });
+}
+function makeWindowUnits(pw) {
+  const toStrip = (channel, value) => { const w = pw.win; if (w && !w.isDestroyed()) w.webContents.send(channel, value); };
+  const lean = createLeanUnit({
+    lean: appLean(),
+    push: pushLeanToAll,
+    // the working agents' portraits go to this window's strip only (it draws them next to the lean chip)
+    pushFaces: (list) => toStrip(LEAN_FACES_PUSH, list),
+  });
+  const overlay = makeIndexingOverlay(pw);
+  windowUnits.set(pw, { lean, overlay });
+  pw.attach({ leanBridge: lean, indexing: overlay });
+  overlay.push(true);
+}
+
+// What a window is handed the moment it is made (its own pages are loading, so this tick): the interface font and the playback watch.
+const fontGiven = new WeakSet();
+function giveUiFont(pw) {
+  const w = pw.win;
+  if (!w || fontGiven.has(pw)) return;
+  fontGiven.add(pw);
+  w.webContents.on('did-finish-load', () => {
+    try { w.webContents.executeJavaScript(uiFontScript(readFontSettings(uiStore))).catch(() => {}); } catch { /* the page is going away */ }
+  });
+}
+const playbackWatched = new Map();      // window -> the function that stops watching it
+function watchPlayback(pw) {
+  if (playback === null || !pw.win || playbackWatched.has(pw)) return;
+  playbackWatched.set(pw, playback.watch(pw.win, pushToProject(pw)));
+}
+function windowCreated(pw) { giveUiFont(pw); watchPlayback(pw); }
 
 // --- one window per project -------------------------------------------------------------------------------------
 // A second launch of this project is answered by the first window (focus + the lane it named) and ends without a window. The logic is
@@ -1053,42 +1145,10 @@ function startIndexing(seams) {
 // while it is quitting or its start never finished.
 const ownStartTime = createSelfStartTime();   // this process's own start time, asked once: the owner file, the claims and the sampler prove "this process" with it
 
-// The project window (app/project-window.js): everything that was this file's per-project state. Made HERE, after every app-wide
-// constant it is handed (a const read before its line is a TDZ error). Construction has no side effects: the claim hooks `exit`
-// inside run(), and the window itself is made by createWindow() in whenReady.
-const launchWindow = createProjectWindow({
-  launchCwd: LAUNCH_CWD,
-  electron: { app, BrowserWindow, WebContentsView, Menu, dialog, session },
-  config: { EXPLICIT_PORT, STRIP_HEIGHT, POLL_MS, PROBE_PORT, PROBE_TOKEN, PROBE_LINE_MAX, TRAY_ON, ONE_WINDOW_ON },
-  services: {
-    uiStore, readDim, usageCounters, forProbe, openInBrowser, probeConfirms, logShellError, canvasProbeResolve, canvasAsks,
-    nextCanvasAskId: () => ++canvasAskSeq,
-    previewProbeProxy, stopHostByPid, occupantAt, tokenFileFor, ownIdentities, ownStartTime, waitForHost, HARNESS_DIR, INSTALL_DIR,
-    listBackground, capture, stripFileFor,
-    isQuitting: () => quitting,
-    setQuitting: (v) => { quitting = v; },
-  },
-});
-// root -> project window: exactly one entry today, so exactly one project per process. stripOwner / viewOwner / forEachProject read it.
-const projectWindows = new Map([[launchWindow.root, launchWindow]]);
-
-app.whenReady().then(async () => {
-  console.log('[main] project       :', launchWindow.root, `(${launchWindow.mode})`);
-  console.log('[main] launched on   :', LAUNCH_CWD);
-
-  // Named and refused (see explicitPort): nothing sensible is left to do, and
-  // opening a window anyway would show a terminal wired to nothing.
-  if (EXPLICIT_PORT && EXPLICIT_PORT.bad !== undefined) { app.exit(1); return; }
-
-  // One window per project: before anything is made, ask whether this project's window already exists.
-  if (await launchWindow.claim.run() === 'exit') { app.exit(0); return; }
-
-  const seams = readSeams(process.env);
-  const openPrsReader = seams.openPrsFixture
-    ? fixtureReader(seams.openPrsFixture, { parse: parseOpenPrs, log: (line) => console.log(line) })
-    : readOpenPrs;
-  launchWindow.startServices({ seams, openPrsReader });
-
+// --- the Resources service (#63) -----------------------------------------------------------------------------
+// One per process, made before any window: windows read it through getResources(). Its tabs are the union of every window's.
+const allTabs = () => registry.list().flatMap((p) => (p.tabShell ? p.tabShell.snapshot().tabs : []));
+async function startResources(seams) {
   // The Resources panel (#63). Identity files of every build beside this one say which pids are session hosts;
   // each is proven against the process table (host/resource-tree.js provenHosts) before anything is attributed.
   const resourceInstalls = () => { try { return installsBeside(INSTALL_DIR); } catch { return [INSTALL_DIR]; } };
@@ -1109,7 +1169,7 @@ app.whenReady().then(async () => {
   const ownProcStart = await ownStartTime().then(s => (typeof s === 'string' ? s : null), () => null);
   resources = createResourcesService({
     sampler: resourceSampler,
-    tabs: () => launchWindow.tabShell.snapshot().tabs,
+    tabs: allTabs,
     claims: () => {
       const out = [];
       for (const install of resourceInstalls()) {
@@ -1128,7 +1188,8 @@ app.whenReady().then(async () => {
     cores: cpuCores,
     // a worktree's cwd names its PROJECT (the folder that holds `dev\`), the way the window title does
     labelOf: (cwd) => { const p = projectOf(cwd); return projectLabel(p ? p.root : cwd); },
-    send: (full, light) => { const sel = launchWindow.selectedView(); launchWindow.forEachView((v) => v.webContents.send('resources:state', v === sel ? full : light)); },
+    // every window's views hear it; each window's SELECTED view gets the full payload (with the history), the rest the light one
+    send: (full, light) => registry.forEach((p) => { const sel = p.selectedView(); p.forEachView((v) => v.webContents.send('resources:state', v === sel ? full : light)); }),
     // Stop ends exactly the set the guard computed, leaf first, each re-proved by pid and start time through a handle
     // (host/resource-kill.js): never a bare `taskkill /T`, which follows a stale parent link.
     kill: (targets) => killVerified(targets, { exec: createPowerShellExec(20000) }),
@@ -1151,17 +1212,16 @@ app.whenReady().then(async () => {
     taskLogs: {
       everyMs: 60_000,
       scan: () => taskLogsFs.scanTaskFiles(taskLogsRoot),
-      registry: () => taskLogsFs.readRegistries(taskLogsFs.registryDirs(launchWindow.tabShell.snapshot().tabs.map(t => t.cwd), claudeConfigDir)),
+      registry: () => taskLogsFs.readRegistries(taskLogsFs.registryDirs(allTabs().map(t => t.cwd), claudeConfigDir)),
       remove: (row) => taskLogsFs.deleteTaskLog(taskLogsRoot, row),
     },
     // verify/probe-resource-panel.js only: the warning's CPU threshold (a percentage), 40 when unset or not one
     warnAt: warnAtSeam,
-    refreshStrip: () => { const ts = launchWindow.tabShell; if (ts) ts.refresh(); },
+    refreshStrip: () => registry.forEach((p) => { const ts = p.tabShell; if (ts) ts.refresh(); }),
     // Q2: install-wide, in the same store as the other window-wide UI state
     chipStore: resourceChip,
     log: (...a) => console.log(...a),
   });
-  launchWindow.attach({ resources });
   // Other project windows are other mains sharing the saved file: follow their change of the chip, live, as the panels do.
   watchChip({ file: path.join(UI_STATE_DIR, `${CHIP_KEY}.json`), onChange: () => { if (resources) resources.reloadChip(); } });
   resourceSampler.start();
@@ -1169,20 +1229,91 @@ app.whenReady().then(async () => {
   const sweepPaused = () => resources.wakeLeftover().catch((err) => console.log('[pause] waking the leftovers threw:', err && err.message));   // what a dead run left suspended (#19)
   sweepPaused();
   setInterval(sweepPaused, 60_000).unref();      // ...and a sibling window that died after this one started
+}
 
-  launchWindow.startDevServers();
+// What every project window is handed (app/project-window.js). The Resources service, the tray and the lean/indexing units are read live.
+const windowServices = {
+  uiStore, readDim, usageCounters, forProbe, openInBrowser, probeConfirms, logShellError, canvasProbeResolve, canvasAsks,
+  nextCanvasAskId: () => ++canvasAskSeq,
+  previewProbeProxy, stopHostByPid, occupantAt, tokenFileFor, ownIdentities, ownStartTime, waitForHost, HARNESS_DIR, INSTALL_DIR,
+  listBackground, capture, stripFileFor,
+  isQuitting: () => quitting,
+  setQuitting: (v) => { quitting = v; },
+  onWindowCreated: (pw) => windowCreated(pw),
+  onClosed: (pw) => lifecycle.projectClosed(pw),
+  getResources: () => resources,
+  getTray: () => trayController,
+  seenChanged: createSeenGate({ registry, getResources: () => resources }),
+};
+
+// The project window (app/project-window.js): everything that is one project's. Made HERE, after every app-wide constant it is handed (a
+// const read before its line is a TDZ error). Construction has no side effects: the claim hooks `exit` inside run(), and the window itself
+// is made by start(). `launch` is this process's own launch window (the one-window claim and an explicit port are its alone, §3.1).
+function makeWindow(cwd, launch) {
+  return createProjectWindow({
+    launchCwd: cwd,
+    launch,
+    electron: { app, BrowserWindow, WebContentsView, Menu, dialog, session },
+    config: { EXPLICIT_PORT: launch ? EXPLICIT_PORT : null, STRIP_HEIGHT, POLL_MS, PROBE_PORT, TRAY_ON, ONE_WINDOW_ON },
+    services: windowServices,
+  });
+}
+const launchWindow = makeWindow(LAUNCH_CWD, true);
+registry.add(launchWindow);
+
+// What a window's start() is handed: the probe's seams and the open-PR reader (set in whenReady).
+let appStart = null;
+
+// Opening a project in this process and closing one (app/project-lifecycle.js, pure and tested for behaviour): the window's record
+// (secrets, layout), its units (lean, indexing), then its own start(); a window that closed while another stays is disposed and everything
+// main holds for it goes. `launch` is the process's own launch window (made above).
+const lifecycle = createProjectLifecycle({
+  registry, launchWindow,
+  rootOf: (cwd) => { const p = projectOf(cwd); return p ? p.root : cwd; },
+  makeWindow: (cwd) => makeWindow(cwd, false),
+  makeRecord: (pw) => projectRecords.make(pw),
+  stopRecord: (pw) => projectRecords.stop(pw),
+  makeUnits: (pw) => makeWindowUnits(pw),
+  dropUnits: (pw) => windowUnits.delete(pw),
+  dropWatch: (pw) => { const unwatch = playbackWatched.get(pw); if (unwatch) { playbackWatched.delete(pw); unwatch(); } },
+  getAppStart: () => appStart,
+  // Started hidden but no icon could be made (no tray area): a window nobody can reach is worse than a visible one.
+  afterStart: (pw) => {
+    const w = pw.win;
+    if (trayController && !trayController.state().exists && w && !w.isDestroyed() && !w.isVisible()) pw.focusWindow();
+  },
+  // the count and the tooltip speak for the first window that is left, and the Resources sampler asks again who is looking
+  onChanged: () => { if (trayController) trayController.sync(); windowServices.seenChanged(); },
+});
+const startProject = lifecycle.startProject;
+
+app.whenReady().then(async () => {
+  console.log('[main] project       :', launchWindow.root, `(${launchWindow.mode})`);
+  console.log('[main] launched on   :', LAUNCH_CWD);
+
+  // Named and refused (see explicitPort): nothing sensible is left to do, and
+  // opening a window anyway would show a terminal wired to nothing.
+  if (EXPLICIT_PORT && EXPLICIT_PORT.bad !== undefined) { app.exit(1); return; }
+
+  // One window per project: before anything is made, ask whether this project's window already exists.
+  if (await launchWindow.claim.run() === 'exit') { app.exit(0); return; }
+
+  const seams = readSeams(process.env);
+  const openPrsReader = seams.openPrsFixture
+    ? fixtureReader(seams.openPrsFixture, { parse: parseOpenPrs, log: (line) => console.log(line) })
+    : readOpenPrs;
+  appStart = { seams, openPrsReader };
+  await startResources(seams);
 
   // No application menu bar, ever (Ricardo, 2026-09-30: every pixel of vertical
   // space). Electron paints its default File/Edit/View/Window/Help bar on
   // Windows only because none was set; null removes it. Set before the window.
   Menu.setApplicationMenu(null);
-  launchWindow.createWindow();
-  launchWindow.syncDevServersSampling();       // read AFTER the window exists, and after a start hidden to the tray
   registerIpc();
   startIndexing(seams);
   startTray();
 
-  const first = await launchWindow.open();
+  const { first } = await startProject(LAUNCH_CWD, { launch: true });
   launchWindow.claim.markReady();        // from here a second launch is handed to this window
   if (launchWindow.attachOnlyRefusal) {
     launchWindow.claim.stop();           // this process is about to end: it is no window to hand a launch to
@@ -1207,7 +1338,14 @@ app.whenReady().then(async () => {
 
   // Headless verification path.
   if (process.env.CLAUDE_CUSTOM_SCREENSHOT) launchWindow.runScreenshotPath();
-  if (PROBE_PORT) launchWindow.startProbeDriver(PROBE_PORT);
+  // One probe server for the process (app/probe-driver.js): every command names its window by project root (the launch window when it names none).
+  if (PROBE_PORT) {
+    startProbeServer({
+      port: PROBE_PORT, token: PROBE_TOKEN, lineMax: PROBE_LINE_MAX,
+      appApi: createAppApi({ probePort: PROBE_PORT, token: PROBE_TOKEN, tempRoot: os.tmpdir(), registry, launchWindow, startProject, countWebContents: () => webContents.getAllWebContents().length, portNamed: !!EXPLICIT_PORT }),
+      windowApi: (root) => { const pw = root === undefined ? registry.get(launchWindow.root) : registry.get(root); return pw ? pw.probeApi() : null; },
+    });
+  }
 }).catch((err) => {
   // A start that threw must not stay the project's owner: every later launch would be handed to a window that never comes up.
   console.error('[main] startup failed:', (err && err.stack) || err);

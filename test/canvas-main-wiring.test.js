@@ -32,7 +32,7 @@ test('every tab-page channel is gated on the sender being a tab view', () => {
 });
 
 test('the panel page talks only on the two channels registerCanvasIpc owns', () => {
-  assert.match(CODE, /registerCanvasIpc\(ipcMain, launchWindow\.canvasViews\);/);
+  assert.match(CODE, /registerCanvasIpc\(ipcMain, panelDispatch\(\(s\) => registry\.panelOwner\(s\)\)\);/, 'routed to the window that owns the panel, never "the" window');
   assert.doesNotMatch(CODE, /ipcMain\.(on|handle)\('canvas:(fetch|send)'/, 'main.js must not answer the panel by hand');
 });
 
