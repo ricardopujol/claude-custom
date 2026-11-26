@@ -5,7 +5,8 @@
  *
  * Paths reach this module from three sources that spell the same folder
  * differently -- git prints `C:/a/b`, Node gives `C:\a\b`, users type either
- * case, with or without a trailing separator. Every comparison in the worktree
+ * case, with or without a trailing separator, and through a junction or not
+ * (git follows junctions; `C:\Users\ricar` is one). Every comparison in the worktree
  * model goes through normPath so a folder is never two tabs, or zero, because
  * of how it was spelled.
  *
@@ -21,13 +22,30 @@
 
 const fs = require('fs');
 const path = require('path');
+const { realPathLoose } = require('./real-path');
 
-function normPath(p) {
+function keyOf(p, followLinks) {
   if (typeof p !== 'string' || !p) return null;
   let r = path.resolve(p);
+  // Junctions and symlinks followed (host/real-path.js): git prints the real
+  // path, a user may type the junction's, and both name one folder.
+  if (followLinks) r = realPathLoose(r);
   // Strip trailing separators, but not a drive root's own: `C:\` stays `C:\`.
   if (r.length > 3) r = r.replace(/[\\/]+$/, '');
   return process.platform === 'win32' ? r.toLowerCase() : r;
+}
+
+// The comparison key. For comparing and for map keys only: it is the REAL
+// folder, so never show it, start a process in it, or derive a transcript
+// folder name from it -- use the path as given for those.
+function normPath(p) {
+  return keyOf(p, true);
+}
+
+// The key a build before fix/junction-paths wrote (junctions NOT followed).
+// Only for reading state saved under that key; never for new keys.
+function legacyNormPath(p) {
+  return keyOf(p, false);
 }
 
 function samePath(a, b) {
@@ -110,4 +128,4 @@ function stateRoot(project) {
   return project ? project.dev : null;
 }
 
-module.exports = { normPath, samePath, isInside, layoutOf, projectOf, stateRoot };
+module.exports = { normPath, legacyNormPath, samePath, isInside, layoutOf, projectOf, stateRoot };

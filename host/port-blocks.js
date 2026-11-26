@@ -27,7 +27,7 @@ const crypto = require('crypto');
 const { execFile } = require('child_process');
 const { withFileLock } = require('./file-lock');
 const { renameWithRetry } = require('./atomic-write');
-const { normPath } = require('./project-layout');
+const { normPath, legacyNormPath } = require('./project-layout');
 
 // By absolute path (Miguel, PR #71 G1): a bare name is looked up in the
 // parent's cwd first, and the host's cwd is a project folder.
@@ -164,6 +164,12 @@ function allocate(worktree, opts = {}) {
 
       for (const k of gone) delete blocks[k];
 
+      // A worktree opened through a junction was saved under its junction
+      // spelling before fix/junction-paths: it keeps that block, re-keyed.
+      const legacy = legacyNormPath(worktree);
+      if (blocks[key] === undefined && legacy !== key && validBase(blocks[legacy])) blocks[key] = blocks[legacy];
+      if (legacy !== key) delete blocks[legacy];
+
       let base = blocks[key];
       if (base === undefined || overlaps(base, excluded)) {
         delete blocks[key];
@@ -193,7 +199,10 @@ function lookup(worktree, opts = {}) {
   if (!key) return null;
   try {
     const blocks = readBlocks(opts.file || defaultPortsFile());
-    return blocks && validBase(blocks[key]) ? blocks[key] : null;
+    if (!blocks) return null;
+    if (validBase(blocks[key])) return blocks[key];
+    const legacy = legacyNormPath(worktree);          // saved before fix/junction-paths; see allocate
+    return validBase(blocks[legacy]) ? blocks[legacy] : null;
   } catch {
     return null;
   }

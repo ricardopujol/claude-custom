@@ -16,7 +16,7 @@
 const fs = require('fs');
 const path = require('path');
 const { writeFileAtomic } = require('./atomic-write');
-const { normPath } = require('./project-layout');
+const { normPath, legacyNormPath } = require('./project-layout');
 const { hasTranscript, isSessionId } = require('./continue-flag');
 
 const MAX_SESSIONS = 200;
@@ -34,8 +34,14 @@ function readSessions(file, readText) {
 function readMainSession(file, cwd, { readText = (f) => fs.readFileSync(f, 'utf8') } = {}) {
   const key = normPath(cwd);
   if (key === null || typeof file !== 'string' || file === '') return null;
-  const e = readSessions(file, readText)[key];
-  return e && typeof e === 'object' && isSessionId(e.id) ? e.id : null;
+  const sessions = readSessions(file, readText);
+  const idOf = (k) => {
+    const e = Object.prototype.hasOwnProperty.call(sessions, k) ? sessions[k] : null;
+    return e && typeof e === 'object' && isSessionId(e.id) ? e.id : null;
+  };
+  // A folder opened through a junction was saved under its junction spelling
+  // before fix/junction-paths; read that key when the real one has nothing.
+  return idOf(key) || idOf(legacyNormPath(cwd));
 }
 
 /** Record the main session's id for this folder. `{ ok: true }` or `{ ok: false, error }`; never a throw. */
