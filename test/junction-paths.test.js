@@ -106,6 +106,33 @@ test('port-blocks: a block saved under the old junction-spelled key stays with t
   assert.strictEqual(lookup(viaReal('proj', 'dev'), { file }), 20300);
 });
 
+// Container tabs start in git's real spelling, so the usual caller after the upgrade is the REAL one (Dexter 3 / Miguel 2).
+test('port-blocks: a REAL-spelled caller finds the block an older build saved under the junction spelling', { skip }, () => {
+  const { allocate, lookup } = require('../host/port-blocks');
+  const file = path.join(tmp, 'worktree-ports-real.json');
+  const legacyKey = path.resolve(viaLink('proj', 'dev')).toLowerCase();
+  fs.writeFileSync(file, JSON.stringify({ version: 1, blocks: { [legacyKey]: 20300 } }));
+  assert.strictEqual(lookup(viaReal('proj', 'dev'), { file }), 20300);
+  assert.strictEqual(allocate(viaReal('proj', 'dev'), { file, excluded: [] }), 20300);
+  const saved = JSON.parse(fs.readFileSync(file, 'utf8')).blocks;
+  assert.deepStrictEqual(Object.values(saved), [20300], 'held once, under the real key');
+  assert.strictEqual(lookup(viaLink('proj', 'dev'), { file }), 20300);
+});
+
+// Two old keys for one folder, each with its own block: the one under the real key is used, and the other stays HELD,
+// because a dev server may still run on it; a new worktree never gets it (Dexter 5).
+test('port-blocks: of two old blocks for one folder, neither is handed to another worktree', { skip }, () => {
+  const { allocate } = require('../host/port-blocks');
+  const file = path.join(tmp, 'worktree-ports-two.json');
+  const realKey = layout.normPath(viaReal('proj', 'dev'));   // not path.resolve: %TEMP% may be an 8.3 spelling
+  const linkKey = path.resolve(viaLink('proj', 'dev')).toLowerCase();
+  fs.writeFileSync(file, JSON.stringify({ version: 1, blocks: { [linkKey]: 20000, [realKey]: 20100 } }));
+  assert.strictEqual(allocate(viaLink('proj', 'dev'), { file, excluded: [] }), 20100);
+  const saved = JSON.parse(fs.readFileSync(file, 'utf8')).blocks;
+  assert.deepStrictEqual(Object.values(saved).sort(), [20000, 20100]);
+  assert.strictEqual(allocate(viaReal('proj', 'feat-a'), { file, excluded: [] }), 20200);
+});
+
 // The resume id points INTO a transcript folder, and Claude names that folder from the cwd AS SPELLED
 // (host/project-dir.js). So each spelling keeps its own record (Dexter 1 / Miguel 1, PR #257).
 test('main-session: each spelling of one folder resumes its own conversation, and neither overwrites the other', { skip }, () => {
