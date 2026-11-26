@@ -42,9 +42,11 @@ function normPath(p) {
   return keyOf(p, true);
 }
 
-// The key a build before fix/junction-paths wrote (junctions NOT followed).
-// Only for reading state saved under that key; never for new keys.
-function legacyNormPath(p) {
+// The key of the path AS SPELLED (junctions NOT followed): what every key was
+// before fix/junction-paths. For state coupled to the spelling, such as a
+// pointer into a Claude transcript folder (host/main-session.js), and for
+// reading state an older build saved. Never for "is this the same folder".
+function spellingKey(p) {
   return keyOf(p, false);
 }
 
@@ -128,4 +130,4 @@ function stateRoot(project) {
   return project ? project.dev : null;
 }
 
-module.exports = { normPath, legacyNormPath, samePath, isInside, layoutOf, projectOf, stateRoot };
+module.exports = { normPath, spellingKey,samePath, isInside, layoutOf, projectOf, stateRoot };

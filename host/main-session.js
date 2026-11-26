@@ -8,7 +8,7 @@
  * `--resume <that id>`, when the CLI's store still has its transcript. No recorded id (a lane that never ran a main session under
  * this build, a side-only folder) means a FRESH session: never `--continue` blindly.
  *
- *   <install>\.harness\state\main-sessions.json   { version: 1, sessions: { <normPath(folder)>: { id, at } } }
+ *   <install>\.harness\state\main-sessions.json   { version: 1, sessions: { <spellingKey(folder)>: { id, at } } }
  *
  * Only a main host writes it (a side host and a shell host never do). A /clear starts a new session and the hook says so, so the
  * record follows it. Bounded; a file that isn't understood reads as "none recorded" and is rewritten by the next record.
@@ -16,7 +16,10 @@
 const fs = require('fs');
 const path = require('path');
 const { writeFileAtomic } = require('./atomic-write');
-const { normPath, legacyNormPath } = require('./project-layout');
+// Keyed by the folder AS SPELLED, never by the real folder: the id points into a transcript folder, and Claude names that folder
+// from the cwd as typed (host/project-dir.js), so `C:\Users\ricar\p` and `C:\Users\Ricardo Pujol\p` are two conversations even
+// though they are one folder (Dexter 1 / Miguel 1, PR #257).
+const { spellingKey } = require('./project-layout');
 const { hasTranscript, isSessionId } = require('./continue-flag');
 
 const MAX_SESSIONS = 200;
@@ -32,22 +35,17 @@ function readSessions(file, readText) {
 
 /** The id recorded for this folder's main session, or null. Strict: only a well-formed id comes out. */
 function readMainSession(file, cwd, { readText = (f) => fs.readFileSync(f, 'utf8') } = {}) {
-  const key = normPath(cwd);
+  const key = spellingKey(cwd);
   if (key === null || typeof file !== 'string' || file === '') return null;
   const sessions = readSessions(file, readText);
-  const idOf = (k) => {
-    const e = Object.prototype.hasOwnProperty.call(sessions, k) ? sessions[k] : null;
-    return e && typeof e === 'object' && isSessionId(e.id) ? e.id : null;
-  };
-  // A folder opened through a junction was saved under its junction spelling
-  // before fix/junction-paths; read that key when the real one has nothing.
-  return idOf(key) || idOf(legacyNormPath(cwd));
+  const e = Object.prototype.hasOwnProperty.call(sessions, key) ? sessions[key] : null;
+  return e && typeof e === 'object' && isSessionId(e.id) ? e.id : null;
 }
 
 /** Record the main session's id for this folder. `{ ok: true }` or `{ ok: false, error }`; never a throw. */
 function recordMainSession({ file, cwd, sessionId, now = Date.now,
   readText = (f) => fs.readFileSync(f, 'utf8'), writeText = (f, body) => writeFileAtomic(f, body), mkdir = (d) => fs.mkdirSync(d, { recursive: true }) } = {}) {
-  const key = normPath(cwd);
+  const key = spellingKey(cwd);
   if (key === null || !isSessionId(sessionId) || typeof file !== 'string' || file === '') return { ok: false, error: 'nothing to record' };
   try {
     const sessions = readSessions(file, readText);

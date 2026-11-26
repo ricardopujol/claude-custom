@@ -17,7 +17,8 @@ const { tmpDir } = require('./tmp-dir');
 const layout = require('../host/project-layout');
 const projectPath = require('../host/project-path');
 const { parsePorcelain, tabWorktrees, isSibling } = require('../host/worktree-list');
-const { readMainSession, recordMainSession } = require('../host/main-session');
+const { readMainSession, recordMainSession, resumeIdFor } = require('../host/main-session');
+const { projectDirName } = require('../host/project-dir');
 
 const WIN = process.platform === 'win32';
 const skip = WIN ? false : 'junctions are a Windows feature';
@@ -105,15 +106,36 @@ test('port-blocks: a block saved under the old junction-spelled key stays with t
   assert.strictEqual(lookup(viaReal('proj', 'dev'), { file }), 20300);
 });
 
-test('main-session: an id recorded under the old junction-spelled key is still found', { skip }, () => {
-  const file = path.join(tmp, 'main-sessions.json');
-  const id = '0f0e0d0c-0b0a-4908-8706-050403020100';
-  // What a build before this fix wrote: path.resolve + lowercase, junction not followed.
-  const legacyKey = path.resolve(viaLink('proj', 'dev')).toLowerCase();
-  fs.writeFileSync(file, JSON.stringify({ version: 1, sessions: { [legacyKey]: { id, at: 1 } } }));
-  assert.strictEqual(readMainSession(file, viaLink('proj', 'dev')), id);
-  // And a new record is found from either spelling.
-  const id2 = '1f0e0d0c-0b0a-4908-8706-050403020100';
-  assert.deepStrictEqual(recordMainSession({ file, cwd: viaReal('proj', 'dev'), sessionId: id2, now: () => 2 }), { ok: true });
-  assert.strictEqual(readMainSession(file, viaLink('proj', 'dev')), id2);
+// The resume id points INTO a transcript folder, and Claude names that folder from the cwd AS SPELLED
+// (host/project-dir.js). So each spelling keeps its own record (Dexter 1 / Miguel 1, PR #257).
+test('main-session: each spelling of one folder resumes its own conversation, and neither overwrites the other', { skip }, () => {
+  const file = path.join(tmp, 'main-sessions-two.json');
+  const projectsDir = path.join(tmp, 'claude-projects');
+  const A = 'aaaaaaaa-0b0a-4908-8706-050403020100';   // the real spelling's conversation
+  const B = 'bbbbbbbb-0b0a-4908-8706-050403020100';   // the junction spelling's conversation
+  const realCwd = viaReal('proj', 'dev');
+  const linkCwd = viaLink('proj', 'dev');
+  for (const [cwd, id] of [[realCwd, A], [linkCwd, B]]) {
+    const dir = path.join(projectsDir, projectDirName(cwd));
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, `${id}.jsonl`), '{"type":"user","message":"hi"}\n');
+  }
+  // What a build before the fix wrote, one key per spelling (path.resolve + lowercase).
+  fs.writeFileSync(file, JSON.stringify({ version: 1, sessions: {
+    [path.resolve(realCwd).toLowerCase()]: { id: A, at: 1 },
+    [path.resolve(linkCwd).toLowerCase()]: { id: B, at: 2 },
+  } }));
+  const store = { projectsDir };
+  assert.strictEqual(resumeIdFor({ file, cwd: linkCwd, store }), B);
+  assert.strictEqual(resumeIdFor({ file, cwd: realCwd, store }), A);
+
+  // A new main session in one spelling leaves the other spelling's record alone.
+  const C = 'cccccccc-0b0a-4908-8706-050403020100';
+  assert.deepStrictEqual(recordMainSession({ file, cwd: realCwd, sessionId: C, now: () => 3 }), { ok: true });
+  assert.strictEqual(readMainSession(file, linkCwd), B);
+  assert.strictEqual(readMainSession(file, realCwd), C);
+  const D = 'dddddddd-0b0a-4908-8706-050403020100';
+  assert.deepStrictEqual(recordMainSession({ file, cwd: linkCwd, sessionId: D, now: () => 4 }), { ok: true });
+  assert.strictEqual(readMainSession(file, realCwd), C);
+  assert.strictEqual(readMainSession(file, linkCwd), D);
 });
