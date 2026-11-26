@@ -58,11 +58,25 @@ function samePath(a, b) {
 // Strictly inside, never equal. The trailing separator on the prefix is what
 // keeps `C:\a\dev2` from counting as inside `C:\a\dev`; a drive root already
 // ends in one, so it isn't doubled.
+//
+// Through junctions: the CHILD is climbed as spelled, and each of its folders
+// is asked whether it IS the parent folder. So a junction ABOVE the parent is
+// followed (`C:\Users\ricar\p\dev\x` is inside `C:\Users\Ricardo Pujol\p\dev`),
+// and a junction BELOW it is not: `feat-a\.venv\x.py`, where `feat-a\.venv` is
+// a junction to `dev\.venv`, stays inside feat-a and is not inside dev (Dexter
+// 2, PR #257; the worktree skill makes exactly that junction).
 function isInside(child, parent) {
-  const c = normPath(child);
+  const c = spellingKey(child);
+  const ps = spellingKey(parent);
+  if (c === null || ps === null || c === ps) return false;
+  if (c.startsWith(ps.endsWith(path.sep) ? ps : ps + path.sep)) return true;   // as spelled: no disk call
   const p = normPath(parent);
-  if (c === null || p === null || c === p) return false;
-  return c.startsWith(p.endsWith(path.sep) ? p : p + path.sep);
+  for (let cur = c; ;) {
+    const up = path.dirname(cur);
+    if (up === cur) return false;
+    if (normPath(up) === p) return true;
+    cur = up;
+  }
 }
 
 function statOrNull(p) {

@@ -35,6 +35,10 @@ test.before(() => {
   fs.mkdirSync(path.join(real, 'proj', 'feat-a'), { recursive: true });
   fs.writeFileSync(path.join(real, 'proj', 'feat-a', '.git'), 'gitdir: x\n');
   fs.symlinkSync(real, link, 'junction');
+  // The worktree skill's layout: a lane's .venv is a junction into dev's.
+  fs.mkdirSync(path.join(real, 'proj', 'dev', '.venv', 'Lib'), { recursive: true });
+  fs.writeFileSync(path.join(real, 'proj', 'dev', '.venv', 'Lib', 'x.py'), '');
+  fs.symlinkSync(path.join(real, 'proj', 'dev', '.venv'), path.join(real, 'proj', 'feat-a', '.venv'), 'junction');
 });
 
 const viaLink = (...p) => path.join(link, ...p);
@@ -57,6 +61,26 @@ test('isInside and isSibling see through a junction', { skip }, () => {
   assert.ok(layout.isInside(viaLink('proj', 'dev', 'src'), viaReal('proj', 'dev')));
   assert.ok(!layout.isInside(viaLink('proj', 'dev'), viaReal('proj', 'dev')));   // equal is never inside
   assert.ok(isSibling(viaLink('proj'), gitSpelling(viaReal('proj', 'feat-a'))));
+});
+
+// A junction BELOW a worktree root is not followed out of it (Dexter 2, PR #257).
+test('isInside: a file under a lane\'s .venv junction stays in the lane, and is not inside dev', { skip }, () => {
+  const file = viaReal('proj', 'feat-a', '.venv', 'Lib', 'x.py');
+  assert.ok(layout.isInside(file, viaReal('proj', 'feat-a')));
+  assert.ok(!layout.isInside(file, viaReal('proj', 'dev')));
+  // ...also when the lane is spelled through the junction above it.
+  assert.ok(layout.isInside(viaLink('proj', 'feat-a', '.venv', 'Lib', 'x.py'), viaReal('proj', 'feat-a')));
+  assert.ok(!layout.isInside(viaLink('proj', 'feat-a', '.venv', 'Lib', 'x.py'), viaReal('proj', 'dev')));
+});
+
+test('occupancy: an Edit in a lane\'s own .venv is not a touch on dev', { skip }, () => {
+  const { touchOf } = require('../host/agent-occupancy');
+  const roots = [gitSpelling(viaReal('proj', 'dev')), gitSpelling(viaReal('proj', 'feat-a'))].map(p => path.resolve(p));
+  const own = path.resolve(viaReal('proj', 'feat-a'));
+  assert.strictEqual(touchOf('Edit', { file_path: viaReal('proj', 'feat-a', '.venv', 'Lib', 'x.py') }, roots, own), null);
+  assert.strictEqual(touchOf('Edit', { file_path: viaLink('proj', 'feat-a', '.venv', 'Lib', 'x.py') }, roots, own), null);
+  // The real dev file, spelled through the junction above it, is still a touch on dev.
+  assert.strictEqual(touchOf('Edit', { file_path: viaLink('proj', 'dev', '.venv', 'Lib', 'x.py') }, roots, own), roots[0]);
 });
 
 test('tabWorktrees: a container given through a junction finds dev and its siblings (the "No worktrees yet." bug)', { skip }, () => {
