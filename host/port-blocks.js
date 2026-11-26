@@ -122,6 +122,12 @@ function writeBlocks(file, blocks) {
 // network path is never asked about -- offline and gone look the same, and
 // asking can take ~20 s -- and neither is a path on a drive that is missing
 // (an unplugged disk comes back with its worktrees).
+// The saved keys, other than `key`, that name the same folder (another spelling of it), holding a valid block, in file order.
+// normPath per key is cached by host/real-path.js; the file holds tens of keys.
+function aliasesOf(blocks, key) {
+  return Object.keys(blocks).filter(k => k !== key && validBase(blocks[k]) && normPath(k) === key);
+}
+
 function isGone(key, exists) {
   if (!/^[a-z]:\\/i.test(key)) return false;
   if (!exists(key.slice(0, 3))) return false;
@@ -164,6 +170,16 @@ function allocate(worktree, opts = {}) {
 
       for (const k of gone) delete blocks[k];
 
+      // Before fix/junction-paths a block was keyed by the spelling the host
+      // used, so one folder can be saved under another spelling (the junction
+      // one), whatever spelling THIS caller uses (Dexter 3 / Miguel 2, PR #257).
+      // It keeps that block, re-keyed. A pure duplicate is dropped; an alias
+      // holding a DIFFERENT block stays held and is never freed here, because a
+      // dev server may still run on it (Dexter 5).
+      const aliases = aliasesOf(blocks, key);
+      if (blocks[key] === undefined && aliases.length > 0) blocks[key] = blocks[aliases[0]];
+      for (const k of aliases) if (blocks[k] === blocks[key]) delete blocks[k];
+
       let base = blocks[key];
       if (base === undefined || overlaps(base, excluded)) {
         delete blocks[key];
@@ -193,7 +209,10 @@ function lookup(worktree, opts = {}) {
   if (!key) return null;
   try {
     const blocks = readBlocks(opts.file || defaultPortsFile());
-    return blocks && validBase(blocks[key]) ? blocks[key] : null;
+    if (!blocks) return null;
+    if (validBase(blocks[key])) return blocks[key];
+    const aliases = aliasesOf(blocks, key);           // saved under another spelling; see allocate
+    return aliases.length > 0 ? blocks[aliases[0]] : null;
   } catch {
     return null;
   }

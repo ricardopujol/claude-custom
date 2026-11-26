@@ -5,7 +5,8 @@
  *
  * Paths reach this module from three sources that spell the same folder
  * differently -- git prints `C:/a/b`, Node gives `C:\a\b`, users type either
- * case, with or without a trailing separator. Every comparison in the worktree
+ * case, with or without a trailing separator, and through a junction or not
+ * (git follows junctions; `C:\Users\ricar` is one). Every comparison in the worktree
  * model goes through normPath so a folder is never two tabs, or zero, because
  * of how it was spelled.
  *
@@ -21,13 +22,32 @@
 
 const fs = require('fs');
 const path = require('path');
+const { realPathLoose } = require('./real-path');
 
-function normPath(p) {
+function keyOf(p, followLinks) {
   if (typeof p !== 'string' || !p) return null;
   let r = path.resolve(p);
+  // Junctions and symlinks followed (host/real-path.js): git prints the real
+  // path, a user may type the junction's, and both name one folder.
+  if (followLinks) r = realPathLoose(r);
   // Strip trailing separators, but not a drive root's own: `C:\` stays `C:\`.
   if (r.length > 3) r = r.replace(/[\\/]+$/, '');
   return process.platform === 'win32' ? r.toLowerCase() : r;
+}
+
+// The comparison key. For comparing and for map keys only: it is the REAL
+// folder, so never show it, start a process in it, or derive a transcript
+// folder name from it -- use the path as given for those.
+function normPath(p) {
+  return keyOf(p, true);
+}
+
+// The key of the path AS SPELLED (junctions NOT followed): what every key was
+// before fix/junction-paths. For state coupled to the spelling, such as a
+// pointer into a Claude transcript folder (host/main-session.js), and for
+// reading state an older build saved. Never for "is this the same folder".
+function spellingKey(p) {
+  return keyOf(p, false);
 }
 
 function samePath(a, b) {
@@ -38,11 +58,25 @@ function samePath(a, b) {
 // Strictly inside, never equal. The trailing separator on the prefix is what
 // keeps `C:\a\dev2` from counting as inside `C:\a\dev`; a drive root already
 // ends in one, so it isn't doubled.
+//
+// Through junctions: the CHILD is climbed as spelled, and each of its folders
+// is asked whether it IS the parent folder. So a junction ABOVE the parent is
+// followed (`C:\Users\ricar\p\dev\x` is inside `C:\Users\Ricardo Pujol\p\dev`),
+// and a junction BELOW it is not: `feat-a\.venv\x.py`, where `feat-a\.venv` is
+// a junction to `dev\.venv`, stays inside feat-a and is not inside dev (Dexter
+// 2, PR #257; the worktree skill makes exactly that junction).
 function isInside(child, parent) {
-  const c = normPath(child);
+  const c = spellingKey(child);
+  const ps = spellingKey(parent);
+  if (c === null || ps === null || c === ps) return false;
+  if (c.startsWith(ps.endsWith(path.sep) ? ps : ps + path.sep)) return true;   // as spelled: no disk call
   const p = normPath(parent);
-  if (c === null || p === null || c === p) return false;
-  return c.startsWith(p.endsWith(path.sep) ? p : p + path.sep);
+  for (let cur = c; ;) {
+    const up = path.dirname(cur);
+    if (up === cur) return false;
+    if (normPath(up) === p) return true;
+    cur = up;
+  }
 }
 
 function statOrNull(p) {
@@ -110,4 +144,4 @@ function stateRoot(project) {
   return project ? project.dev : null;
 }
 
-module.exports = { normPath, samePath, isInside, layoutOf, projectOf, stateRoot };
+module.exports = { normPath, spellingKey,samePath, isInside, layoutOf, projectOf, stateRoot };
