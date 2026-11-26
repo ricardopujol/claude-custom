@@ -83,6 +83,35 @@ test('occupancy: an Edit in a lane\'s own .venv is not a touch on dev', { skip }
   assert.strictEqual(touchOf('Edit', { file_path: viaLink('proj', 'dev', '.venv', 'Lib', 'x.py') }, roots, own), roots[0]);
 });
 
+// `C:\Users\ricar` dropped while home is `C:\Users\Ricardo Pujol` (Dexter 7, PR #257).
+test('drop: the junction spelling of home is refused like home, both ways round', { skip }, () => {
+  const { planDrop } = require('../host/drop');
+  const home = viaReal('home');
+  fs.mkdirSync(path.join(home, 'docs'), { recursive: true });
+  const homeLink = path.join(tmp, 'home-link');
+  fs.symlinkSync(home, homeLink, 'junction');
+  const cwd = viaReal('proj', 'dev');
+
+  const a = planDrop({ entries: [{ path: homeLink, isDirectory: true }], cwd, home });
+  assert.deepStrictEqual(a.dirsToAdd, []);
+  assert.match(a.refused[0].why, /home directory is never granted/);
+
+  // Home given in the junction spelling, the real folder dropped.
+  const b = planDrop({ entries: [{ path: home, isDirectory: true }], cwd, home: homeLink });
+  assert.deepStrictEqual(b.dirsToAdd, []);
+  assert.match(b.refused[0].why, /home directory is never granted/);
+
+  // A folder that CONTAINS home through a junction (the junction's parent of the real one) is refused too.
+  const c = planDrop({ entries: [{ path: link, isDirectory: true }], cwd, home });
+  assert.deepStrictEqual(c.dirsToAdd, []);
+  assert.match(c.refused[0].why, /contains the home directory/);
+
+  // A folder inside home is not caught by the home rule. (The fixture lives under %TEMP%, inside AppData, so the
+  // segment rule still refuses it here; what matters is which rule spoke.)
+  const d = planDrop({ entries: [{ path: path.join(homeLink, 'docs'), isDirectory: true }], cwd, home });
+  for (const r of d.refused) assert.doesNotMatch(r.why, /home directory/);
+});
+
 test('tabWorktrees: a container given through a junction finds dev and its siblings (the "No worktrees yet." bug)', { skip }, () => {
   const porcelain = [
     `worktree ${gitSpelling(viaReal('proj', 'dev'))}`, 'HEAD 1111111111111111111111111111111111111111', 'branch refs/heads/develop', '',
