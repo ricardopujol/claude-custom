@@ -9,7 +9,7 @@
  * Equivalent mutant, not killed and not claimed:
  *   - runShutdown `steps = []` -> `steps = ["Stryker was here"]`: the one "step" is a string, calling it throws, and every step's
  *     throw is swallowed by design, so nothing observable changes.
- * Measured (one Stryker run on this file, 2026-11-28, with bounded-shutdown.test.js and this file): 69.2% (the audit's g8) -> 98.08%,
+ * Measured (one Stryker run on this file, 2026-11-27, with bounded-shutdown.test.js and this file): 69.2% (the audit's g8) -> 98.08%,
  * the one survivor being the mutant above.
  */
 const test = require('node:test');

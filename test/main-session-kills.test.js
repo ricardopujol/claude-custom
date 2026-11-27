@@ -5,18 +5,22 @@
  * Each test names the guard it pins. Everything runs on an in-memory store (readText / writeText / mkdir injected), so no
  * mutant can hide behind a real file the suite forgot to clean.
  *
- * Equivalent mutants, not killed and not claimed (JSON.parse can only make null, booleans, numbers, strings, arrays and plain
- * objects, and every read sits inside readSessions' try or behind isSessionId):
- *   - readSessions `Array.isArray(raw)` -> false: a parsed array has no `version`, so `raw.version !== 1` still rejects it.
- *   - readSessions `!raw` -> false: `typeof null` is 'object', so null reaches `raw.version`, which throws inside the try -> {}.
- *   - readSessions `typeof raw !== 'object'` -> false: a parsed number/string/boolean has no `version` -> {}.
- *   - readMainSession `typeof e === 'object'` -> true: a parsed non-object entry has no `.id`, so isSessionId rejects it.
- *   - readMainSession `hasOwnProperty(...) ? sessions[key] : null` -> `true ? ...`: the key is an absolute path, never a name on
- *     Object.prototype, so a missing key gives undefined, which the next line already turns into null.
- *   - both `readFileSync(f, 'utf8')` -> `readFileSync(f, '')`: no encoding returns a Buffer, and JSON.parse reads a Buffer as UTF-8.
- *   - recordMainSession's filter `typeof k === 'string'` -> true: Object.entries only ever yields string keys.
- * Measured (one Stryker run on this file, 2026-11-28): 64.66% -> 91.38%; the 10 survivors left are exactly the ones above.
- *   - resumeIdFor `if (id === null) return null` -> `if (false)`: hasTranscript's first line rejects a null id.
+ * Equivalent mutants, not killed and not claimed: the 10 survivors of the measured run, one per line (JSON.parse can only make
+ * null, booleans, numbers, strings, arrays and plain objects, and every read sits inside readSessions' try or behind isSessionId).
+ * The five readSessions ones share one reason: whatever the first three checks let through, `raw.version !== 1` rejects (a
+ * parsed array or primitive has no `version`), or `null.version` throws inside the try, which returns {}.
+ *   1. readSessions `!raw || typeof raw !== 'object' || Array.isArray(raw)` -> false.
+ *   2. readSessions `!raw || typeof raw !== 'object'` -> false.
+ *   3. readSessions `(!raw || typeof raw !== 'object') && Array.isArray(raw)`.
+ *   4. readSessions `!raw && typeof raw !== 'object'`.
+ *   5. readSessions `typeof raw !== 'object'` -> false.
+ *   6. readMainSession's default `readFileSync(f, 'utf8')` -> `readFileSync(f, '')`: no encoding returns a Buffer, and JSON.parse
+ *      reads a Buffer as UTF-8.
+ *   7. recordMainSession's default readText, the same mutant: the same reason.
+ *   8. readMainSession `typeof e === 'object'` -> true: a parsed non-object entry has no `.id`, so isSessionId rejects it.
+ *   9. recordMainSession's filter `typeof k === 'string'` -> true: Object.entries only ever yields string keys.
+ *  10. resumeIdFor `if (id === null) return null` -> `if (false)`: hasTranscript's first line rejects a null id.
+ * Measured (one Stryker run on this file, 2026-11-27): 64.66% -> 91.38%; the 10 survivors left are exactly the ones above.
  */
 const test = require('node:test');
 const assert = require('node:assert');
