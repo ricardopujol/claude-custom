@@ -151,3 +151,32 @@ test('the decision table and the proof are the same functions window-owner expor
   assert.strictEqual(wo.decide, core.decide);
   assert.strictEqual(wo.proveOwner, core.proveOwner);
 });
+
+// ---- PR #258 round 1, Dexter 5: the takeover's compare-then-unlink ------------------------------------------------------------------
+
+test('D5: a stale file replaced between the compare and the remove survives: the takeover answers exists, never removes the newer owner', () => {
+  const { publish } = load();
+  const f = plain();
+  const stale = JSON.stringify({ pid: 10, start: START_B });
+  const newer = JSON.stringify({ pid: 30, start: START_B });
+  fs.writeFileSync(f.file, stale);
+  const r = publish({ file: f.file, prepare: f.prepare }, { pid: 20, start: START_A }, {
+    staleText: stale,
+    hooks: { beforeStaleRemove: () => fs.writeFileSync(f.file, newer) },     // another launch took the file over in the gap
+  });
+  assert.strictEqual(r, 'exists');
+  assert.strictEqual(read(f.file), newer, 'the newer owner\'s file is still there');
+});
+
+test('D5: two takeovers of the same judged bytes: exactly one publishes', () => {
+  const { takeOverFile } = load();
+  const f = plain();
+  const stale = JSON.stringify({ pid: 10, start: START_B });
+  fs.writeFileSync(f.file, stale);
+  let second = null;
+  const first = takeOverFile({ ...f, self: { pid: 20, start: START_A }, judgedText: stale,
+    hooks: { beforeStaleRemove: () => { if (second === null) second = takeOverFile({ ...f, self: { pid: 21, start: START_A }, judgedText: stale }); } } });
+  assert.strictEqual([first, second].filter(Boolean).length, 1, `first=${first} second=${second}`);
+  const owner = JSON.parse(read(f.file)).pid;
+  assert.strictEqual(owner, first ? 20 : 21);
+});

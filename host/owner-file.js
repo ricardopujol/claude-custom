@@ -14,8 +14,9 @@
  *                A filesystem without hard links falls back to an atomic rename (last writer wins: the old behaviour in the rare tie).
  *   the release  removes the file only while it names this process (pid AND start), guarded by the bytes read: a file a launch took
  *                over between the read and the remove is put back.
- * KNOWN RESIDUAL (as before): the compare-then-unlink of a takeover is two calls, so two launches that judge the SAME dead owner in the
- * same millisecond can both proceed (two owners: the old behaviour).
+ * A takeover removes the judged file by renaming it aside and comparing the MOVED bytes (PR #258 Dexter 5), so two launches refused by the
+ * same event cannot both publish. Residual: between the rename aside and the put-back a third launch may publish; the put-back then fails
+ * and that third launch owns the file.
  *
  * Every function takes `{ file, usable, prepare }`: `usable()` false means the place must not be written (a `.claude-custom` that is a
  * link elsewhere), `prepare()` makes the folder (and whatever it needs) before the first write.
@@ -74,12 +75,27 @@ function readRaw(file) {
  * Put `doc` at `file` unless somebody holds it: 'ok' | 'exists'. `staleText` is the bytes of a file judged dead; it is removed first,
  * but only while it still holds exactly those bytes.
  */
-function publish({ file, prepare = nothing }, doc, { staleText = null, link = fs.linkSync, now = Date.now } = {}) {
+function publish({ file, prepare = nothing }, doc, { staleText = null, link = fs.linkSync, now = Date.now, hooks = {} } = {}) {
   prepare();
   const temp = `${file}.${process.pid}.${now()}.tmp`;
   fs.writeFileSync(temp, JSON.stringify(doc), { encoding: 'utf8', mode: 0o600 });
   try {
-    if (staleText !== null && readRaw(file) === staleText) fs.rmSync(file, { force: true });
+    if (staleText !== null && readRaw(file) === staleText) {
+      if (typeof hooks.beforeStaleRemove === 'function') hooks.beforeStaleRemove();
+      // PR #258 Dexter 5: the stale file is renamed aside and its MOVED bytes compared, as releaseFile does: a file another launch
+      // published since the read is put back and this publish answers 'exists' (never removed by a compare-then-unlink).
+      const aside = `${file}.${process.pid}.${now()}.stale`;
+      let moved = true;
+      try { fs.renameSync(file, aside); } catch { moved = false; }          // already gone: nothing to remove
+      if (moved) {
+        if (readRaw(aside) !== staleText) {
+          try { fs.linkSync(aside, file); } catch { /* a third file is already there: keep that one */ }
+          try { fs.rmSync(aside, { force: true }); } catch { /* nothing left */ }
+          return 'exists';
+        }
+        try { fs.rmSync(aside, { force: true }); } catch { /* nothing left */ }
+      }
+    }
     try {
       link(temp, file);
       return 'ok';
@@ -115,7 +131,7 @@ async function claimFile({ file, usable = always, prepare = nothing, unusableRea
     if (typeof hooks.beforePublish === 'function') hooks.beforePublish();
     let r;
     try {
-      r = publish({ file, prepare }, { pid: self.pid, start: self.start, at: now() }, { staleText: text, link, now });
+      r = publish({ file, prepare }, { pid: self.pid, start: self.start, at: now() }, { staleText: text, link, now, hooks });
     } catch {
       return { ...d, file, published: false };           // cannot write the file: still no reason to refuse
     }
@@ -129,12 +145,12 @@ async function claimFile({ file, usable = always, prepare = nothing, unusableRea
  * anyway, and the file must then name IT. Only the judged bytes are replaced; a file that names someone else now is left alone and this
  * says false (the caller claims again). true when the file now names this process.
  */
-function takeOverFile({ file, usable = always, prepare = nothing, self, judgedText = null, now = Date.now, link } = {}) {
+function takeOverFile({ file, usable = always, prepare = nothing, self, judgedText = null, now = Date.now, link, hooks = {} } = {}) {
   if (!usable()) return false;
   if (typeof self.start !== 'string' || !self.start) return false;
   try {
     return publish({ file, prepare }, { pid: self.pid, start: self.start, at: now() },
-      { staleText: typeof judgedText === 'string' ? judgedText : null, link, now }) === 'ok';
+      { staleText: typeof judgedText === 'string' ? judgedText : null, link, now, hooks }) === 'ok';
   } catch { return false; }
 }
 
