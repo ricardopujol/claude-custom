@@ -11,7 +11,10 @@
  *   - validMs `typeof v === 'number'` -> true: Number.isFinite is already false for every non-number.
  *   - setOutcome `if (s !== cur) return` -> false: every setOutcome runs on the current session (release() of the old one runs
  *     before `cur` moves, and an old session's settle finds it 'released', so it sets nothing).
- *   - running() `!!s` / `!!s.child` -> true: send() is only reached for a session whose spawn returned a child.
+ *   - running() `!!s` -> true: send() is only ever handed a session object.
+ *   (running() `!!s.child` -> true was listed here; it is NOT equivalent when onOutcome re-enters the guard: a disarm() from
+ *   onOutcome('arming') runs before spawnFn, with no child yet. Killed by the 'an onOutcome that disarms on "arming"' test, added
+ *   after the measured run and not counted in the number below; PR #259 Miguel Y4.)
  *   - send()'s `catch { return false }` -> `{}`: undefined is as falsy as false for its one caller that reads it.
  *   - sendKill `s.pendingKill = false` -> true, and release's: after either, the session is 'ended'/'released', and pendingKill is
  *     read only while 'starting' or 'armed'.
@@ -38,7 +41,7 @@
  *   - the timer's `timer && typeof timer.unref === 'function'` -> true (and `timer ||`): Node's timers are objects with unref.
  *   - settled()'s `waiters.delete(done)` removed, `if (t)` -> true/false, `clearTimeout(t)` removed: a second done() resolves an
  *     already resolved promise; the only cost is a live timer for at most `ms`, which no outcome shows.
- * Measured (one Stryker run on this file, 2026-11-28, with job-guard.test.js, bounded-shutdown.test.js and this file): 78.60% (the
+ * Measured (one Stryker run on this file, 2026-11-27, with job-guard.test.js, bounded-shutdown.test.js and this file): 78.60% (the
  * same command without this file) -> 94.72% (654 killed, 10 timeouts: each a mutant that leaves an attach or settled promise
  * unresolved; 37 survived). 36 survivors are the equivalents above; the 37th (the KILL-FAILED log line's text) is killed by the
  * 'KILL-FAILED is logged with its reason' test, added after that run and not counted in the number.
@@ -268,12 +271,12 @@ test('settled: an unanswered SENT stop is waited for until the answer, which wak
   assert.ok(Date.now() - t0 < 2000, `${Date.now() - t0} ms`);
 });
 
-// Q (BACKLOG #228, found by this lane, NOT fixed here: product code): a stop held before the arm, and then sent AT the arm while the
+// BACKLOG #230 (found by the #228 kill-test lane, NOT fixed here: product code): a stop held before the arm, and then sent AT the arm while the
 // host waits in leave(), is not waited for. setOutcome(s, 'armed') wakes the waiters ('armed' is not a waiting outcome), and sendKill
 // runs in the same tick, so leave's .then sees 'sent' and calls it 'kill-unanswered' about 2 ms after KILL went out. The host then
 // exits, and the helper dies with it (it is in libuv's kill-on-close job: PR #235 K4), so the KILL can be lost. Measured in memory
-// 2026-11-28: leave -> 'kill-unanswered' after 2 ms, KILLED arrived 200 ms later. Un-skip once the hub decides the fix.
-test('leave: a held stop sent at the arm is waited for until its answer', { skip: 'BACKLOG #228 open question: held stop at the arm is not waited for' }, async () => {
+// 2026-11-27: leave -> 'kill-unanswered' after 2 ms, KILLED arrived 200 ms later. Un-skip in the PR that fixes BACKLOG #230.
+test('leave: a held stop sent at the arm is waited for until its answer', { skip: 'BACKLOG #230: a held stop sent at the arm is not waited for by leave()' }, async () => {
   const h = fakeHelper();
   const { g } = guardWith(h, { timeoutMs: 5000 });
   let release;
@@ -304,7 +307,7 @@ test('settled: with nothing attached it answers null at once', async () => {
   assert.strictEqual(await createJobGuard({ platform: 'win32' }).settled(5000), null);
 });
 
-test('settled: two waiters on one stop both hear the answer, and a waiter that timed out is gone', async () => {
+test('settled: a waiter that timed out answers the outcome then; two waiters on one stop both hear the answer', async () => {
   const { h, g } = await armed();
   g.kill();
   const early = await g.settled(10);
@@ -444,6 +447,23 @@ test('attach: a line that is not an answer is ignored, never thrown', async () =
   await tick();
   h.say('READY 5 1');
   assert.strictEqual((await p).ok, true);
+});
+
+// PR #259 Miguel Y4: setOutcome(s, 'arming') runs onOutcome BEFORE spawnFn, so a disarm() from it meets a session with no child yet.
+test('an onOutcome that disarms on "arming" (before the helper exists) never breaks attach', async () => {
+  const h = fakeHelper();
+  let g;
+  let disarmError = 'not called';
+  // The guard swallows a throw from onOutcome, so the disarm's own answer is caught here: a disarm must not throw to its caller.
+  g = createJobGuard({ spawnFn: () => h, platform: 'win32', powershell: 'PS.exe', timeoutMs: 50, log: () => {},
+    onOutcome: (o) => { if (o === 'arming') { try { g.disarm(); disarmError = null; } catch (e) { disarmError = e.message; } } } });
+  let p;
+  assert.doesNotThrow(() => { p = g.attach({ pid: 777, startOf: async () => '1' }); });
+  assert.strictEqual(disarmError, null);
+  assert.strictEqual(g.state(), 'released');
+  assert.strictEqual(g.outcome(), 'released');
+  await p;
+  assert.deepStrictEqual(h.stdin.written, [], 'nothing was sent to a helper the session had already let go');
 });
 
 test('attach: a spawn error event is "spawn-failed"', async () => {
