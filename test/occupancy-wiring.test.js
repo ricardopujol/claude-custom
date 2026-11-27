@@ -71,7 +71,8 @@ test('main runs the transcript scanner over the project\'s worktrees, into the S
   assert.match(block, /dir: occupancyDir\(STATE_ROOT\)/);
   assert.match(block, /ownPid: process\.pid/);
   assert.match(block, /ownStartedAt: ownStartTime/);
-  assert.match(MAIN, /const ownStartTime = createSelfStartTime\(\);/);
+  // fix/owner-proof: still ONE cached self-start for the whole process; it gets the one retry on the longer budget
+  assert.match(MAIN, /const ownStartTime = createSelfStartTime\(\{ retryExec: procRetryExec \}\);/);
 });
 
 test('the scanner leaves an agent to the producer the readers already show (the live claims of the service)', () => {
