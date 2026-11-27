@@ -67,12 +67,14 @@ function createOpenWindowsWriter({ file, owner, owns, now = Date.now, write = wr
   let restoring = true;            // until begin/endRestore say otherwise, sync waits
   let windows = [];
   let lastText = null;
+  let lastClean = false;           // the last write said clean: the next sync writes even an unchanged list (a cancelled quit lives on)
 
   function put(doc) {
     if (owns() !== true) return false;
     const text = JSON.stringify(doc);
     write(file, text);
     lastText = text;
+    lastClean = doc.clean === true;
     onWrite(doc);
     return true;
   }
@@ -87,7 +89,7 @@ function createOpenWindowsWriter({ file, owner, owns, now = Date.now, write = wr
   function sync(list) {
     if (restoring) return;
     const next = cleanWindows(list);
-    if (JSON.stringify(next) === JSON.stringify(windows) && lastText !== null) return;
+    if (JSON.stringify(next) === JSON.stringify(windows) && lastText !== null && !lastClean) return;
     windows = next;
     try { put(docOf(false)); } catch { /* the next change writes it */ }
   }

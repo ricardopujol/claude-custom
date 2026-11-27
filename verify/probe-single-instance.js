@@ -317,24 +317,26 @@ async function case8() {
   const ui = stateDir('crash');
   const A = makeProject('crash-a');
   const B = makeProject('crash-b');
-  const app = await launchApp(A.container, { uiState: ui });
+  const app = await launchApp(A.container, { uiState: ui, tray: true });
   const st = await windowUp(app);
   check('8: launch A came up', !!st, st ? '' : app.out.slice(-600));
   if (!st) return [app];
-  const b = await launchApp(B.container, { uiState: ui });
+  const b = await launchApp(B.container, { uiState: ui, tray: true });
   await endsHandedOver(b);
   const stB = await windowUp(app, B.container);
   await command(app, { cmd: 'window-hide', window: B.container });
   const recBefore = await waitFor(async () => { const r = await command(app, { cmd: 'openWindows' }); const w = r.record && r.record.windows; return w && w.length === 2 && w.some((x) => x.hidden) ? r.record : null; }, 20000);
   check('8: the record lists A and B, B hidden', !!recBefore, JSON.stringify(recBefore));
-  const hostPids = new Map([...((st && st.hosts) || []), ...((stB && stB.hosts) || [])].filter((h) => Number.isInteger(h.pid)).map((h) => [`${h.key}`, h.pid]));
+  const stA2 = await stateOf(app, A.container);
+  const stB2 = await stateOf(app, B.container);
+  const hostPids = new Map([...((stA2 && stA2.hosts) || []), ...((stB2 && stB2.hosts) || [])].filter((h) => Number.isInteger(h.pid)).map((h) => [`${h.key}`, h.pid]));
   // The crash: this probe's own Electron main, through the handle the probe holds (that one process, not its tree: the hosts are
   // detached and must outlive it)
   try { app.child.kill('SIGKILL'); } catch { /* reported below */ }
   const died = await waitFor(() => (app.exited ? true : null), 60000, 500);
   check('8: the Electron main was killed by its pid', died === true);
   check('8: ...and the hosts\' pids are still alive', [...hostPids.values()].every(isRunning), JSON.stringify([...hostPids.values()]));
-  const again = await launchApp(A.container, { uiState: ui });
+  const again = await launchApp(A.container, { uiState: ui, tray: true });
   const back = await waitFor(async () => { const w = await windowsOf(again); return w && w.windows.length === 2 ? w : null; }, 200000, 1000);
   check('8: a relaunch on A brings A and B back in one process', !!back && back.pid === again.child.pid, again.out.slice(-400));
   const sA = await windowUp(again, A.container);
@@ -345,7 +347,7 @@ async function case8() {
   const after = new Map([...((sA && sA.hosts) || []), ...((sB && sB.hosts) || [])].filter((h) => Number.isInteger(h.pid)).map((h) => [`${h.key}`, h.pid]));
   check('8: every tab is on the same host pid', hostPids.size > 0 && [...hostPids].every(([key, pid]) => after.get(key) === pid), JSON.stringify({ before: [...hostPids], after: [...after] }));
   await quitAndWait(again);
-  const only = await launchApp(A.container, { uiState: ui });
+  const only = await launchApp(A.container, { uiState: ui, tray: true });
   await windowUp(only);
   await sleep(5000);
   const w = await windowsOf(only);
@@ -364,11 +366,20 @@ async function case9() {
   check('9: the owner came up', !!st, st ? '' : app.out.slice(-600));
   if (!st) return [app];
   const start = (await startTimes([app.child.pid])).get(app.child.pid);
-  const { suspendVerified } = require(path.join(ROOT, 'host', 'process-suspend'));
-  const { createExec } = require(path.join(ROOT, 'host', 'resource-sampler'));
-  const target = [{ pid: app.child.pid, start }];
-  const s = await suspendVerified('suspend', target, { exec: createExec(20000) });
-  check('9: the owner main is suspended (this probe\'s own child, by pid + start)', s.length === 1 && s[0].status === 'done', JSON.stringify(s));
+  // host/process-suspend.js refuses a root with protected processes under it (an Electron main's renderers and hosts), so the probe freezes
+  // ONLY its own Electron main, proven by pid + start, with NtSuspendProcess: the main's event loop stops, which is a hung owner.
+  const freeze = (action) => {
+    const fn = action === 'suspend' ? 'NtSuspendProcess' : 'NtResumeProcess';
+    const ps = `$ErrorActionPreference='Stop'
+$t = Add-Type -MemberDefinition '[DllImport("ntdll.dll")] public static extern uint ${fn}(IntPtr h);' -Name 'P${fn}' -Namespace 'ProbeSingleInstance' -PassThru
+$p = Get-Process -Id ${app.child.pid}
+if ([math]::Abs($p.StartTime.ToFileTimeUtc() - ${start}) -gt 10000000) { 'reused'; exit }
+$r = $t::${fn}($p.Handle)
+"done $r"`;
+    try { return execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], { encoding: 'utf8', windowsHide: true, timeout: 30000 }).trim(); } catch (e) { return `failed ${e.message}`; }
+  };
+  const s = freeze('suspend');
+  check('9: the owner main is suspended (this probe\'s own child, by pid + start)', s === 'done 0', s);
   let b = null;
   try {
     const t0 = Date.now();
@@ -380,8 +391,8 @@ async function case9() {
     const o = readJson(appJson);
     check('9: ...and took app.json over', !!o && o.pid === b.child.pid, JSON.stringify(o));
   } finally {
-    const r = await suspendVerified('resume', target, { exec: createExec(20000) });
-    check('9: the first is resumed', r.length >= 1 && r[0].status === 'done', JSON.stringify(r));
+    const r = freeze('resume');
+    check('9: the first is resumed', r === 'done 0', r);
   }
   const q = await Promise.all([quitAndWait(app), b ? quitAndWait(b) : Promise.resolve(true)]);
   check('9: both quit', q.every((x) => x === true));

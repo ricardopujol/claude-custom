@@ -162,3 +162,13 @@ test('readRecord: the parsed file, or null (no file, not JSON)', () => {
   fs.writeFileSync(path.join(dir, 'ok.json'), JSON.stringify(rec()));
   assert.deepStrictEqual(readRecord(path.join(dir, 'ok.json')), rec());
 });
+
+test('found by verify/probe-single-instance.js case 7: a sync after markClean() writes the windows again (a quit that was cancelled), even when the list did not change', () => {
+  const { w, read } = writer();
+  w.begin({ restoring: false, keep: [] });
+  w.endRestore([win(A)]);
+  w.markClean();
+  assert.strictEqual(read().clean, true);
+  w.sync([win(A)]);
+  assert.strictEqual(read().clean, false, 'the process lives on: a crash from here must restore');
+});

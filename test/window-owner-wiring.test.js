@@ -55,7 +55,7 @@ test('the window is ready for launches once its tabs are open, and not before (m
 });
 
 test('the owner stops being one at before-quit, before a dialog that ends the process, and when startup throws', () => {
-  assert.match(src, /if \(quitGate\.onBeforeQuit\(e\)\) return;\s*quitting = true; forEachProject\(\(p\) => p\.claim\.stop\(\)\);/);
+  assert.match(src, /if \(quitGate\.onBeforeQuit\(e\)\) return;[\s\S]{0,400}?quitting = true; forEachProject\(\(p\) => p\.claim\.stop\(\)\);/);
   assert.match(ready, /if \(launchWindow\.attachOnlyRefusal\) \{\s*\n\s*launchWindow\.claim\.stop\(\);/);
   assert.match(ready, /\}\)\.catch\(\(err\) => \{[\s\S]{0,260}forEachProject\(\(p\) => p\.claim\.stop\(\)\);[\s\S]{0,260}app\.exit\(1\)/);
 });

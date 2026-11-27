@@ -71,7 +71,7 @@ test('cache-dirs exports removeOwn and main calls it only on the handed-over exi
 test('step 11: ONE before-quit handler, the gate first; only when it passes, quitting = true and the app claim and every window claim stop', () => {
   assert.strictEqual((MAIN.match(/app\.on\('before-quit'/g) || []).length, 1);
   const body = (MAIN.match(/app\.on\('before-quit', \(e\) => \{[\s\S]*?\n\}\);/) || [''])[0];
-  assert.match(body, /if \(quitGate\.onBeforeQuit\(e\)\) return;\s*quitting = true; forEachProject\(\(p\) => p\.claim\.stop\(\)\); appClaim\.stop\(\);/);
+  assert.match(body, /if \(quitGate\.onBeforeQuit\(e\)\) return;\s*markRecordClean\(\);\s*quitting = true; forEachProject\(\(p\) => p\.claim\.stop\(\)\); appClaim\.stop\(\);/);
 });
 
 test('step 11: quitCancelled puts quitting back, resets the gate, resumes the app claim and every open window\'s claim; the tray\'s quit is app.quit alone', () => {
@@ -140,4 +140,9 @@ test('the new single-instance modules require no Electron (they load under plain
     const src = fs.readFileSync(path.join(root, f), 'utf8');
     assert.doesNotMatch(src, /require\(\s*['"]electron['"]\s*\)/, f);
   }
+});
+
+test('found by verify/probe-single-instance.js case 7: the record is written clean in before-quit, BEFORE the app claim stops (stop releases app.json, and the writer writes only while this process owns it)', () => {
+  const body = (MAIN.match(/app\.on\('before-quit', \(e\) => \{[\s\S]*?\n\}\);/) || [''])[0];
+  assert.match(body, /if \(quitGate\.onBeforeQuit\(e\)\) return;\s*markRecordClean\(\);\s*quitting = true; forEachProject\(\(p\) => p\.claim\.stop\(\)\); appClaim\.stop\(\);/);
 });

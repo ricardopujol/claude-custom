@@ -1579,6 +1579,9 @@ app.on('will-quit', (e) => {
 // and a launch from here on opens its own process (close, then reopen).
 app.on('before-quit', (e) => {
   if (quitGate.onBeforeQuit(e)) return;
+  // clean FIRST: stopping the app claim releases app.json, and the record is written only while this process owns it
+  // (verify/probe-single-instance.js case 7 found it the other way round: the will-quit write was refused)
+  markRecordClean();
   quitting = true; forEachProject((p) => p.claim.stop()); appClaim.stop();
 });
 app.on('will-quit', () => { if (trayController) trayController.destroy(); if (resourceSampler) resourceSampler.stop(); forEachProject((p) => p.closeOccupancy()); });
