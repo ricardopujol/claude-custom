@@ -10,6 +10,9 @@
  * the same listener serves the app pipe `claude-custom-app-<pid>` (appPipeNameFor, another message filter: host/app-claim.js). A sender
  * may ask for an ack (`ack: true`): it is answered `{"ack":true}` at once, so a hung owner (no ack) is told from one that holds the
  * launch while it starts. A sender that does not ask gets exactly one line, as before.
+ * WHO (fix/owner-proof): a `{"type":"who"}` line is answered `{ pid, start }` (this process's identity) at once, before every gate, or
+ * `{ ok: false, error: 'no identity' }` while the start is not known; it opens nothing. Both pipes answer it (the window pipe through
+ * host/window-router.js). A launch compares the answer with the owner file, so a live owner is proven without powershell.exe.
  * A window that is READY answers ok the moment the message is understood and focuses and selects right after. A window still starting
  * HOLDS the launch (no idle drop) until it is ready (ok) or stops / passes its start bound (not ok), so ok is never said by a window that
  * may end before it acts (PR #247 round 2 M2). The launch's own wait is longer than the bound (host/window-claim.js).
@@ -220,7 +223,7 @@ function send({ pid, name, type = 'focus', msg = {}, timeoutMs = DEFAULT_SEND_TI
 }
 
 /**
- * Ask the process listening on `name` (or the window pipe of `pid`) who it is (fix/owner-proof). NEVER throws: { pid, start }, or null
+ * Ask the process listening on `name` (the app pipe), or the window pipe of `pid` (answered by its router), who it is (fix/owner-proof). NEVER throws: { pid, start }, or null
  * for no pipe, no answer within timeoutMs, a refusal (an owner of older code, one that does not know its start yet) or anything else.
  */
 function who({ pid, name, timeoutMs = DEFAULT_WHO_TIMEOUT_MS } = {}) {

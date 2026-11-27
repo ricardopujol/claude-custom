@@ -75,6 +75,61 @@ test('who: nobody listening is null at once; a pipe that never answers is null a
   } finally { for (const s of junkSocks) s.destroy(); await new Promise((r) => junk.close(r)); }
 });
 
+// PR #261 Miguel S3: the reply shapes and the request lines the code already handles, pinned.
+test('who: a reply over 4096 characters with no newline, a JSON array, or a line then close with no newline are all null', async () => {
+  const { who, pipeNameFor } = load();
+  const replies = ['x'.repeat(5000), '[1,"S"]\n', `{"pid":5,"start":"S"}`];
+  for (const reply of replies) {
+    const pid = uniquePid();
+    const socks = [];
+    const srv = net.createServer((s) => { socks.push(s); s.on('error', () => {}); s.end(reply); });
+    await new Promise((r) => srv.listen(pipeNameFor(pid), r));
+    try {
+      assert.strictEqual(await who({ pid, timeoutMs: 2000 }), null, reply.slice(0, 30));
+    } finally { for (const s of socks) s.destroy(); await new Promise((r) => srv.close(r)); }
+  }
+});
+
+test('who: the client socket is closed on every path (the server sees close after each answer, including a timeout)', async () => {
+  const { who, pipeNameFor } = load();
+  for (const reply of ['{"pid":5,"start":"S"}\n', null]) {          // null: the server never answers, the client times out
+    const pid = uniquePid();
+    let closed = 0;
+    const socks = [];
+    // resume(): a socket that never reads never sees the client's end (a paused stream emits no 'end')
+    const srv = net.createServer((s) => { socks.push(s); s.on('error', () => {}); s.on('close', () => { closed++; }); s.resume(); if (reply) s.write(reply); });
+    await new Promise((r) => srv.listen(pipeNameFor(pid), r));
+    try {
+      await who({ pid, timeoutMs: 200 });
+      await new Promise((r) => { const end = Date.now() + 2000; const t = () => (closed === 1 || Date.now() > end ? r() : setTimeout(t, 10)); t(); });
+      assert.strictEqual(closed, 1, `reply ${String(reply)}`);
+    } finally { for (const s of socks) s.destroy(); await new Promise((r) => srv.close(r)); }
+  }
+});
+
+test('listen with who: a malformed who line or an over-long one is refused (client null); a second who line on one socket is ignored', async () => {
+  const { listen, appPipeNameFor } = load();
+  const pid = uniquePid();
+  const name = appPipeNameFor(pid);
+  const server = await listen({ pid, name, clean: () => null, who: () => ({ pid, start: START }), onFocus: () => {} });
+  const ask = (text) => new Promise((resolve) => {
+    let buf = '';
+    const s = net.connect(name);
+    s.setEncoding('utf8');
+    s.on('connect', () => s.write(text));
+    s.on('data', (d) => { buf += d; });
+    s.on('error', () => {});
+    s.on('close', () => resolve(buf));
+  });
+  try {
+    assert.match(await ask('{"type":"who"\n'), /"ok":false/, 'malformed: refused like any unknown line');
+    assert.match(await ask(`{"type":"who","x":"${'y'.repeat(5000)}"}\n`), /too long/);
+    const two = await ask('{"type":"who"}\n{"type":"who"}\n');
+    assert.strictEqual(two.trim().split('\n').length, 1, `one answer per socket (${two})`);
+    assert.deepStrictEqual(JSON.parse(two), { pid, start: START });
+  } finally { await server.close(); }
+});
+
 test('who: an invalid pid with no name asks nothing: null', async () => {
   const { who } = load();
   for (const bad of [0, -1, 1.5, '7', null]) assert.strictEqual(await who({ pid: bad }), null);
