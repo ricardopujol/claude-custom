@@ -108,7 +108,7 @@ const REQUIRED_CONFIG = ['EXPLICIT_PORT', 'STRIP_HEIGHT', 'POLL_MS', 'PROBE_PORT
 const REQUIRED_SERVICES = ['uiStore', 'readDim', 'usageCounters', 'forProbe', 'openInBrowser', 'probeConfirms', 'logShellError', 'canvasAsks',
   'nextCanvasAskId', 'previewProbeProxy', 'stopHostByPid', 'occupantAt', 'tokenFileFor', 'ownIdentities', 'ownStartTime', 'waitForHost',
   'HARNESS_DIR', 'INSTALL_DIR', 'listBackground', 'capture', 'stripFileFor', 'isQuitting', 'setQuitting', 'onWindowCreated', 'onClosed', 'getResources', 'getTray', 'seenChanged',
-  'windowRouter', 'onProcessExit'];
+  'windowRouter', 'onProcessExit', 'onFocused'];
 
 function requireAll(kind, bag, names) {
   for (const name of names) {
@@ -141,7 +141,7 @@ function createProjectWindow({ launchCwd, electron, config, services }) {
     uiStore, readDim, usageCounters, forProbe, openInBrowser, probeConfirms, logShellError, canvasProbeResolve, canvasAsks,
     nextCanvasAskId, previewProbeProxy, stopHostByPid, occupantAt, tokenFileFor, ownIdentities, ownStartTime, waitForHost,
     HARNESS_DIR, INSTALL_DIR, listBackground, capture, stripFileFor, isQuitting, setQuitting, onWindowCreated, onClosed, getResources, getTray, seenChanged,
-    windowRouter, onProcessExit,
+    windowRouter, onProcessExit, onFocused,
   } = services;
 
   // --- what this window is ----------------------------------------------------------
@@ -491,6 +491,7 @@ function createProjectWindow({ launchCwd, electron, config, services }) {
     };
     win.on('focus', () => {
       focused = true;
+      onFocused(self);          // main's window used last (the tray's click with no cue, the quit and Stop questions' parent)
       sendFocus();
       win.flashFrame(false);
       setCue(false);            // looked at: the cue has done its job

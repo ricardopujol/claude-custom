@@ -201,7 +201,6 @@ test('seam guard: `launchWindow` is named only where the launch itself is the po
   const allowed = {
     'let launchWindow': 'its declaration (null until whenReady\'s startProject made it)',
     'app.whenReady': 'the launch order: claim, markReady, the refusals, the poll, the screenshot and the probe driver',
-    startTray: 'the label the tray names before any window exists',
     startIndexing: 'warming the chip\'s list for the launch project',
     registerIpc: 'the vault probe, which uses the launch window\'s service',
   };
@@ -236,7 +235,10 @@ test('close vs quit (P3 at the wiring level): a closed window tells main; main d
   assert.match(WINDOW, /win\.on\('closed', \(\) => \{ win = null; if \(tabShell\) tabShell\.destroy\(\); onClosed\(self\); \}\);/);
   assert.match(MAIN, /onClosed: \(pw\) => lifecycle\.projectClosed\(pw\),/);
   // what a close drops, and that the registry decides (the last window is kept), is behaviour: test/project-lifecycle.test.js (P3)
-  assert.match(MAIN, /onChanged: \(\) => \{ if \(trayController\) trayController\.sync\(\); windowServices\.seenChanged\(\); \},/, 'the tray and the Resources sampler are told');
+  // PR 3: one windowsChanged() hears a start, a close and every seen change; it tells the Resources sampler and the tray
+  assert.match(MAIN, /onChanged: \(\) => windowsChanged\(\),/);
+  assert.match(MAIN, /seenChanged: \(\) => windowsChanged\(\),/);
+  assert.match(MAIN, /function windowsChanged\(\) \{\s*seenGate\(\);\s*if \(trayController\) trayController\.sync\(\);/, 'the tray and the Resources sampler are told');
   assert.doesNotMatch(MAIN, /projectClosed[^;\n]*quitting/, 'a quit cancelled by one window\'s prompt has already closed another: it must not stay registered with no window');
   // the quit path is the last window\'s and is unchanged: window-all-closed quits, the quit handlers stop each window
   assert.match(MAIN, /app\.on\('window-all-closed', \(\) => \{\s*app\.quit\(\);\s*\}\);/);

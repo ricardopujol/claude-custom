@@ -3,10 +3,10 @@
  * The tray icon's rules (BACKLOG #119 A8), pure so they are tested without Electron.
  *
  *   needsYouKeys(tabs)       -> the keys of the tabs whose cue is up (needs input, or finished unseen)
- *   tooltipText({sessions, needs}) -> 'claude-custom · 3 sessions · 1 needs you'
+ *   tooltipText({windows, sessions, needs}) -> 'Jiandu · 2 windows · 3 sessions · 1 needs you' (one tray for every window, PR 3)
  *   badgeText(n)             -> '' at 0, the digit to 9, then '9+'
- *   trackCues(prev, keys, now) -> Map key -> when that cue first appeared
- *   clickTarget(cues)        -> { kind: 'tab', key } for the oldest cue, else { kind: 'window' }
+ *   trackCues(prev, ids, now) -> Map cueId -> { root, key, since }: cues are { root, key } pairs
+ *   clickTarget(cues, lastUsedRoot) -> { kind: 'tab', root, key } for the oldest cue in any window, else { kind: 'window', root }
  *   windowlessItems(model)   -> the ▾ menu's rows that have no window and are not a tab here
  *   trayTemplate(view, actions) -> the right-click menu's Electron template
  *
@@ -16,7 +16,8 @@
  * Main-process only (required, never a page <script>).
  */
 
-const APP = 'claude-custom';
+// The on-screen name (single-instance PR 3, design §6): the tooltip and Quit say Jiandu. Older strings elsewhere keep their name.
+const APP = 'Jiandu';
 const SEP = '  ·  ';
 // A Windows tooltip is cut at 127 characters; ours is far shorter, but the cap is a property the tests hold.
 const MAX_DIGIT = 9;
@@ -36,16 +37,17 @@ function needsYouKeys(tabs) {
   return keys;
 }
 
-const sessionsText = n => (n === 0 ? 'no sessions' : n === 1 ? '1 session' : `${n} sessions`);
+const plural = (n, one, many, none) => (n === 0 && none ? none : n === 1 ? `1 ${one}` : `${n} ${many}`);
 const needsText = n => (n === 1 ? '1 needs you' : `${n} need you`);
 
-/** A count it was not given is left out, never shown as zero. */
-function tooltipText({ sessions, needs, label } = {}) {
-  // Two project windows are two icons: the project says which is which. Capped so the whole tooltip stays under 127.
-  const name = typeof label === 'string' ? label.trim().slice(0, 40) : '';
+/**
+ * 'Jiandu · 4 windows · 11 sessions · 2 need you' (single-instance PR 3: one tray for every window). "sessions" is the tabs of every window
+ * (not the sessions with no window, which need an OS query: §5 Q4). A count it was not given is left out, never shown as zero.
+ */
+function tooltipText({ windows, sessions, needs } = {}) {
   const parts = [APP];
-  if (name !== '' && name !== APP) parts.push(name);
-  if (isCount(sessions)) parts.push(sessionsText(sessions));
+  if (isCount(windows)) parts.push(plural(windows, 'window', 'windows', 'no windows'));
+  if (isCount(sessions)) parts.push(plural(sessions, 'session', 'sessions', 'no sessions'));
   if (isCount(needs) && needs > 0) parts.push(needsText(needs));
   return parts.join(' · ');
 }
@@ -56,20 +58,27 @@ function badgeText(n) {
   return n > MAX_DIGIT ? `${MAX_DIGIT}+` : String(n);
 }
 
-/** The first time each current cue was seen; a cue that cleared is forgotten, so coming back starts it over. */
-function trackCues(prev, keys, now) {
+/** A cue's id: its window's root AND its tab key (a `develop` tab exists in every project). */
+const cueId = (root, key) => JSON.stringify([String(root), String(key)]);
+
+/** The first time each current cue ({ root, key }) was seen; a cue that cleared is forgotten, so coming back starts it over. */
+function trackCues(prev, ids, now) {
   const out = new Map();
-  for (const k of keys) out.set(k, prev && prev.has(k) ? prev.get(k) : now);
+  for (const { root, key } of Array.isArray(ids) ? ids : []) {
+    const id = cueId(root, key);
+    const old = prev && prev.get(id);
+    out.set(id, { root, key, since: old ? old.since : now });
+  }
   return out;
 }
 
-/** Left click: the tab that has waited longest, else the window as it was. */
-function clickTarget(cues) {
+/** Left click: the tab that has waited longest in ANY window, else the window used last. */
+function clickTarget(cues, lastUsedRoot = null) {
   let best = null;
-  if (cues && typeof cues.entries === 'function') {
-    for (const [key, since] of cues.entries()) if (best === null || since < best.since) best = { key, since };
+  if (cues && typeof cues.values === 'function') {
+    for (const c of cues.values()) if (best === null || c.since < best.since) best = c;
   }
-  return best ? { kind: 'tab', key: best.key } : { kind: 'window' };
+  return best ? { kind: 'tab', root: best.root, key: best.key } : { kind: 'window', root: lastUsedRoot === undefined ? null : lastUsedRoot };
 }
 
 /** From app/background-menu.js menuModel: sessions with no window of their own, which are not a tab of this window. */
@@ -91,20 +100,27 @@ function startsHidden(settings) {
 const tabsText = n => (n === 1 ? '1 tab' : `${n} tabs`);
 
 /**
- * view: { windowLabel, tabs, needs, hidden, startMinimised, windowless }
- * actions: { focusWindow, openBackground(open), stopBackground(row), hideAll, showAll, setStartMinimised(on), quit }
- * "Stop that session" goes to stopBackground, which is the ▾ menu's own Stop: it asks first, every time.
+ * view: { windows: [{ root, label, tabs, needs, waitingKey }], windowless, hidden, startMinimised }
+ * actions: { focusWindow(root, waitingKey), openBackground(open), stopBackground(row), hideAll, showAll, setStartMinimised(on), quit }
+ * One row per window in open order (design §6, option A); a disabled "Sessions with no window" head row over those sessions; one Show/Hide
+ * row; Start minimised; Quit Jiandu. "Stop that session" goes to stopBackground, the ▾ menu's own Stop: it asks first, every time.
+ * PR 4 adds Open project ▸ after the window rows.
  */
 function trayTemplate(view, actions) {
   const v = view || {};
-  const needs = isCount(v.needs) ? v.needs : 0;
-  const tabs = isCount(v.tabs) ? v.tabs : 0;
-  // A native menu row can't be bold, so "needs you" is said in words.
-  const windowRow = [menuText(v.windowLabel || APP), tabsText(tabs), ...(needs > 0 ? [needsText(needs).replace(/^1 /, '')] : [])];
-  const template = [{ label: windowRow.join(SEP), click: () => actions.focusWindow() }];
+  const template = [];
+  for (const w of Array.isArray(v.windows) ? v.windows : []) {
+    const needs = isCount(w.needs) ? w.needs : 0;
+    const tabs = isCount(w.tabs) ? w.tabs : 0;
+    // A native menu row can't be bold, so "needs you" is said in words.
+    const row = [menuText(w.label || APP), tabsText(tabs), ...(needs > 0 ? [needsText(needs).replace(/^1 /, '')] : [])];
+    const waitingKey = typeof w.waitingKey === 'string' ? w.waitingKey : null;
+    template.push({ label: row.join(SEP), click: () => actions.focusWindow(w.root, waitingKey) });
+  }
   const windowless = Array.isArray(v.windowless) ? v.windowless : [];
   if (windowless.length) {
     template.push({ type: 'separator' });
+    template.push({ label: 'Sessions with no window', enabled: false });
     for (const it of windowless) {
       template.push({
         label: menuText(it.label),
@@ -134,4 +150,4 @@ function anyWindowHidden(wins) {
   return wins.some((w) => !w || w.isDestroyed() || !w.isVisible());
 }
 
-module.exports = { anyWindowHidden, needsYouKeys, tooltipText, badgeText, trackCues, clickTarget, windowlessItems, trayTemplate, hidesOnClose, startsHidden, MAX_DIGIT, APP };
+module.exports = { anyWindowHidden, needsYouKeys, tooltipText, badgeText, cueId, trackCues, clickTarget, windowlessItems, trayTemplate, hidesOnClose, startsHidden, MAX_DIGIT, APP };

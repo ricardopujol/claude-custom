@@ -23,7 +23,7 @@ const stubs = (config = {}) => ({
     ownIdentities: noop, ownStartTime: noop, waitForHost: noop, HARNESS_DIR: 'h', INSTALL_DIR: 'i', listBackground: noop, capture: noop,
     stripFileFor: noop, isQuitting: () => false, setQuitting: noop, onWindowCreated: noop, onClosed: noop,
     getResources: () => null, getTray: () => null, seenChanged: noop,
-    windowRouter: { register: async () => ({ close: async () => {} }) }, onProcessExit: noop,
+    windowRouter: { register: async () => ({ close: async () => {} }) }, onProcessExit: noop, onFocused: noop,
   },
 });
 const make = (launchCwd, config) => createProjectWindow({ launchCwd, ...stubs(config) });
@@ -214,4 +214,12 @@ test('PR 3: start({ show }) hands its word to createWindow, which asks startHidd
   assert.match(src, /createWindow\(\{ show \}\);/);
   assert.match(src, /function createWindow\(\{ show \} = \{\}\)/);
   assert.match(src, /const startHidden = startHiddenFor\(\{ show, trayOn: TRAY_ON, settings: readTraySettings\(uiStore\) \}\);/);
+});
+
+test('PR 3 step 9: onFocused is a required service, called with the window on focus (the registry\'s window used last)', () => {
+  const d = stubs(); delete d.services.onFocused;
+  assert.throws(() => createProjectWindow({ launchCwd: tmpDir('pw-'), ...d }), /missing service "onFocused"/);
+  const src = fs.readFileSync(path.join(__dirname, '..', 'app', 'project-window.js'), 'utf8');
+  const focus = src.slice(src.indexOf("win.on('focus', () => {"), src.indexOf("win.on('blur'"));
+  assert.match(focus, /onFocused\(self\);/);
 });

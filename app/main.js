@@ -383,30 +383,40 @@ function listBackground() {
 }
 
 // --- the tray icon (BACKLOG #119 A8) ----------------------------------------------------------------------------------
-// One per window process (each project window is its own Electron main). The rules are app/tray-model.js, the pixels
-// app/tray-icon.js, the effects app/tray-controller.js; this hands them the real Electron and the shell.
-// The window the tray speaks for: the first one open (the launch window while it is). PR 3 sums and lists every window.
-const trayWindow = () => registry.first();
+// ONE tray for the process (single-instance PR 3, design §6 option A): it sums and lists every window. The rules are app/tray-model.js,
+// the pixels app/tray-icon.js, the effects app/tray-controller.js; this hands them the real Electron, the registry and the shell.
+// The sessions with no window: ONE list for the process, with the tab ports of every window (a tab of any window is not "windowless").
+async function appBackgroundModel() {
+  const tabsByPort = new Map();
+  registry.forEach((p) => { if (p.tabShell) for (const t of p.tabShell.snapshot().tabs) if (Number.isInteger(t.port)) tabsByPort.set(t.port, t.key); });
+  return menuModel(await listBackground(), { now: Date.now(), tabsByPort, projectRoot: null });
+}
 function startTray() {
   if (!TRAY_ON) return;
-  // before the first window exists the tray still has a project to name: the launch folder's
-  const anyWindow = () => trayWindow() || launchWindow || { label: projectLabel((projectOf(LAUNCH_CWD) || { root: LAUNCH_CWD }).root) };
   trayController = createTrayController({
     Tray, Menu, nativeImage, renderIcon: renderTrayIcon,
     getSettings: () => readTraySettings(uiStore),
-    tabs: () => { const w = trayWindow(); return w && w.tabShell ? w.tabShell.snapshot().tabs : []; },
-    windowLabel: () => anyWindow().label,
+    windows: () => registry.list().map((p) => ({ root: p.root, label: p.label, tabs: p.tabShell ? p.tabShell.snapshot().tabs : [] })),
+    lastUsed: () => { const w = registry.lastUsed(); return w ? w.root : null; },
     // ANY window hidden: hideAll / showAll act on every window, so the menu must offer "Show all" while one of them is hidden (PR #256 Dexter 6)
     isHidden: () => anyWindowHidden(registry.list().map((p) => p.win)),
-    background: () => { const w = trayWindow(); return w ? w.backgroundModel() : Promise.resolve(null); },
+    background: () => appBackgroundModel(),
     now: () => Date.now(),
     log: (...a) => console.log(...a),
     actions: {
-      focusWindow: () => { const w = trayWindow(); if (w) w.focusWindow(); },
-      selectTab: key => { const w = trayWindow(); if (w && w.tabShell) w.tabShell.select(key); },
-      openBackground: o => { const w = trayWindow(); return w ? w.backgroundActions.open(o) : undefined; },
-      // The same Stop as the ▾ menu: it asks first, every time. Its question needs a visible window to sit on.
-      stopBackground: (row) => { const w = trayWindow(); if (!w) return; w.focusWindow(); w.backgroundActions.stop(row).catch(() => {}); },
+      // A row, or a left click: that window, and the tab waiting in it when there is one.
+      focusWindow: (root, key) => { const w = registry.get(root); if (!w) return; if (key && w.tabShell) w.tabShell.select(key); w.focusWindow(); },
+      // Open on a session with no window: a window here, in this process (DESIGN_TABS_SESSIONS.md 3.4; never an attach-only process).
+      openBackground: (o) => (o && typeof o.cwd === 'string' ? openProject({ cwd: o.cwd, port: o.port, show: 'shown' }) : undefined),
+      // The same Stop as the ▾ menu: it asks first, every time. Its question sits on the session's project window when that is open, else on
+      // the window used last, shown first.
+      stopBackground: (row) => {
+        const p = row && typeof row.cwd === 'string' ? projectOf(row.cwd) : null;
+        const w = (p && registry.get(p.root)) || registry.lastUsed();
+        if (!w) return;
+        w.focusWindow();
+        w.backgroundActions.stop(row).catch(() => {});
+      },
       hideAll: () => registry.forEach((p) => { const w = p.win; if (w && !w.isDestroyed()) w.hide(); }),
       showAll: () => registry.forEach((p) => p.focusWindow()),
       setStartMinimised: on => { writeTraySetting(uiStore, 'startMinimised', on === true); },
@@ -1287,6 +1297,14 @@ process.on('exit', () => {
 });
 function onProcessExit(pw, fn) { const fns = exitHooks.get(pw) || []; fns.push(fn); exitHooks.set(pw, fns); }
 
+// ONE place that hears "the set of windows, or what they show, changed" (single-instance PR 3): a window started (the lifecycle), closed,
+// or was minimised, restored, hidden or shown. The Resources sampler asks who is looking, and the tray syncs.
+const seenGate = createSeenGate({ registry, getResources: () => resources });
+function windowsChanged() {
+  seenGate();
+  if (trayController) trayController.sync();
+}
+
 // What every project window is handed (app/project-window.js). The Resources service, the tray and the lean/indexing units are read live.
 const windowServices = {
   uiStore, readDim, usageCounters, forProbe, openInBrowser, probeConfirms, logShellError, canvasProbeResolve, canvasAsks,
@@ -1299,8 +1317,10 @@ const windowServices = {
   onClosed: (pw) => lifecycle.projectClosed(pw),
   getResources: () => resources,
   getTray: () => trayController,
-  seenChanged: createSeenGate({ registry, getResources: () => resources }),
+  // a window was minimised, restored, hidden or shown: who is looking changed, and so did the tray's Show/Hide row
+  seenChanged: () => windowsChanged(),
   windowRouter, onProcessExit,
+  onFocused: (pw) => registry.touch(pw),
 };
 
 // The project window (app/project-window.js): everything that is one project's. Made by startProject, after every app-wide constant it is
@@ -1340,7 +1360,7 @@ const lifecycle = createProjectLifecycle({
     if (trayController && !trayController.state().exists && w && !w.isDestroyed() && !w.isVisible()) pw.focusWindow();
   },
   // the count and the tooltip speak for the first window that is left, and the Resources sampler asks again who is looking
-  onChanged: () => { if (trayController) trayController.sync(); windowServices.seenChanged(); },
+  onChanged: () => windowsChanged(),
 });
 const startProject = lifecycle.startProject;
 

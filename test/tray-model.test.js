@@ -5,7 +5,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const fc = require('fast-check');
 const {
-  needsYouKeys, tooltipText, badgeText, trackCues, clickTarget, windowlessItems, trayTemplate, MAX_DIGIT,
+  needsYouKeys, tooltipText, badgeText, trackCues, clickTarget, windowlessItems, trayTemplate, MAX_DIGIT, cueId,
 } = require('../app/tray-model');
 
 const tab = (key, status) => ({ key, status });
@@ -33,42 +33,68 @@ test('property: the count never exceeds the number of sessions, and equals the t
   }));
 });
 
-test('tooltipText: the app, the sessions, and who needs you', () => {
-  assert.strictEqual(tooltipText({ sessions: 3, needs: 1 }), 'claude-custom · 3 sessions · 1 needs you');
-  assert.strictEqual(tooltipText({ sessions: 3, needs: 2 }), 'claude-custom · 3 sessions · 2 need you');
-  assert.strictEqual(tooltipText({ sessions: 1, needs: 0 }), 'claude-custom · 1 session');
-  assert.strictEqual(tooltipText({ sessions: 0, needs: 0 }), 'claude-custom · no sessions');
+// ---- single-instance PR 3 step 8: one tray for every window of the process ---------------------------------------------------------
+
+test('tooltipText: Jiandu, the windows, the sessions (every window\'s tabs), and who needs you', () => {
+  assert.strictEqual(tooltipText({ windows: 4, sessions: 11, needs: 2 }), 'Jiandu · 4 windows · 11 sessions · 2 need you');
+  assert.strictEqual(tooltipText({ windows: 1, sessions: 3, needs: 0 }), 'Jiandu · 1 window · 3 sessions');
+  assert.strictEqual(tooltipText({ windows: 1, sessions: 1, needs: 1 }), 'Jiandu · 1 window · 1 session · 1 needs you');
+  assert.strictEqual(tooltipText({ windows: 0, sessions: 0 }), 'Jiandu · no windows · no sessions');
 });
 
-test('tooltipText: the window label says which icon is which; the app name alone is not repeated; a long one is cut', () => {
-  assert.strictEqual(tooltipText({ sessions: 2, needs: 1, label: 'alpha' }), 'claude-custom · alpha · 2 sessions · 1 needs you');
-  assert.strictEqual(tooltipText({ sessions: 2, label: 'claude-custom' }), 'claude-custom · 2 sessions');
-  assert.strictEqual(tooltipText({ sessions: 2, label: '  ' }), 'claude-custom · 2 sessions');
-  assert.ok(tooltipText({ sessions: 999, needs: 999, label: 'x'.repeat(500) }).length <= 127);
+test('tooltipText: a count it was not given is left out, never shown as zero', () => {
+  assert.strictEqual(tooltipText({}), 'Jiandu');
+  assert.strictEqual(tooltipText({ sessions: 2 }), 'Jiandu · 2 sessions');
+  assert.strictEqual(tooltipText({ windows: 2, needs: null }), 'Jiandu · 2 windows');
+  assert.strictEqual(tooltipText({ windows: -1, sessions: 2.5, needs: 1 }), 'Jiandu · 1 needs you');
 });
 
-test('tooltipText: a count it was not given is not shown as zero', () => {
-  assert.strictEqual(tooltipText({ sessions: null, needs: null }), 'claude-custom');
-  assert.strictEqual(tooltipText({}), 'claude-custom');
-  assert.strictEqual(tooltipText({ sessions: 2, needs: null }), 'claude-custom · 2 sessions');
-  assert.strictEqual(tooltipText({ sessions: 2, needs: -1 }), 'claude-custom · 2 sessions');
-  assert.strictEqual(tooltipText({ sessions: 2.5, needs: 1 }), 'claude-custom · 1 needs you');
-});
-
-test('property: the tooltip pluralises both counts correctly', () => {
-  fc.assert(fc.property(fc.nat(500), fc.nat(500), (s, n) => {
+test('property: the tooltip pluralises every count and stays under 127', () => {
+  fc.assert(fc.property(fc.nat(500), fc.nat(500), fc.nat(500), (w, s, n) => {
     const needs = Math.min(n, s);
-    const t = tooltipText({ sessions: s, needs });
-    if (s === 0) assert.match(t, /no sessions/);
-    else if (s === 1) assert.match(t, / 1 session(?!s)/);
-    else assert.ok(t.includes(` ${s} sessions`), t);
-    if (needs === 0) assert.ok(!/need/.test(t), t);
-    else if (needs === 1) assert.ok(t.endsWith('1 needs you'), t);
-    else assert.ok(t.endsWith(`${needs} need you`), t);
-    assert.ok(t.length <= 127, 'a Windows tooltip is cut at 127 characters');
+    const t = tooltipText({ windows: w, sessions: s, needs });
+    assert.ok(t.startsWith('Jiandu · '));
+    if (w === 1) assert.match(t, / 1 window(?!s)/); else if (w > 1) assert.ok(t.includes(` ${w} windows`));
+    if (s === 1) assert.match(t, / 1 session(?!s)/); else if (s > 1) assert.ok(t.includes(` ${s} sessions`));
+    if (needs === 0) assert.ok(!/need/.test(t)); else assert.ok(t.endsWith(needs === 1 ? '1 needs you' : `${needs} need you`));
+    assert.ok(t.length <= 127);
   }));
 });
 
+test('trackCues: cue ids are { root, key } pairs (a develop tab exists in every project); each keeps when it first appeared', () => {
+  let m = trackCues(new Map(), [{ root: 'A', key: 'develop' }], 100);
+  m = trackCues(m, [{ root: 'A', key: 'develop' }, { root: 'B', key: 'develop' }], 200);
+  assert.strictEqual(m.size, 2, 'A\'s develop and B\'s develop are two cues');
+  assert.deepStrictEqual([...m.values()], [{ root: 'A', key: 'develop', since: 100 }, { root: 'B', key: 'develop', since: 200 }]);
+  m = trackCues(m, [{ root: 'B', key: 'develop' }], 300);
+  assert.deepStrictEqual([...m.values()], [{ root: 'B', key: 'develop', since: 200 }], 'a cleared cue is forgotten');
+  m = trackCues(m, [{ root: 'A', key: 'develop' }, { root: 'B', key: 'develop' }], 400);
+  assert.strictEqual([...m.values()].find((c) => c.root === 'A').since, 400, 'and starts over when it comes back');
+  assert.strictEqual(cueId('A', 'develop') === cueId('B', 'develop'), false);
+});
+
+test('clickTarget: the oldest cue in ANY window, else the window used last', () => {
+  const cues = trackCues(trackCues(new Map(), [{ root: 'B', key: 'feat-x' }], 50), [{ root: 'B', key: 'feat-x' }, { root: 'A', key: 'develop' }], 90);
+  assert.deepStrictEqual(clickTarget(cues, 'A'), { kind: 'tab', root: 'B', key: 'feat-x' });
+  assert.deepStrictEqual(clickTarget(new Map(), 'A'), { kind: 'window', root: 'A' });
+  assert.deepStrictEqual(clickTarget(null, null), { kind: 'window', root: null });
+});
+
+test('P-T2: the click target is the cue with the smallest since across all windows; a closed window\'s cue is never it', () => {
+  const ids = fc.record({ root: fc.constantFrom('A', 'B', 'C'), key: fc.constantFrom('develop', 'feat-a', 'feat-b') });
+  fc.assert(fc.property(fc.array(fc.tuple(ids, fc.nat(1000)), { maxLength: 15 }), fc.subarray(['A', 'B', 'C']), (pairs, closed) => {
+    let cues = new Map();
+    for (const [id, t] of pairs) cues = trackCues(cues, [...[...cues.values()].map(({ root, key }) => ({ root, key })), id], t);
+    // a closed window's cues are forgotten (the controller drops them): what is left is what the tabs of the open windows say
+    cues = new Map([...cues].filter(([, c]) => !closed.includes(c.root)));
+    const t = clickTarget(cues, 'A');
+    if (cues.size === 0) return assert.deepStrictEqual(t, { kind: 'window', root: 'A' });
+    assert.strictEqual(t.kind, 'tab');
+    assert.ok(!closed.includes(t.root));
+    const mine = [...cues.values()].find((c) => c.root === t.root && c.key === t.key);
+    for (const c of cues.values()) assert.ok(mine.since <= c.since);
+  }));
+});
 test('badgeText: nothing at 0, the digit up to 9, then 9+', () => {
   assert.strictEqual(badgeText(0), '');
   assert.strictEqual(badgeText(1), '1');
@@ -76,34 +102,6 @@ test('badgeText: nothing at 0, the digit up to 9, then 9+', () => {
   assert.strictEqual(badgeText(MAX_DIGIT + 1), '9+');
   assert.strictEqual(badgeText(400), '9+');
   for (const bad of [null, undefined, NaN, -3, 1.5, '4']) assert.strictEqual(badgeText(bad), '', String(bad));
-});
-
-test('trackCues: a cue keeps the time it first appeared; a cleared one is forgotten and starts over', () => {
-  let m = trackCues(new Map(), ['a'], 100);
-  assert.deepStrictEqual([...m], [['a', 100]]);
-  m = trackCues(m, ['a', 'b'], 200);
-  assert.deepStrictEqual([...m], [['a', 100], ['b', 200]]);
-  m = trackCues(m, ['b'], 300);
-  assert.deepStrictEqual([...m], [['b', 200]]);
-  m = trackCues(m, ['a', 'b'], 400);
-  assert.strictEqual(m.get('a'), 400);
-});
-
-test('clickTarget: the oldest cue first, else the window as it was', () => {
-  assert.deepStrictEqual(clickTarget(new Map([['b', 200], ['a', 100]])), { kind: 'tab', key: 'a' });
-  assert.deepStrictEqual(clickTarget(new Map()), { kind: 'window' });
-  assert.deepStrictEqual(clickTarget(null), { kind: 'window' });
-});
-
-test('property: the click target is always a tab with a cue, and never a younger one than another', () => {
-  fc.assert(fc.property(fc.array(fc.tuple(fc.string({ minLength: 1 }), fc.nat(1000)), { maxLength: 12 }), (pairs) => {
-    const cues = new Map(pairs);
-    const t = clickTarget(cues);
-    if (cues.size === 0) return assert.deepStrictEqual(t, { kind: 'window' });
-    assert.strictEqual(t.kind, 'tab');
-    assert.ok(cues.has(t.key));
-    for (const since of cues.values()) assert.ok(cues.get(t.key) <= since);
-  }));
 });
 
 const ROW = (port, windows, over = {}) => ({ port, pid: 100 + port, cwd: `C:\\p\\${port}`, build: 'dev', windows, own: true, ...over });
@@ -125,26 +123,31 @@ function spy() {
     focusWindow: fn('focus'), openBackground: fn('open'), stopBackground: fn('stop'), hideAll: fn('hide'), showAll: fn('show'),
     setStartMinimised: fn('start'), quit: fn('quit') } };
 }
-const view = (over = {}) => ({ windowLabel: 'claude-custom', tabs: 2, needs: 0, hidden: false, startMinimised: false, windowless: [], ...over });
+const W = (root, over = {}) => ({ root, label: root.toLowerCase(), tabs: 2, needs: 0, waitingKey: null, ...over });
+const view = (over = {}) => ({ windows: [W('A')], hidden: false, startMinimised: false, windowless: [], ...over });
 
-test('trayTemplate: the window row, hide/show, start minimised, quit', () => {
+test('trayTemplate: one row per window in open order, hide/show, start minimised, Quit Jiandu; no Open project row (PR 4)', () => {
   const { actions, calls } = spy();
-  const t = trayTemplate(view(), actions);
+  const t = trayTemplate(view({ windows: [W('A'), W('B', { tabs: 1 })] }), actions);
   const labels = t.filter(x => x.type !== 'separator').map(x => x.label);
-  assert.deepStrictEqual(labels, ['claude-custom  ·  2 tabs', 'Hide all windows', 'Start minimised to tray', 'Quit claude-custom']);
-  t.find(x => x.label === 'claude-custom  ·  2 tabs').click();
+  assert.deepStrictEqual(labels, ['a  ·  2 tabs', 'b  ·  1 tab', 'Hide all windows', 'Start minimised to tray', 'Quit Jiandu']);
+  assert.ok(!labels.some((l) => /Open project/.test(l)));
+  t.find(x => x.label === 'b  ·  1 tab').click();
   t.find(x => x.label === 'Hide all windows').click();
-  t.find(x => x.label === 'Quit claude-custom').click();
-  assert.deepStrictEqual(calls, [['focus'], ['hide'], ['quit']]);
+  t.find(x => x.label === 'Quit Jiandu').click();
+  assert.deepStrictEqual(calls, [['focus', 'B', null], ['hide'], ['quit']]);
 });
 
-test('trayTemplate: a window that needs you says so; one tab is "1 tab"', () => {
-  const t = trayTemplate(view({ tabs: 1, needs: 1 }), spy().actions);
-  assert.strictEqual(t[0].label, 'claude-custom  ·  1 tab  ·  needs you');
-  assert.strictEqual(trayTemplate(view({ tabs: 3, needs: 2 }), spy().actions)[0].label, 'claude-custom  ·  3 tabs  ·  2 need you');
+test('trayTemplate: a row click names its window and the tab waiting there; a window that needs you says so', () => {
+  const { actions, calls } = spy();
+  const t = trayTemplate(view({ windows: [W('A', { tabs: 1, needs: 1, waitingKey: 'develop' }), W('B', { tabs: 3, needs: 2, waitingKey: 'feat-a' })] }), actions);
+  assert.strictEqual(t[0].label, 'a  ·  1 tab  ·  needs you');
+  assert.strictEqual(t[1].label, 'b  ·  3 tabs  ·  2 need you');
+  t[1].click();
+  assert.deepStrictEqual(calls, [['focus', 'B', 'feat-a']]);
 });
 
-test('trayTemplate: hidden windows offer Show all windows', () => {
+test('trayTemplate: any hidden window offers Show all windows', () => {
   const t = trayTemplate(view({ hidden: true }), spy().actions);
   assert.ok(t.some(x => x.label === 'Show all windows'));
   assert.ok(!t.some(x => x.label === 'Hide all windows'));
@@ -162,11 +165,14 @@ test('trayTemplate: start minimised is a checkbox that sends the opposite of wha
   assert.deepStrictEqual(calls, [['start', true], ['start', false]]);
 });
 
-test('trayTemplate: each windowless session has Open and "Stop that session…", wired to its own row', () => {
+test('trayTemplate: the sessions with no window sit under a disabled head row, each with Open and "Stop that session…"', () => {
   const { actions, calls } = spy();
   const a = ITEM(1, 0);
   const b = ITEM(2, 0, { open: null });
   const t = trayTemplate(view({ windowless: [a, b] }), actions);
+  const head = t.find((x) => x.label === 'Sessions with no window');
+  assert.ok(head && head.enabled === false, 'a disabled head row');
+  assert.ok(t.indexOf(head) < t.findIndex((x) => x.submenu));
   const rows = t.filter(x => x.submenu);
   assert.strictEqual(rows.length, 2);
   assert.deepStrictEqual(rows[0].submenu.map(s => [s.label, s.enabled]), [['Open', true], ['Stop that session…', true]]);
@@ -174,21 +180,48 @@ test('trayTemplate: each windowless session has Open and "Stop that session…",
   rows[0].submenu[0].click();
   rows[0].submenu[1].click();
   assert.deepStrictEqual(calls, [['open', a.open], ['stop', a.row]]);
+  assert.ok(!trayTemplate(view(), spy().actions).some((x) => x.label === 'Sessions with no window'), 'no head row with none');
 });
 
 test('trayTemplate: & in a folder or label is shown, never read as a mnemonic', () => {
-  const t = trayTemplate(view({ windowLabel: 'R&D', windowless: [ITEM(1, 0, { label: 'A & B' })] }), spy().actions);
+  const t = trayTemplate(view({ windows: [W('A', { label: 'R&D' })], windowless: [ITEM(1, 0, { label: 'A & B' })] }), spy().actions);
   assert.strictEqual(t[0].label, 'R&&D  ·  2 tabs');
   assert.strictEqual(t.find(x => x.submenu).label, 'A && B');
 });
 
-test('trayTemplate: Stop that session is never silent: the row goes to stopBackground, which asks', () => {
-  const { actions, calls } = spy();
-  const a = ITEM(1, 0);
-  trayTemplate(view({ windowless: [a] }), actions).find(x => x.submenu).submenu[1].click();
-  assert.deepStrictEqual(calls, [['stop', a.row]]);
+test('P-T1: whatever order windows open, close, hide and show in, and cues rise and clear, the badge is the sum of the windows\' waiting tabs, the rows are the open windows in order, and the tooltip counts match', () => {
+  const op = fc.oneof(
+    fc.record({ k: fc.constant('open'), r: fc.constantFrom('A', 'B', 'C', 'D') }),
+    fc.record({ k: fc.constant('close'), r: fc.constantFrom('A', 'B', 'C', 'D') }),
+    fc.record({ k: fc.constantFrom('hide', 'show'), r: fc.constantFrom('A', 'B', 'C', 'D') }),
+    fc.record({ k: fc.constantFrom('cue', 'clear'), r: fc.constantFrom('A', 'B', 'C', 'D'), t: fc.constantFrom('develop', 'feat-a') }),
+  );
+  fc.assert(fc.property(fc.array(op, { maxLength: 30 }), (ops) => {
+    const open = [];                    // [{ root, hidden, tabs: Map key -> status }]
+    for (const o of ops) {
+      const w = open.find((x) => x.root === o.r);
+      if (o.k === 'open' && !w) open.push({ root: o.r, hidden: false, tabs: new Map([['develop', null], ['feat-a', null]]) });
+      else if (o.k === 'close' && w) open.splice(open.indexOf(w), 1);
+      else if ((o.k === 'hide' || o.k === 'show') && w) w.hidden = o.k === 'hide';
+      else if (o.k === 'cue' && w) w.tabs.set(o.t, { needsInput: true });
+      else if (o.k === 'clear' && w) w.tabs.set(o.t, null);
+    }
+    const windows = open.map((w) => {
+      const tabs = [...w.tabs].map(([key, status]) => ({ key, status }));
+      return { root: w.root, label: w.root, tabs: tabs.length, needs: needsYouKeys(tabs).length, waitingKey: needsYouKeys(tabs)[0] || null };
+    });
+    const needs = windows.reduce((s, w) => s + w.needs, 0);
+    const sessions = windows.reduce((s, w) => s + w.tabs, 0);
+    assert.strictEqual(badgeText(needs), needs === 0 ? '' : (needs > 9 ? '9+' : String(needs)));
+    const t = trayTemplate({ windows, hidden: open.some((w) => w.hidden), startMinimised: false, windowless: [] }, spy().actions);
+    const rows = t.slice(0, windows.length).map((x) => x.label.split('  ·  ')[0]);
+    assert.deepStrictEqual(rows, open.map((w) => w.root));
+    assert.ok(t.some((x) => x.label === (open.some((w) => w.hidden) ? 'Show all windows' : 'Hide all windows')));
+    const tip = tooltipText({ windows: windows.length, sessions, needs });
+    if (windows.length > 1) assert.ok(tip.includes(`${windows.length} windows`));
+    if (needs > 0) assert.ok(tip.includes(needs === 1 ? '1 needs you' : `${needs} need you`));
+  }));
 });
-
 const { hidesOnClose, startsHidden } = require('../app/tray-model');
 
 test('hidesOnClose: only with the switch on, a tray to reach the window from, and the app not quitting', () => {

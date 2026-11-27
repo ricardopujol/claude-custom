@@ -70,13 +70,19 @@ test('the tray follows the shell and goes with the app', () => {
 
 test('the menu actions: Stop is the ▾ menu\'s own (it asks), Quit is app.quit, Hide hides, Show is focusWindow', () => {
   const actions = bodyOf(/function startTray\(\)/);
-  // single-instance PR 2: the tray speaks for the first window (trayWindow()); hide / show act on every window. PR 3 sums and lists them all.
-  assert.match(actions, /stopBackground: \(row\) => \{ const w = trayWindow\(\); if \(!w\) return; w\.focusWindow\(\); w\.backgroundActions\.stop\(row\)/);
+  // single-instance PR 3: one tray for every window. Stop's question sits on the session's project window when open, else the window used last
+  assert.match(actions, /const w = \(p && registry\.get\(p\.root\)\) \|\| registry\.lastUsed\(\);\s*if \(!w\) return;\s*w\.focusWindow\(\);\s*w\.backgroundActions\.stop\(row\)/);
+  assert.doesNotMatch(actions, /trayWindow\(\)/, 'no window is "the" tray\'s any more');
+  assert.match(actions, /focusWindow: \(root, key\) => \{ const w = registry\.get\(root\); if \(!w\) return; if \(key && w\.tabShell\) w\.tabShell\.select\(key\); w\.focusWindow\(\); \}/);
+  assert.match(actions, /windows: \(\) => registry\.list\(\)\.map\(/);
+  assert.match(actions, /lastUsed: \(\) => \{ const w = registry\.lastUsed\(\);/);
+  assert.match(actions, /background: \(\) => appBackgroundModel\(\),/);
   assert.doesNotMatch(actions, /stopHost\(/);
   assert.match(actions, /app\.quit\(\); \}/);
   assert.match(actions, /hideAll: \(\) => registry\.forEach\(\(p\) => \{ const w = p\.win; if \(w && !w\.isDestroyed\(\)\) w\.hide\(\); \}\)/);
   assert.match(actions, /showAll: \(\) => registry\.forEach\(\(p\) => p\.focusWindow\(\)\)/);
-  assert.match(actions, /openBackground: o => \{ const w = trayWindow\(\); return w \? w\.backgroundActions\.open\(o\) : undefined; \}/);
+  // Open on a session with no window: a window in this process (DESIGN_TABS_SESSIONS.md 3.4), through main's one open
+  assert.match(actions, /openBackground: \(o\) => \(o && typeof o\.cwd === 'string' \? openProject\(\{ cwd: o\.cwd, port: o\.port, show: 'shown' \}\) : undefined\),/);
   assert.match(actions, /setStartMinimised: on => \{ writeTraySetting\(uiStore, 'startMinimised', on === true\); \}/);
 });
 

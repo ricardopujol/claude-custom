@@ -26,6 +26,7 @@ const keyOf = (root) => normPath(root) || root;
 
 function createProjectRegistry() {
   const windows = new Map();   // keyOf(root) -> window, in insertion order
+  let last = null;             // the window focused last (touch), while it is registered
 
   const find = (test) => {
     for (const p of windows.values()) if (test(p)) return p;
@@ -45,6 +46,14 @@ function createProjectRegistry() {
     panelOwner(sender) { return sender ? find((p) => p.canvasViews.isPanel(sender)) : null; },
     forEach(fn) { for (const p of [...windows.values()]) fn(p); },
     first() { for (const p of windows.values()) return p; return null; },
+    /** A window was focused (PR 3): it is the one used last. A window that is not registered is ignored. */
+    touch(pw) { if (pw && windows.get(keyOf(pw.root)) === pw) last = pw; },
+    /** The window used last while it is still registered, else the first one, else null. */
+    lastUsed() {
+      if (last && windows.get(keyOf(last.root)) === last) return last;
+      for (const p of windows.values()) return p;
+      return null;
+    },
     size() { return windows.size; },
     /** Every registered window, in insertion order (a copy). */
     list() { return [...windows.values()]; },
