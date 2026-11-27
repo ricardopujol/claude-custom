@@ -13,11 +13,13 @@
  *     in the file), and it is not older than this boot of the machine (§5 Q2 default: after a restart the sessions are gone, so nothing is
  *     restored). The launched root is left out (it opens anyway, first); a folder that is gone is skipped with its reason.
  *
- *   createOpenWindowsWriter({ file, owner, owns, now, write, onWrite }) -> { begin, sync, endRestore, markClean }
+ *   createOpenWindowsWriter({ file, owner, owns, now, write, onWrite }) -> { begin, sync, endRestore, markClean, reopen }
  *     begin({ restoring, keep })  the first write: not clean, `restoring` as told, the list it was handed (the old list while restoring)
  *     sync(windows)               the open windows now; writes only on a change; a no-op until endRestore()
  *     endRestore(windows)         the restore is over: restoring false, and the list is the open windows
- *     markClean()                 synchronous (a quit may end the process right after): clean true, the last list
+ *     markClean()                 synchronous (a quit may end the process right after): clean true, the last list; FINAL: no sync or
+ *                                 endRestore undoes it (a window closing after a session end: PR #258 Dexter 10)
+ *     reopen(windows)             a cancelled quit, or the lock owned again: not clean, the list, written now; syncs follow again
  * No Electron.
  */
 
@@ -67,14 +69,13 @@ function createOpenWindowsWriter({ file, owner, owns, now = Date.now, write = wr
   let restoring = true;            // until begin/endRestore say otherwise, sync waits
   let windows = [];
   let lastText = null;
-  let lastClean = false;           // the last write said clean: the next sync writes even an unchanged list (a cancelled quit lives on)
+  let sealed = false;              // a clean mark is final (PR #258 Dexter 10): no sync undoes it; only reopen() does (a cancelled quit)
 
   function put(doc) {
     if (owns() !== true) return false;
     const text = JSON.stringify(doc);
     write(file, text);
     lastText = text;
-    lastClean = doc.clean === true;
     onWrite(doc);
     return true;
   }
@@ -87,24 +88,34 @@ function createOpenWindowsWriter({ file, owner, owns, now = Date.now, write = wr
   }
 
   function sync(list) {
-    if (restoring) return;
+    if (restoring || sealed) return;
     const next = cleanWindows(list);
-    if (JSON.stringify(next) === JSON.stringify(windows) && lastText !== null && !lastClean) return;
+    if (JSON.stringify(next) === JSON.stringify(windows) && lastText !== null) return;
     windows = next;
     try { put(docOf(false)); } catch { /* the next change writes it */ }
   }
 
   function endRestore(list) {
     restoring = false;
+    if (sealed) return;
     windows = cleanWindows(list);
     try { put(docOf(false)); } catch { /* the next change writes it */ }
   }
 
   function markClean() {
+    sealed = true;
     try { put(docOf(true)); } catch { /* the next start sees it not clean: at worst a restore of what was open */ }
   }
 
-  return { begin, sync, endRestore, markClean };
+  /** A quit that was cancelled, or this process owns the lock again: the open windows, NOT clean, written now; syncs follow again. */
+  function reopen(list) {
+    sealed = false;
+    restoring = false;
+    windows = cleanWindows(list);
+    try { put(docOf(false)); } catch { /* the next change writes it */ }
+  }
+
+  return { begin, sync, endRestore, markClean, reopen };
 }
 
 module.exports = { restoreDecision, createOpenWindowsWriter, readRecord, cleanWindows };

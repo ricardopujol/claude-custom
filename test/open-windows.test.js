@@ -163,12 +163,27 @@ test('readRecord: the parsed file, or null (no file, not JSON)', () => {
   assert.deepStrictEqual(readRecord(path.join(dir, 'ok.json')), rec());
 });
 
-test('found by verify/probe-single-instance.js case 7: a sync after markClean() writes the windows again (a quit that was cancelled), even when the list did not change', () => {
+test('PR #258 Dexter 10 / Miguel I3: a clean mark is final: no sync undoes it (a window closing or hiding after a session end)', () => {
+  const { w, read } = writer();
+  w.begin({ restoring: false, keep: [] });
+  w.endRestore([win(A), win(B)]);
+  w.markClean();
+  assert.strictEqual(read().clean, true);
+  w.sync([win(A), win(B)]);
+  w.sync([win(A)]);
+  assert.strictEqual(read().clean, true, 'still clean: the session is ending');
+  w.endRestore([win(A)]);
+  assert.strictEqual(read().clean, true, 'nor does a late endRestore');
+});
+
+test('PR #258 Dexter 9 / Miguel S5: reopen() (a quit that was cancelled) writes the open windows NOT clean at once, and syncs follow again', () => {
   const { w, read } = writer();
   w.begin({ restoring: false, keep: [] });
   w.endRestore([win(A)]);
   w.markClean();
-  assert.strictEqual(read().clean, true);
-  w.sync([win(A)]);
+  w.reopen([win(A)]);
   assert.strictEqual(read().clean, false, 'the process lives on: a crash from here must restore');
+  assert.deepStrictEqual(read().windows, [win(A)]);
+  w.sync([win(A), win(B)]);
+  assert.deepStrictEqual(read().windows, [win(A), win(B)]);
 });
