@@ -92,7 +92,7 @@ const { projectOf, stateRoot, samePath } = require('../host/project-layout');
 const { createPersistentExec } = require('../host/persistent-powershell');
 const { stopHost } = require('../host/stop-holder');
 const { hostStopDeps } = require('../host/stop-deps');
-const { attachEnv, attachOnlyDecision } = require('../host/launch-target');
+const { attachOnlyDecision } = require('../host/launch-target');
 const { menuModel } = require('./background-menu');
 const { menuTemplate, createBackgroundActions, popupUntilClosed, stopAllDetail } = require('./background-actions');
 const { hidesOnClose, startsHidden } = require('./tray-model');
@@ -108,7 +108,7 @@ const REQUIRED_CONFIG = ['EXPLICIT_PORT', 'STRIP_HEIGHT', 'POLL_MS', 'PROBE_PORT
 const REQUIRED_SERVICES = ['uiStore', 'readDim', 'usageCounters', 'forProbe', 'openInBrowser', 'probeConfirms', 'logShellError', 'canvasAsks',
   'nextCanvasAskId', 'previewProbeProxy', 'stopHostByPid', 'occupantAt', 'tokenFileFor', 'ownIdentities', 'ownStartTime', 'waitForHost',
   'HARNESS_DIR', 'INSTALL_DIR', 'listBackground', 'capture', 'stripFileFor', 'isQuitting', 'setQuitting', 'onWindowCreated', 'onClosed', 'getResources', 'getTray', 'seenChanged',
-  'windowRouter', 'onProcessExit', 'onFocused'];
+  'windowRouter', 'onProcessExit', 'onFocused', 'openProject'];
 
 function requireAll(kind, bag, names) {
   for (const name of names) {
@@ -141,7 +141,7 @@ function createProjectWindow({ launchCwd, electron, config, services }) {
     uiStore, readDim, usageCounters, forProbe, openInBrowser, probeConfirms, logShellError, canvasProbeResolve, canvasAsks,
     nextCanvasAskId, previewProbeProxy, stopHostByPid, occupantAt, tokenFileFor, ownIdentities, ownStartTime, waitForHost,
     HARNESS_DIR, INSTALL_DIR, listBackground, capture, stripFileFor, isQuitting, setQuitting, onWindowCreated, onClosed, getResources, getTray, seenChanged,
-    windowRouter, onProcessExit, onFocused,
+    windowRouter, onProcessExit, onFocused, openProject,
   } = services;
 
   // --- what this window is ----------------------------------------------------------
@@ -949,7 +949,6 @@ function createProjectWindow({ launchCwd, electron, config, services }) {
     select: key => tabShell.select(key),
     focusWindow,
     // A host of THIS project is shown in this window (one window per project): its tab is selected, a lane closed by hand is reopened.
-    // Another project's host keeps the attach-only spawn below until a window can open one on a project's behalf.
     thisProject: (o) => {
       const p = projectOf(o.cwd);
       return !!p && samePath(p.root, PROJECT_ROOT);
@@ -959,15 +958,8 @@ function createProjectWindow({ launchCwd, electron, config, services }) {
       const r = await tabShell.reopenFolder(o.cwd);
       return r && r.ok ? r.key : null;
     },
-    // Attach-only: it attaches to that host or refuses (host/launch-target.js).
-    spawnWindow: ({ cwd, port }) => {
-      const child = spawn(process.execPath, [INSTALL_DIR], {
-        detached: true, stdio: 'ignore', env: attachEnv(process.env, { cwd, port }),
-      });
-      child.on('error', err => console.log('[main] Open (background) failed:', err.message));
-      child.unref();
-      return { pid: child.pid };
-    },
+    // Another project's session: its project's window in this process (single-instance PR 3), never an attach-only process.
+    openProject: ({ cwd, port }) => openProject({ cwd, port, show: 'shown' }),
     // The probe driver has nobody to click.
     confirmStop: async (row) => {
       if (PROBE_PORT || !win || win.isDestroyed()) return true;

@@ -1321,6 +1321,7 @@ const windowServices = {
   seenChanged: () => windowsChanged(),
   windowRouter, onProcessExit,
   onFocused: (pw) => registry.touch(pw),
+  openProject: (o) => openProject(o),
 };
 
 // The project window (app/project-window.js): everything that is one project's. Made by startProject, after every app-wide constant it is

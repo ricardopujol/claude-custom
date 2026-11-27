@@ -45,7 +45,7 @@ function actions(over = {}) {
   const deps = {
     select: k => calls.push(['select', k]),
     focusWindow: () => calls.push(['focus']),
-    spawnWindow: o => { calls.push(['spawn', o]); return { pid: 55 }; },
+    openProject: async o => { calls.push(['openProject', o]); return { ok: true }; },
     confirmStop: async r => { calls.push(['confirm', r.pid]); return true; },
     inform: async t => calls.push(['inform', t]),
     stopHost: async () => ({ outcome: 'stopped', text: 'Stopped that session.', how: 'stop-if-idle', reason: null }),
@@ -61,10 +61,10 @@ test('open: a tab here is selected and the window comes forward', () => {
   assert.deepStrictEqual(calls, [['select', 'k'], ['focus']]);
 });
 
-test('open: anything else is a window of its own on that host, and nothing for no Open', () => {
+test('PR 3: open on any other session is a window in THIS process, through main\'s openProject; nothing for no Open', () => {
   const { a, calls } = actions();
-  assert.deepStrictEqual(a.open({ kind: 'window', port: 7701, cwd: 'C:\\x' }), { pid: 55 });
-  assert.deepStrictEqual(calls.filter(c => c[0] === 'spawn'), [['spawn', { port: 7701, cwd: 'C:\\x' }]]);
+  assert.deepStrictEqual(a.open({ kind: 'window', port: 7701, cwd: 'C:\\x' }), { opening: true });
+  assert.deepStrictEqual(calls.filter(c => c[0] === 'openProject'), [['openProject', { cwd: 'C:\\x', port: 7701 }]]);
   assert.strictEqual(a.open(null), null);
 });
 
@@ -103,11 +103,11 @@ test('open: a reopen that rejects is logged, never an unhandled rejection', asyn
   assert.ok(calls.some(c => c[0] === 'log' && /boom/.test(c[1])));
 });
 
-test('open: a host of ANOTHER project keeps the attach-only spawn', () => {
+test('PR 3: a session of ANOTHER project calls openProject({ cwd, port }) and never spawns (DESIGN_TABS_SESSIONS.md 3.4)', () => {
   const { a, calls } = actions({ thisProject: () => false, laneFor: () => 'never-asked' });
-  assert.deepStrictEqual(a.open({ kind: 'window', port: 7801, cwd: 'C:\\other\\dev' }), { pid: 55 });
-  assert.deepStrictEqual(calls.filter(c => c[0] === 'spawn'), [['spawn', { port: 7801, cwd: 'C:\\other\\dev' }]]);
-  assert.ok(!calls.some(c => c[0] === 'select'));
+  assert.deepStrictEqual(a.open({ kind: 'window', port: 7801, cwd: 'C:\\other\\dev' }), { opening: true });
+  assert.deepStrictEqual(calls.filter(c => c[0] === 'openProject'), [['openProject', { cwd: 'C:\\other\\dev', port: 7801 }]]);
+  assert.ok(!calls.some(c => c[0] === 'select' || c[0] === 'spawn'));
 });
 
 test('open: a project check or a lane lookup that throws is logged and answers null: it never escapes into the IPC handler', () => {
@@ -119,10 +119,14 @@ test('open: a project check or a lane lookup that throws is logged and answers n
   assert.ok(y.calls.some(c => c[0] === 'log' && /pickLane blew up/.test(c[1])));
 });
 
-test('open: a spawn that throws is logged and answers null', () => {
-  const { a, calls } = actions({ spawnWindow: () => { throw new Error('ENOENT'); } });
-  assert.strictEqual(a.open({ kind: 'window', port: 7701, cwd: 'C:\\x' }), null);
-  assert.ok(calls.some(c => c[0] === 'log' && /ENOENT/.test(c[1])));
+test('PR 3: an open that throws or rejects is logged, never an unhandled rejection', async () => {
+  const x = actions({ openProject: () => { throw new Error('ENOENT'); } });
+  assert.strictEqual(x.a.open({ kind: 'window', port: 7701, cwd: 'C:\\x' }), null);
+  assert.ok(x.calls.some(c => c[0] === 'log' && /ENOENT/.test(c[1])));
+  const y = actions({ openProject: async () => { throw new Error('later'); } });
+  assert.deepStrictEqual(y.a.open({ kind: 'window', port: 7701, cwd: 'C:\\x' }), { opening: true });
+  await flushAll();
+  assert.ok(y.calls.some(c => c[0] === 'log' && /later/.test(c[1])));
 });
 
 test('stop: asks first; a cancel stops nothing', async () => {

@@ -166,14 +166,12 @@ test('a host is spawned through hostEnv, never an inline environment', () => {
   assert.match(body, /detached: true/);
 });
 
-test('Open from the ▾ menu spawns a window through attachEnv, detached, never an inline environment', () => {
-  const at = MAIN.indexOf('spawnWindow: ({ cwd, port }) => {');
-  assert.ok(at !== -1, 'the ▾ actions must get a spawnWindow');
+test('PR 3: Open from the ▾ menu on another project\'s session opens its window in THIS process (no attach-only spawn, no second tray)', () => {
+  assert.strictEqual(MAIN.indexOf('spawnWindow'), -1, 'the attach-only spawn is gone from the menu\'s Open');
+  const at = MAIN.indexOf('createBackgroundActions({');
   const body = MAIN.slice(at, MAIN.indexOf('confirmStop:', at));
-  assert.match(body, /env: attachEnv\(process\.env, \{ cwd, port \}\)/);
-  assert.match(body, /spawn\(process\.execPath, \[INSTALL_DIR\]/);
-  assert.match(body, /detached: true/);
-  assert.doesNotMatch(body, /\.\.\.process\.env|ELECTRON_RUN_AS_NODE/);
+  assert.match(body, /openProject: \(\{ cwd, port \}\) => openProject\(\{ cwd, port, show: 'shown' \}\),/);
+  assert.doesNotMatch(body, /attachEnv|spawn\(/);
 });
 
 test('an attach-only window (Open from ▾) never spawns: it refuses and says why (Dexter, PR 2 F2)', () => {
