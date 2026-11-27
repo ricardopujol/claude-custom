@@ -301,6 +301,9 @@ async function main() {
     await sleep(5000);
     e9.push(...pair.filter(a => /this launch ends/.test(a.out)));
     k9 = pair.filter(a => !/this launch ends/.test(a.out));
+    // each launch's own claim lines say which path it took (PR #258 Dexter 1: a missed ack, an unproven owner, a takeover race)
+    const claimLines = pair.map((a) => `${a.child.pid}: ${a.out.split('\n').filter((l) => /\[main\] one window:/.test(l)).join(' | ')}`);
+    console.log(`      (9: ${claimLines.join(' || ')})`);
     check('9: two launches after a close: one opens the window, the other is handed to it', e9.length === 1 && k9.length === 1, `enders=${e9.length} keepers=${k9.length}`);
     if (k9.length === 1) {
       const s9 = await firstWindowUp(k9[0]);
