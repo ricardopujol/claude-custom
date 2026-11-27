@@ -205,7 +205,8 @@ async function main() {
   const tSaid = Date.now() - t2;
   // Chromium's shutdown can take a minute or more under load (BACKLOG #74 A), so "gone" is checked at the end, not here.
   console.log(`      (second launch: decided to end after ${tSaid} ms; alive now: ${isRunning(app2.child.pid)})`);
-  check('2: a second launch from dev\\ decided at once: it said why (handed to the first window) and never reached a window', !!said2 && /this project's window \(pid \d+\) has it; this launch ends/.test(app2.out) && !/\[main\] Open refused/.test(app2.out), `${tSaid} ms`);
+  check('2: a second launch from dev\\ decided at once: it said why (handed to the first window) and never reached a window', !!said2 && /this project's window \(pid \d+\) has it; this launch ends/.test(app2.out) && !/\[main\] Open refused/.test(app2.out),
+    `${tSaid} ms; exit=${app2.exited ? app2.exitCode : 'running'}; ${app2.out.split('\n').filter((l) => /\[main\]|Error|error/.test(l)).slice(-8).join(' | ').slice(0, 1500)}`);
   const told = await waitFor(() => /a second launch asked for this window \(null\): focused/.test(app1.out), 15000);
   check('2: the first window was told: focus, no lane', !!told, app1.out.slice(-300));
   const st2 = await stateOf(app1);
