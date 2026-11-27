@@ -1334,7 +1334,8 @@ const quitGate = createQuitGate({
   },
   quit: () => app.quit(),
   probe: !!PROBE_PORT,
-  record: (entry) => probeConfirms.push(entry),
+  // the probe reads this line after the process ended (verify/probe-single-instance.js case 7): window names and file names only
+  record: (entry) => { probeConfirms.push(entry); console.log(`[main] quit question (probe, answered discard): ${JSON.stringify(entry.unsaved)}`); },
   log: (l) => console.log(l),
 });
 // A quit cancelled after before-quit ran (a window's own unsaved-text prompt answered Cancel): this process stays, so it is the install's

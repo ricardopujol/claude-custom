@@ -175,3 +175,10 @@ test('PR 3: reader-unsaved is a window command: it reports unsaved text for a ta
   assert.match((await route({ cmd: 'reader-unsaved', token: TOKEN, key: 'develop' })).error, /needs a key and a path/);
   assert.deepStrictEqual(await route({ cmd: 'reader-unsaved', token: 'nope', key: 'k', path: 'p' }), { ok: false, error: 'bad token' });
 });
+
+test('PR 3: window-hide is a window command (a restore\'s hidden window, verify/probe-single-instance.js case 8)', async () => {
+  let hidden = 0;
+  const route = (obj) => routeProbeLine(JSON.stringify(obj), { token: TOKEN, windowApi: () => ({ async hide() { hidden++; return { ok: true, visible: false }; } }), appApi: {} });
+  assert.deepStrictEqual(await route({ cmd: 'window-hide', token: TOKEN, window: 'B' }), { ok: true, visible: false });
+  assert.strictEqual(hidden, 1);
+});
