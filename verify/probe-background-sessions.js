@@ -273,9 +273,11 @@ async function main() {
   const before = await command(w, { cmd: 'background' });
   check('H2 now has no window', /no window$/.test((itemOn(before, h2.port) || {}).label || ''), (itemOn(before, h2.port) || {}).label);
   const hostsBefore = probeHostPids().length;
+  // single-instance PR 3 step 10: Open on another project's session opens that project's window in THIS process (no attach-only process)
   const o = await command(w, { cmd: 'background-open', port: h2.port });
-  check('Open launched a window', o.ok && Number.isInteger(o.pid), JSON.stringify(o));
-  if (o.ok && Number.isInteger(o.pid)) { seen.see(o.pid); extraPids.push(o.pid); }
+  check('Open opened a window in this process (no new process)', o.ok && o.opening === true && !Number.isInteger(o.pid), JSON.stringify(o));
+  const two = await waitFor(async () => { const r = await command(w, { cmd: 'windows' }); return r && r.ok && r.windows.length === 2 ? r : null; }, 120000, 1500);
+  check('...the process now has two windows', Boolean(two), JSON.stringify(two && two.windows.map((x) => x.root)));
   const attached = await waitFor(async () => {
     const r = await command(w, { cmd: 'background' });
     const it = itemOn(r, h2.port);
