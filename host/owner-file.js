@@ -54,10 +54,26 @@ function decide({ owner, proof, selfPid } = {}) {
 }
 
 /**
+ * The owner's own answer on its pipe (fix/owner-proof): `ask(owner)` -> { pid, start } | null. Only the file's pid AND start is a proof;
+ * anything else (no answer, another start, junk, a throw) proves nothing either way.
+ */
+async function answeredAsOwner(owner, ask) {
+  if (typeof ask !== 'function') return false;
+  let who;
+  try { who = await ask(owner); } catch { return false; }
+  return !!who && typeof who === 'object' && who.pid === owner.pid && typeof who.start === 'string' && who.start === owner.start;
+}
+
+/**
  * Is `owner` still the process that wrote its file? 'live' only when the pid runs with the SAME start time. 'unknown' when the
  * query failed or the start could not be read: never 'dead' (host/proc-start.js: "couldn't ask" is not "not running").
+ * `ask` (optional, fix/owner-proof): asked FIRST. A pipe named by the owner's pid exists only while that process runs, and the owner
+ * answers there with the pid and start it put in the file: the same pair is 'live' with no powershell.exe on the path. MEASURED
+ * 2026-11-27: that query timed out on a busy machine and a live owner read 'unknown' (a second Jiandu process). No such answer falls back
+ * to the query, so 'dead' is still only ever decided by the process table.
  */
-async function proveOwner(owner, { startTimes } = {}) {
+async function proveOwner(owner, { startTimes, ask } = {}) {
+  if (await answeredAsOwner(owner, ask)) return 'live';
   let map;
   try { map = await startTimes([owner.pid]); } catch { return 'unknown'; }
   if (!map) return 'unknown';
@@ -114,14 +130,15 @@ function publish({ file, prepare = nothing }, doc, { staleText = null, link = fs
  * owner) or { action: 'proceed', reason, file, published } (`published`: the file now names this process).
  *   self       { pid, start }   this process (start from host/proc-start.js createSelfStartTime)
  *   startTimes async (pids) -> Map|null   host/proc-start.js startTimes
+ *   ask        async (owner) -> { pid, start } | null   optional: the owner's answer on its pipe (proveOwner)
  *   hooks      { beforePublish() }   a test seam for the race between the read and the publish
  */
-async function claimFile({ file, usable = always, prepare = nothing, unusableReason = 'unusable', self, startTimes, now = Date.now, link, hooks = {} } = {}) {
+async function claimFile({ file, usable = always, prepare = nothing, unusableReason = 'unusable', self, startTimes, ask, now = Date.now, link, hooks = {} } = {}) {
   if (!usable()) return { action: 'proceed', reason: unusableReason, file: null, published: false };
   for (let i = 0; i < ATTEMPTS; i++) {
     const text = readRaw(file);
     const owner = text === null ? null : parseOwner(text);
-    const proof = owner && owner.pid !== self.pid ? await proveOwner(owner, { startTimes }) : null;
+    const proof = owner && owner.pid !== self.pid ? await proveOwner(owner, { startTimes, ask }) : null;
     const d = decide({ owner, proof, selfPid: self.pid });
     if (d.action === 'focus') return { ...d, owner, file, text };
     if (typeof self.start !== 'string' || !self.start) return { ...d, reason: 'no-self-start', file, published: false };

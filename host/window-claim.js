@@ -35,7 +35,8 @@
  * Optional (single-instance PR 3): root (this window's project root: sent as msg.root, and handed to listen with hasPort(port), so
  *       listen may be host/window-router.js register), message() (the message to send, replacing the root/lane/port one: the app claim's
  *       open), tag (the log lines' name, default 'one window'), ackMs (ask the owner for the ack), prove(owner) (re-proof after a missed
- *       ack). A missed ack is not a refusal by itself (PR #258 Dexter 1): an owner still proven live, or not proven gone, gets one more send
+ *       ack), ask(owner) -> { pid, start } | null (fix/owner-proof: the owner's answer on its pipe, handed to claim as the first proof;
+ *       every listen gets who() so this process answers it). A missed ack is not a refusal by itself (PR #258 Dexter 1): an owner still proven live, or not proven gone, gets one more send
  *       with the full wait; only its silence then (a true hang) is a refusal.
  */
 
@@ -47,7 +48,7 @@ function createWindowClaim(deps) {
   const {
     enabled, stateRoot, pid, ownStart, startTimes, project, launchCwd, explicitPort,
     listen, claim, send, takeOver, release, forwardedCwd, act, onExit,
-    root, hasPort, message, ackMs,
+    root, hasPort, message, ackMs, ask,
   } = deps;
   const tag = typeof deps.tag === 'string' && deps.tag ? deps.tag : 'one window';
   // proof of the owner after a missed ack: 'live' | 'dead' | 'unknown' (default: the owner-file proof by pid + start)
@@ -113,7 +114,12 @@ function createWindowClaim(deps) {
     await act(msg);
   }
 
-  const listenOpts = () => ({ pid, root, hasPort, onFocus: onLaunch, accepting, whenReady, log });
+  // `who` (fix/owner-proof): this process's identity for a launch that proves the owner on the pipe; null until its start is known (the
+  // file never names this process before that). Read at each answer, since `self` gets its start after the pipe is up.
+  const whoAmI = () => (typeof self.start === 'string' && self.start ? { pid, start: self.start } : null);
+  const listenOpts = () => ({ pid, root, hasPort, onFocus: onLaunch, accepting, whenReady, who: whoAmI, log });
+  // ask(owner) (optional dep): the owner's own answer on its pipe, a proof the claim tries before the start-time query
+  const claimNow = () => claim({ stateRoot, self, startTimes, ...(typeof ask === 'function' ? { ask } : {}) });
 
   function launchMessage() {
     if (typeof message === 'function') return message();
@@ -135,7 +141,7 @@ function createWindowClaim(deps) {
         return null;
       });
       self = { pid, start: await ownStart() };
-      let r = await claim({ stateRoot, self, startTimes });
+      let r = await claimNow();
       let published = r.published === true;
       // A refused launch takes the file over only with the bytes it judged; when another launch took over first, the takeover fails and
       // the claim is made again, which finds that window and hands this launch to it (PR #247 Dexter M3). Bounded: never a loop.
@@ -169,7 +175,7 @@ function createWindowClaim(deps) {
         if (takeOver({ stateRoot, self, judgedText: r.text }) === true) { published = true; break; }
         published = false;
         if (attempt + 1 >= MAX_TAKEOVER_TRIES) break;
-        r = await claim({ stateRoot, self, startTimes });
+        r = await claimNow();
         published = r.published === true;
       }
       // PR #258 Dexter 4: going on WITHOUT the owner file (an owner that could not be proven, no start time of our own, a contended or
@@ -197,7 +203,7 @@ function createWindowClaim(deps) {
       const p = await listen(listenOpts()).catch((err) => { log(`[main] ${tag}: no launch pipe on resume (${err && err.message})`); return null; });
       if (stopped) { if (p) await p.close().catch(() => {}); return; }       // stopped again while listening: quitting for real
       pipe = p;
-      const r = await claim({ stateRoot, self, startTimes });
+      const r = await claimNow();
       if (stopped) {
         // A quit landed while the claim ran: stop() found no file to release yet, so release what the claim just published.
         if (r.published === true) { released = false; releaseFile(); }
@@ -217,7 +223,7 @@ function createWindowClaim(deps) {
   async function reclaim() {
     if (!enabled || stopped || !pipe) return false;
     try {
-      const r = await claim({ stateRoot, self, startTimes });
+      const r = await claimNow();
       if (stopped) { if (r.published === true) { released = false; releaseFile(); } return false; }
       if (r.published !== true) return false;
       released = false;

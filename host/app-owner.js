@@ -14,8 +14,8 @@ const APP_FILE = 'app.json';
 const fileOf = (dir) => path.join(dir, APP_FILE);
 const placeOf = (dir) => ({ file: fileOf(dir), usable: () => true, prepare: () => fs.mkdirSync(dir, { recursive: true }) });
 
-function claim({ stateRoot, self, startTimes, now = Date.now, link, hooks = {} } = {}) {
-  return core.claimFile({ ...placeOf(stateRoot), self, startTimes, now, link, hooks });
+function claim({ stateRoot, self, startTimes, ask, now = Date.now, link, hooks = {} } = {}) {
+  return core.claimFile({ ...placeOf(stateRoot), self, startTimes, ask, now, link, hooks });
 }
 
 function takeOver({ stateRoot, self, judgedText = null, now = Date.now, link } = {}) {

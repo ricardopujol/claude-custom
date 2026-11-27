@@ -69,6 +69,61 @@ test('claimFile: an owner that cannot be proved -> proceed, and the live-maybe o
   assert.strictEqual(read(f.file), text);
 });
 
+// --- fix/owner-proof: the owner's own answer on its pipe is a proof ------------------------------------------------
+// MEASURED 2026-11-27: the PowerShell query passed its 5 s budget on a busy machine and a live owner read 'unknown' ('unproven-owner'):
+// a second Jiandu process. `ask(owner)` asks the owner's pipe "who are you"; the SAME pid and start as the file is 'live', no PowerShell.
+
+test('proveOwner: the owner answers on its pipe with the file\'s pid AND start -> live, and PowerShell is never asked', async () => {
+  const { proveOwner } = load();
+  let asked = 0;
+  const startTimes = async () => { asked++; return null; };
+  const ask = async (o) => ({ pid: o.pid, start: START_B });
+  assert.strictEqual(await proveOwner({ pid: 10, start: START_B }, { startTimes, ask }), 'live');
+  assert.strictEqual(asked, 0);
+});
+
+test('proveOwner: no answer, another start, another pid, junk or a throw on the pipe is NOT a proof: the start-time query decides', async () => {
+  const { proveOwner } = load();
+  const owner = { pid: 10, start: START_B };
+  const answers = [async () => null, async () => ({ pid: 10, start: START_A }), async () => ({ pid: 11, start: START_B }),
+    async () => ({ pid: '10', start: START_B }), async () => 'live', async () => { throw new Error('pipe'); }, () => { throw new Error('sync'); }];
+  for (const ask of answers) {
+    assert.strictEqual(await proveOwner(owner, { startTimes: none, ask }), 'dead', String(ask));
+    assert.strictEqual(await proveOwner(owner, { startTimes: async () => null, ask }), 'unknown', String(ask));
+    assert.strictEqual(await proveOwner(owner, { startTimes: live(10, START_B), ask }), 'live', String(ask));
+  }
+});
+
+test('claimFile: a live owner whose start-time query times out is still found through its pipe -> focus, the file untouched', async () => {
+  const { claimFile } = load();
+  const f = plain();
+  const text = JSON.stringify({ pid: 10, start: START_B, at: 1 });
+  fs.writeFileSync(f.file, text);
+  const r = await claimFile({ ...f, self: { pid: 20, start: START_A }, startTimes: async () => null, ask: async () => ({ pid: 10, start: START_B }) });
+  assert.strictEqual(r.action, 'focus');
+  assert.strictEqual(r.owner.pid, 10);
+  assert.strictEqual(r.text, text);
+  assert.strictEqual(read(f.file), text);
+});
+
+test('claimFile: a live owner found through its pipe is handed the launch even when THIS process has no start time', async () => {
+  const { claimFile } = load();
+  const f = plain();
+  fs.writeFileSync(f.file, JSON.stringify({ pid: 10, start: START_B }));
+  const r = await claimFile({ ...f, self: { pid: 20, start: null }, startTimes: async () => null, ask: async () => ({ pid: 10, start: START_B }) });
+  assert.strictEqual(r.action, 'focus');
+});
+
+test('claimFile: this process\'s own file is never asked about on a pipe (self)', async () => {
+  const { claimFile } = load();
+  const f = plain();
+  fs.writeFileSync(f.file, JSON.stringify({ pid: 20, start: START_A }));
+  let asked = 0;
+  const r = await claimFile({ ...f, self: { pid: 20, start: START_A }, startTimes: none, ask: async () => { asked++; return null; } });
+  assert.strictEqual(r.reason, 'self');
+  assert.strictEqual(asked, 0);
+});
+
 test('claimFile: an unusable place -> proceed, nothing written, the caller names the reason', async () => {
   const { claimFile } = load();
   const f = plain();

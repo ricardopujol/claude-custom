@@ -12,6 +12,9 @@
  *   the ack     10 s: an owner that does not acknowledge is proven again; unless it is now gone, it gets one more send with the full wait
  *               (readyBound + 10 s), and only its silence then (a true hang) lets the launch go on and take app.json over with the judged
  *               bytes (PR #258 Dexter 1: a live owner that is only slow is never passed by on the 10 s alone).
+ *   the proof   fix/owner-proof: the launch first asks the owner's app pipe `who`; the owner answers the { pid, start } it put in app.json,
+ *               and the same pair is a live owner with no powershell.exe on the path (MEASURED 2026-11-27: that query timed out on a busy
+ *               machine and a live owner read 'unproven-owner': a second Jiandu process). No answer falls back to the query.
  * Everything else is window-claim's: a starting owner holds the launch until markReady() (or says no when it stops or its bound passes),
  * ok only from a ready owner, the takeover with the judged bytes, the guarded release, stop() / resume().
  *
@@ -66,6 +69,8 @@ function createAppClaim(deps) {
   const { dir, pid, ownStart, startTimes, launchCwd, installDir, probe, env, samePath, act, onExit, log } = deps;
   const listen = deps.listen || focus.listen;
   const send = deps.send || focus.send;
+  // fix/owner-proof: the owner proves itself on its app pipe ({ pid, start }), before any powershell.exe query
+  const who = deps.who || focus.who;
   const clean = cleanOpenFor({ install: installDir, probe, samePath });
   return createWindowClaim({
     // off (host/app-lock-config.js): run() proceeds and touches nothing
@@ -73,6 +78,7 @@ function createAppClaim(deps) {
     listen: (entry) => listen({ ...entry, name: focus.appPipeNameFor(pid), clean }),
     claim: appOwner.claim,
     send: (o) => send({ ...o, name: focus.appPipeNameFor(o.pid), type: 'open' }),
+    ask: (owner) => who({ name: focus.appPipeNameFor(owner.pid) }),
     takeOver: appOwner.takeOver, release: appOwner.release, forwardedCwd: () => undefined,
     message: () => ({ cwd: launchCwd, install: installDir, probe, env: envOf(env) }),
     tag: 'single instance',

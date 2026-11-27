@@ -31,6 +31,8 @@ const MAX_LINE = 4096;
 const MAX_CWD = 1024;
 const DEFAULT_IDLE_MS = 5000;
 const DEFAULT_SEND_TIMEOUT_MS = 10_000;
+// `who` is answered at once by a running event loop; a pipe that has not answered in this is no proof (the start-time query decides).
+const DEFAULT_WHO_TIMEOUT_MS = 5000;
 
 const isPid = (n) => Number.isInteger(n) && n > 0;
 
@@ -80,6 +82,14 @@ function okThenAct(sock, act, log = () => {}) {
   } catch { /* the launch went away */ }
 }
 
+// The listener's answer to `who`: { pid, start } only when `who()` gives a positive integer pid and a non-empty start, else a refusal.
+function identityOf(who) {
+  let id = null;
+  try { id = who(); } catch { id = null; }
+  if (id && typeof id === 'object' && isPid(id.pid) && typeof id.start === 'string' && id.start) return { pid: id.pid, start: id.start };
+  return { ok: false, error: 'no identity' };
+}
+
 /**
  * Listen for launches. Resolves { close() } once the pipe is up; rejects when it can't be (the name is taken): the caller then
  * publishes no owner file. `onFocus(msg)` runs AFTER the launch was answered ok, which only a ready window does.
@@ -88,8 +98,10 @@ function okThenAct(sock, act, log = () => {}) {
  * `name` serves another pipe than this pid's window pipe (the app pipe); `clean(raw)` -> msg | null is its message filter.
  * THE ACK (PR 3 step 1): a line carrying `ack: true` is answered `{"ack":true}` at once, before the gates, so the sender can tell a hung
  * owner (no ack) from one that holds the launch while it starts. A line without it gets exactly one line back, as before.
+ * `who()` -> { pid, start } | null (fix/owner-proof, optional): a `{"type":"who"}` line is answered with it at once, before the gates, and
+ * nothing is acted on. Without it that line is refused like any other unknown one (an owner of older code).
  */
-function listen({ pid, name, clean = cleanMessage, onFocus, accepting = () => true, whenReady = () => true, idleMs = DEFAULT_IDLE_MS, log = () => {} } = {}) {
+function listen({ pid, name, clean = cleanMessage, onFocus, accepting = () => true, whenReady = () => true, who, idleMs = DEFAULT_IDLE_MS, log = () => {} } = {}) {
   return new Promise((resolve, reject) => {
     const sockets = new Set();
     const server = net.createServer((sock) => {
@@ -114,6 +126,9 @@ function listen({ pid, name, clean = cleanMessage, onFocus, accepting = () => tr
         if (i < 0) return;
         let raw = null;
         try { raw = JSON.parse(buf.slice(0, i)); } catch { raw = null; }
+        // "Who are you" (fix/owner-proof): this process's identity, answered at once and before every gate. It opens nothing and proves only
+        // that the process the owner file names is the one listening; the launch compares it with the file (host/owner-file.js proveOwner).
+        if (typeof who === 'function' && raw && typeof raw === 'object' && raw.type === 'who') return reply(identityOf(who));
         let msg = null;
         try { msg = clean(raw); } catch { msg = null; }
         if (!msg) return reply({ ok: false, error: 'not a focus request' });
@@ -204,4 +219,41 @@ function send({ pid, name, type = 'focus', msg = {}, timeoutMs = DEFAULT_SEND_TI
   });
 }
 
-module.exports = { pipeNameFor, appPipeNameFor, listen, send, cleanMessage, okThenAct, MAX_CWD };
+/**
+ * Ask the process listening on `name` (or the window pipe of `pid`) who it is (fix/owner-proof). NEVER throws: { pid, start }, or null
+ * for no pipe, no answer within timeoutMs, a refusal (an owner of older code, one that does not know its start yet) or anything else.
+ */
+function who({ pid, name, timeoutMs = DEFAULT_WHO_TIMEOUT_MS } = {}) {
+  return new Promise((resolve) => {
+    const target = typeof name === 'string' && name ? name : (isPid(pid) ? pipeNameFor(pid) : null);
+    if (!target) return resolve(null);
+    let done = false;
+    let buf = '';
+    const sock = net.connect(target);
+    const finish = (r) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      sock.on('error', () => {});
+      try { sock.destroy(); } catch { /* closed */ }
+      resolve(r);
+    };
+    const timer = setTimeout(() => finish(null), timeoutMs);
+    sock.setEncoding('utf8');
+    sock.on('connect', () => sock.write('{"type":"who"}\n'));
+    sock.on('data', (d) => {
+      buf += d;
+      if (buf.length > MAX_LINE) return finish(null);
+      const i = buf.indexOf('\n');
+      if (i < 0) return;
+      let v = null;
+      try { v = JSON.parse(buf.slice(0, i)); } catch { v = null; }
+      const ok = v && typeof v === 'object' && !Array.isArray(v) && isPid(v.pid) && typeof v.start === 'string' && v.start;
+      finish(ok ? { pid: v.pid, start: v.start } : null);
+    });
+    sock.on('error', () => finish(null));
+    sock.on('close', () => finish(null));
+  });
+}
+
+module.exports = { pipeNameFor, appPipeNameFor, listen, send, who, cleanMessage, okThenAct, MAX_CWD, DEFAULT_WHO_TIMEOUT_MS };

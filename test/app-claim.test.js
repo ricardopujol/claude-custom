@@ -250,6 +250,52 @@ test('PR #258 Dexter 4: no start time for this process -> proceed, publish nothi
   } finally { a.claim.stop(); }
 });
 
+// --- fix/owner-proof: the live owner proves itself on its app pipe -----------------------------------------------------------------
+// MEASURED 2026-11-27 (Ricardo's smoke test, then a forced 1 s budget): the launch's PowerShell query timed out, the running owner read
+// 'unknown', and the launch went on as a SECOND Jiandu process ('unproven-owner', or 'no-self-start' when its own query failed too).
+
+test('fix/owner-proof: a live owner is handed the launch even when the launch\'s start-time queries all fail (proof by the app pipe)', async () => {
+  const dir = tmpDir('cc-app-');
+  const alive = new Set();
+  const o = launch({ dir, alive });
+  assert.strictEqual(await o.claim.run(), 'proceed');
+  o.claim.markReady();
+  const lines = [];
+  const b = launch({ dir, alive, over: { startTimes: async () => null, log: (l) => lines.push(l) } });
+  try {
+    assert.strictEqual(await b.claim.run(), 'exit', lines.join('\n'));
+    await until(() => o.acted.length === 1);
+    assert.strictEqual(readOwner(dir).pid, o.pid);
+  } finally { o.claim.stop(); b.claim.stop(); }
+});
+
+test('fix/owner-proof: ... and when the launch could not learn its OWN start either (was no-self-start)', async () => {
+  const dir = tmpDir('cc-app-');
+  const alive = new Set();
+  const o = launch({ dir, alive });
+  assert.strictEqual(await o.claim.run(), 'proceed');
+  o.claim.markReady();
+  const b = launch({ dir, alive, over: { startTimes: async () => null, ownStart: async () => null } });
+  try {
+    assert.strictEqual(await b.claim.run(), 'exit');
+    await until(() => o.acted.length === 1);
+  } finally { o.claim.stop(); b.claim.stop(); }
+});
+
+test('fix/owner-proof: an app.json whose pid answers on its pipe with ANOTHER start is not proven by the pipe (the query decides)', async () => {
+  const dir = tmpDir('cc-app-');
+  const alive = new Set();
+  const o = launch({ dir, alive });
+  assert.strictEqual(await o.claim.run(), 'proceed');
+  // the file names o's pid with a start o does not have: an older process whose pid o now holds
+  fs.writeFileSync(appFile(dir), JSON.stringify({ pid: o.pid, start: 'S-older' }));
+  const b = launch({ dir, alive, over: { startTimes: async () => null } });
+  try {
+    assert.strictEqual(await b.claim.run(), 'proceed');
+    assert.strictEqual(readOwner(dir).start, 'S-older', 'unproven: the file is not taken (PR #247 Miguel I4)');
+  } finally { o.claim.stop(); b.claim.stop(); }
+});
+
 test('PR #258 Dexter 2: a displaced owner claims again: once the displacer released app.json, reclaim() makes it this process\'s again', async () => {
   const dir = tmpDir('cc-app-');
   const alive = new Set();
