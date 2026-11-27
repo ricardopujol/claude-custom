@@ -43,11 +43,6 @@ function closeReasons(facts) {
   return out;
 }
 
-/** True only when nothing is wrong and nothing is unknown. */
-function isSafeToClose(facts) {
-  return closeReasons(facts).length === 0;
-}
-
 /** The confirm's explanation: the rule, then each reason as a sentence; '' when safe. */
 function closeReason(facts) {
   const reasons = closeReasons(facts);
@@ -124,4 +119,4 @@ async function readCloseFacts(cwd, { run = defaultRun } = {}) {
   return { branch: branchAndPushed.branch, dirtyCount, unpushedCount: branchAndPushed.unpushedCount, headInDevelop: inDevelop };
 }
 
-module.exports = { isSafeToClose, closeReasons, closeReason, readCloseFacts, makeRun, GIT_TIMEOUT_MS, STATUS_ARGS };
+module.exports = { closeReasons, closeReason, readCloseFacts, makeRun, GIT_TIMEOUT_MS, STATUS_ARGS };

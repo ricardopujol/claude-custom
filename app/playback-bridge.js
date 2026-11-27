@@ -47,7 +47,8 @@ const same = (a, b) => !!a && !!b && a.minimised === b.minimised && a.hidden ===
  * so "from this window" means "from one of its views", and a push goes to every
  * view. A push happens only when the state actually changed.
  */
-function registerPlaybackHandlers({ ipcMain, win, powerMonitor, isSender, send }) {
+function registerPlaybackHandlers({ ipcMain, win, powerMonitor, isSender, send, winOf }) {
+  if (typeof winOf === 'function') return registerPlaybackForWindows({ ipcMain, powerMonitor, isSender, winOf });
   let last = readPlayback({ win, powerMonitor });
   const fromWindow = (e) => !!e && typeof isSender === 'function' && isSender(e.sender) === true;
 
@@ -65,6 +66,45 @@ function registerPlaybackHandlers({ ipcMain, win, powerMonitor, isSender, send }
   if (powerMonitor && typeof powerMonitor.on === 'function') {
     for (const ev of ['on-battery', 'on-ac']) powerMonitor.on(ev, changed);
   }
+}
+
+/**
+ * The several-windows form (`winOf(sender)` names the window of the asking page): the channel is registered ONCE and `watch(win, send)` is
+ * called for each window as it is made; each window has its own `last`, a push goes through that window's own `send`, and a battery
+ * change re-checks every watched window. Returns `{ watch }`, whose `watch` returns the unwatch function.
+ */
+function registerPlaybackForWindows({ ipcMain, powerMonitor, isSender, winOf }) {
+  const watched = new Map();      // win -> { last, send }
+  const fromWindow = (e) => !!e && typeof isSender === 'function' && isSender(e.sender) === true;
+
+  ipcMain.handle(GET_CHANNEL, (e) => (fromWindow(e) ? readPlayback({ win: winOf(e.sender), powerMonitor }) : null));
+
+  const check = (win) => {
+    const rec = watched.get(win);
+    if (!rec) return;
+    const now = readPlayback({ win, powerMonitor });
+    if (same(now, rec.last)) return;
+    rec.last = now;
+    try { rec.send(PUSH_CHANNEL, now); } catch { /* the window is going away */ }
+  };
+  const checkAll = () => { for (const win of [...watched.keys()]) check(win); };
+  if (powerMonitor && typeof powerMonitor.on === 'function') {
+    for (const ev of ['on-battery', 'on-ac']) powerMonitor.on(ev, checkAll);
+  }
+
+  return {
+    watch(win, send) {
+      watched.set(win, { last: readPlayback({ win, powerMonitor }), send });
+      const events = ['minimize', 'restore', 'show', 'hide'];
+      const onEvent = () => check(win);
+      if (win && typeof win.on === 'function') for (const ev of events) win.on(ev, onEvent);
+      return () => {
+        watched.delete(win);
+        if (win && typeof win.removeListener === 'function') for (const ev of events) win.removeListener(ev, onEvent);
+      };
+    },
+    watchedCount: () => watched.size,
+  };
 }
 
 module.exports = { readPlayback, registerPlaybackHandlers, GET_CHANNEL, PUSH_CHANNEL };

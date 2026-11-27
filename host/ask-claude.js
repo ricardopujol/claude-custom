@@ -95,7 +95,8 @@ function createClaudeAnswerer({
         resolve(r);
       };
       try {
-        child = spawn(claudeBin, args, { cwd: cwd || neutralCwd(), env: childEnv(env, { anchor }), windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+        // A function is read at each spawn, so a tab that booted while claude.exe was mid-update follows the live path (PR #253).
+        child = spawn(typeof claudeBin === 'function' ? claudeBin() : claudeBin, args, { cwd: cwd || neutralCwd(), env: childEnv(env, { anchor }), windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
       } catch (err) {
         settle(missingOrFailed(err));
         return;

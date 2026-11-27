@@ -147,10 +147,27 @@ function pinFavouritesFirst(items, favouriteIds, idOf) {
   return [...favourites, ...rest];
 }
 
+/**
+ * The model picker's rows for one target, search and free-only switch (PR #246 Miguel Y4: this was inline in renderer.js, untested, after
+ * host/models.js's own copy was removed as dead). Only the SESSION target restricts by tools: a model that cannot call one can still
+ * hold an opinion, and excluding it would shrink the diversity the council exists for. The search matches the id or the name, case
+ * blind; free-only keeps rows whose `free` is set. The input is never changed.
+ */
+function filterCatalogue(rows, { target = 'council', search = '', freeOnly = false } = {}) {
+  let out = Array.isArray(rows) ? rows : [];
+  if (target === 'session') out = out.filter(m => m && m.tools);
+  if (search) {
+    const q = String(search).toLowerCase();
+    out = out.filter(m => m && (String(m.id).toLowerCase().indexOf(q) !== -1 || String(m.name).toLowerCase().indexOf(q) !== -1));
+  }
+  if (freeOnly) out = out.filter(m => m && m.free);
+  return out;
+}
+
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     KINDS, emptyFavourites, normalizeFavourites, isFavourite, toggleFavourite, setFavourite,
-    partitionFavourites, pinFavouritesFirst,
+    partitionFavourites, pinFavouritesFirst, filterCatalogue,
   };
 } else {
   // KINDS is NOT published to the browser global scope: nothing in the
@@ -165,6 +182,7 @@ if (typeof module !== 'undefined' && module.exports) {
   root.setFavourite = setFavourite;
   root.partitionFavourites = partitionFavourites;
   root.pinFavouritesFirst = pinFavouritesFirst;
+  root.filterCatalogue = filterCatalogue;
 }
 
 })(typeof window !== 'undefined' ? window : globalThis);

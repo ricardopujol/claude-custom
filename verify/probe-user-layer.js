@@ -24,6 +24,7 @@
    An earlier attempt used a bare empty home and produced no marker at all:
    without `.claude.json` the directory is untrusted and hooks never run. That
    run is why the control below is mandatory. */
+const { noteChild } = require('./lib/launch-electron');   // BACKLOG #179: takes the heavy-work lock now, before anything heavy starts; noteChild records each host / claude it starts
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -85,6 +86,7 @@ async function run(label, args) {
   env.CLAUDE_CONFIG_DIR = path.join(fakeHome, '.claude');
 
   const p = pty.spawn(BIN, args, { name: 'xterm-256color', cols: 100, rows: 30, cwd: WORK, env });
+  noteChild(p);   // the lock's work record: a live p keeps this probe a live holder (BACKLOG #112)
   let out = '';
   p.onData(d => { out += d; });
   await sleep(14000);

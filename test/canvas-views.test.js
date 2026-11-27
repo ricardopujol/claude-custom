@@ -770,3 +770,15 @@ test('the ask budget is per view: a hosts already approved or denied never spend
   await r.m.fetchFor(r.views[1].webContents, { url: 'https://fresh.example.com/' });
   assert.strictEqual(r.asked.length, PANEL_LIMITS.totalAsks + 1);
 });
+
+test('isPanel says whether a contents is one of THIS manager\'s panels (the window registry routes the panel IPC on it)', async () => {
+  const r = rig();
+  await show(r);
+  const wc = r.views[0].webContents;
+  assert.strictEqual(r.m.isPanel(wc), true);
+  assert.strictEqual(r.m.isPanel(r.owner), false, 'a tab page is not a panel');
+  assert.strictEqual(r.m.isPanel(null), false);
+  assert.strictEqual(r.m.isPanel(undefined), false);
+  r.m.hide(r.owner);
+  assert.strictEqual(r.m.isPanel(wc), false, 'a hidden panel is gone');
+});

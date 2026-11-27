@@ -193,3 +193,36 @@ test('property: every favourited-and-present item sorts ahead of every non-favou
     },
   ));
 });
+
+// ---- PR #246 Miguel Y4: the Models panel's own filter, once inline in renderer.js and untested ------------------------------------
+test('filterCatalogue: the session target keeps only models that can call tools; the council keeps every one', () => {
+  const { filterCatalogue } = require('../app/models-favourites');
+  const rows = [{ id: 'a/x', name: 'X', tools: true, free: false }, { id: 'b/y', name: 'Y', tools: false, free: true }];
+  assert.deepStrictEqual(filterCatalogue(rows, { target: 'session' }).map(m => m.id), ['a/x']);
+  assert.deepStrictEqual(filterCatalogue(rows, { target: 'council' }).map(m => m.id), ['a/x', 'b/y']);
+  assert.deepStrictEqual(filterCatalogue(rows).map(m => m.id), ['a/x', 'b/y'], 'no target is the council: nothing is excluded');
+});
+
+test('filterCatalogue: search matches the id or the name, case blind; free-only keeps the known-free; the three compose', () => {
+  const { filterCatalogue } = require('../app/models-favourites');
+  const rows = [{ id: 'openai/gpt-5', name: 'OpenAI: GPT-5', tools: true, free: false },
+    { id: 'meta/llama', name: 'Llama Free', tools: true, free: true }, { id: 'x/none', name: 'Nameless', tools: false, free: true }];
+  assert.deepStrictEqual(filterCatalogue(rows, { search: 'GPT' }).map(m => m.id), ['openai/gpt-5']);
+  assert.deepStrictEqual(filterCatalogue(rows, { search: 'llama free' }).map(m => m.id), ['meta/llama']);
+  assert.deepStrictEqual(filterCatalogue(rows, { freeOnly: true }).map(m => m.id), ['meta/llama', 'x/none']);
+  assert.deepStrictEqual(filterCatalogue(rows, { target: 'session', freeOnly: true }).map(m => m.id), ['meta/llama']);
+  assert.deepStrictEqual(filterCatalogue(rows, { target: 'session', freeOnly: true, search: 'zzz' }), []);
+});
+
+test('filterCatalogue: never changes its input, and a non-list is an empty one', () => {
+  const { filterCatalogue } = require('../app/models-favourites');
+  const rows = [{ id: 'a', name: 'A', tools: false, free: false }];
+  filterCatalogue(rows, { target: 'session' });
+  assert.strictEqual(rows.length, 1);
+  assert.deepStrictEqual(filterCatalogue(undefined, { target: 'session' }), []);
+});
+
+test('the Models panel uses filterCatalogue', () => {
+  const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'app', 'renderer.js'), 'utf8');
+  assert.match(src, /let rows = filterCatalogue\(catalogue, \{ target, search, freeOnly \}\);/);
+});

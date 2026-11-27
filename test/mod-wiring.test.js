@@ -20,14 +20,15 @@ const CODE = strip(HOST);
 test('the arguments are rebuilt with the mod once the CLI\'s version is known, from the same options', () => {
   assert.match(CODE, /const ARGS_OPTIONS = \{ settingsFile, helperExists, canvasMcp, side: SIDE \};/);
   assert.match(CODE, /let ARGS = buildClaudeArgs\(ARGS_OPTIONS\);/);
-  assert.match(CODE, /ARGS = buildClaudeArgs\(\{ \.\.\.ARGS_OPTIONS, modDir: modPluginDirFor\(\{ enabled, version, dir: MOD_DIR, forced \}\) \}\);/);
+  // the directory is worked out ONCE and both the boot ARGS and the spawn-time rebuild (argsForSpawn, PR #250 Miguel Y1) use it
+  assert.match(CODE, /const modDir = modPluginDirFor\(\{ enabled, version, dir: MOD_DIR, forced \}\);\s*ARGS = buildClaudeArgs\(\{ \.\.\.ARGS_OPTIONS, modDir \}\);\s*ARGS_MOD_DIR = modDir;/);
 });
 
 test('the mod is decided by the switch, the CLI\'s version and the directory, before the session starts', () => {
   assert.match(CODE, /const \[processStartedAt, excluded\] = await Promise\.all\(\[createSelfStartTime\(\)\(\), excludedRanges\(\), prepareMod\(\)\]\);/);
   const prep = CODE.slice(CODE.indexOf('async function prepareMod()'), CODE.indexOf('async function prepareMod()') + 2200);
   assert.match(prep, /modEnabled\(\{ env: process\.env, stateDir: path\.join\(HARNESS_DIR, 'state'\) \}\)/);
-  assert.match(prep, /readCliVersion\(CLAUDE_BIN\)/);
+  assert.match(prep, /readCliVersion\(liveClaudeBin\(\)\)/);
   assert.match(prep, /modOffReason\(\{ enabled, version, dir: MOD_DIR, forced \}\)/);
   assert.match(prep, /modPort = await modServer\.listen\(\);/);
   assert.match(prep, /catch \(err\) \{\s*modPort = null;/, 'a failure leaves the session without the mod, never without a session');
@@ -53,7 +54,10 @@ test('Miguel Y9: the page writes the reason into the diagnostics log, for a mod 
 });
 
 test('the mod\'s port and token reach the child through its environment, and only when the server is up', () => {
-  assert.match(CODE, /\.\.\.\(modPort === null \? \{\} : \{ CLAUDE_CUSTOM_MOD_PORT: String\(modPort\), CLAUDE_CUSTOM_MOD_TOKEN: MOD_TOKEN \}\),/);
+  // The env is built by host/pty-env.js since #74 F2 (a claude session spreads modEnv; a shell tab doesn't: test/pty-env.test.js).
+  assert.match(CODE, /modEnv: modPort === null \? \{\} : \{ CLAUDE_CUSTOM_MOD_PORT: String\(modPort\), CLAUDE_CUSTOM_MOD_TOKEN: MOD_TOKEN \} \}\),/);
+  const ptyEnvSrc = require('fs').readFileSync(require('path').join(__dirname, '..', 'host', 'pty-env.js'), 'utf8');
+  assert.match(ptyEnvSrc, /CLAUDE_CUSTOM_SESSION: '1',\s*\.\.\.modEnv,/);
 });
 
 test('an inherited port or token (a host launched from inside a harness tab) never reaches the child', () => {

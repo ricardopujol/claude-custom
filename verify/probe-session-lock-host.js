@@ -1,5 +1,6 @@
 'use strict';
 require('./lib/mark-probe');   // BACKLOG #169: this script starts a host or an Electron, so its children carry the probe mark
+const { noteChild } = require('./lib/launch-electron');   // BACKLOG #179: takes the heavy-work lock now, before anything heavy starts; noteChild records each host / claude it starts
 const { killChildTree } = require('../host/kill-tree');
 /**
  * Does the session lock hold in REAL hosts? (Extension X1, PR 1b.)
@@ -58,6 +59,7 @@ function startHost(name, port) {
     CLAUDE_CUSTOM_CWD: repo, CLAUDE_CUSTOM_PORT: String(port), CLAUDE_CUSTOM_TOKEN: token };
   delete env.ELECTRON_RUN_AS_NODE;
   const child = spawn(process.execPath, [path.join(ROOT, 'host', 'host.js')], { cwd: ROOT, env });
+  noteChild(child);   // the lock's work record: a live child keeps this probe a live holder (BACKLOG #112)
   const h = { name, port, token, child, out: '' };
   child.stdout.on('data', d => { h.out += d; });
   child.stderr.on('data', d => { h.out += d; });

@@ -1,4 +1,5 @@
 'use strict';
+const { noteChild } = require('../lib/launch-electron');   // #243 Miguel I1: takes the heavy-work lock now, before anything starts; noteChild records the claude it starts
 /* Probe #71 (a), part 2: claude spawned with --plugin-dir <root> where <root> holds NO mod yet (the way claude-custom
    would hand each session a canvas folder). While the session runs, a mod folder is copied in (as the model's Write
    would). Does the running session pick up a plugin that didn't exist at spawn? Then: same with an EMPTY mod folder
@@ -29,6 +30,7 @@ async function run(mode) {
   const args = ['--model', 'haiku'];
   if (mode === 'env') env.CLAUDE_CODE_PLUGIN_DIRS = root; else args.push('--plugin-dir', target);
   const p = pty.spawn(claudeBin, args, { name: 'xterm-256color', cols: 160, rows: 45, cwd: work, env });
+  noteChild(p);   // the lock's work record: a live p keeps this probe a live holder (BACKLOG #112)
   trackExit(p);
   p.onData(d => term.write(d));
   const scr = async () => { await new Promise(r => term.write('', r)); const b = term.buffer.active; const o = []; for (let i = 0; i < b.length; i++) o.push(b.getLine(i).translateToString(true)); return o.join('\n'); };

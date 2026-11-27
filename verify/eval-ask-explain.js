@@ -7,10 +7,13 @@
  *
  *   node verify/eval-ask-explain.js [--model qwen3.5:4b] [--out <raw json>] [--dir <index folder>] [--only 1,4]
  *
- * HEAVY: the GPU. Take ~/.claude/scripts/heavy-lock.ps1 first. It builds (or reuses) the index in --dir, runs the model with
+ * HEAVY: the GPU. It takes the heavy-work lock itself (BACKLOG #179), so a busy slot waits or ends NOT RUN (exit 75); with a claude model,
+ * each answer's claude is recorded with noteChild, whose start-time query is one synchronous PowerShell call (about a
+ * second per answer, #243 Miguel S6). It builds (or reuses) the index in --dir, runs the model with
  * thinking off, and unloads it when done. It never starts or installs anything; Ollama down exits 2.
  * The prompt below is the explainer prompt the panel will ship (host/ask-explain.js takes it from here once the bar is met).
  */
+const { noteChild } = require('./lib/launch-electron');   // BACKLOG #179: takes the heavy-work lock now, before anything heavy starts; noteChild records each host / claude it starts
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -100,7 +103,8 @@ function mentionsIt(text, selection) {
   const viaClaude = Object.prototype.hasOwnProperty.call(CLAUDE_MODELS, model);
   // a Claude model answers through the real CLI (plan quota, no API key); retrieval still uses the local embedder either way
   const ollama = createAskOllama(viaClaude ? {} : { answerModel: model });
-  const claude = viaClaude ? createClaudeAnswerer({ claudeBin: process.env.CLAUDE_BIN || 'claude' }) : null;
+  // Each claude the answerer starts is recorded in the lock's work record (BACKLOG #112, #179).
+  const claude = viaClaude ? createClaudeAnswerer({ claudeBin: process.env.CLAUDE_BIN || 'claude', spawn: (...a) => noteChild(require('child_process').spawn(...a)) }) : null;
   const status = await ollama.check();
   console.log('ollama:', JSON.stringify(status));
   if (!status.ok && status.reason === 'ollama-down') { console.log('Ollama is not running: nothing to measure.'); process.exit(2); }

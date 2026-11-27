@@ -41,6 +41,8 @@
 
 require('./lib/mark-probe');   // BACKLOG #169: this script starts a host or an Electron, so its children carry the probe mark
 const { app, BrowserWindow } = require('electron');
+// BACKLOG #179: this main is itself the Electron, so it takes the heavy lock here, before the app is ready, and exit() frees it first.
+const mainLock = require('./lib/electron-main-lock').takeMainLock({ app, label: 'shoot-full.js' });
 const { probeWindowOptions } = require('../host/probe-window');
 const path = require('path');
 const fs = require('fs');
@@ -60,7 +62,7 @@ const maxHeight = Number(flag('max-height', 30000)) || 30000;
 
 if (!input || !output) {
   console.error('usage: electron verify/shoot-full.js <input.html> <out.png> [--width=] [--sentinel=] [--font=]');
-  process.exit(2);
+  mainLock.exit(2);
 }
 
 // DPR 1 and no LCD text, set before the app is ready so they reach the
@@ -151,7 +153,8 @@ app.whenReady().then(async () => {
     png = Buffer.from(shot.data, 'base64');
   } catch (err) {
     console.error('capture failed:', err && err.message);
-    process.exit(1);
+    mainLock.exit(1);
+    return;   // #243 Miguel S1: app.exit doesn't stop this function; the write below would run with no image
   }
 
   fs.writeFileSync(output, png);
@@ -171,5 +174,5 @@ app.whenReady().then(async () => {
 
   console.log(`\nwrote ${output} (${buf.length} bytes, ${pngWidth}x${pngHeight})`);
   console.log(failures ? `${failures} FAILURE(S)` : 'ALL PASS');
-  setTimeout(() => app.exit(failures ? 1 : 0), 200);
+  setTimeout(() => mainLock.exit(failures ? 1 : 0), 200);
 });

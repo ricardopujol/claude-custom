@@ -11,7 +11,7 @@
  *    - the REAL recorded session (test/hooks-real-subagent-failure.fixture.jsonl) replayed through the machine:
  *      what detail each agent showed, step by step.
  *
- * B. THE LOOK (--window; heavy: take heavy-lock.ps1 first). A real host and a real window: hook events sent through
+ * B. THE LOOK (--window; heavy: it takes the heavy-work lock itself). A real host and a real window: hook events sent through
  *    the real native helper into the real hook bridge, one agent per state, then the DOM and a screenshot per state.
  *    `claude` is replaced by cmd.exe (CLAUDE_CUSTOM_BIN) so nothing is billed. Everything it writes goes to temp
  *    folders and to .harness/shots-agent-states/.

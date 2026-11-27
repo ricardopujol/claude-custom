@@ -9,6 +9,7 @@ const fs = require('fs');
 const path = require('path');
 const { EventEmitter } = require('events');
 const { guardNavigation, EVENTS } = require('../app/nav-guard');
+const { mainProcessSource } = require('./main-source');
 
 test('every navigation event is prevented, whatever the url or the event shape', () => {
   const wc = new EventEmitter();
@@ -38,7 +39,7 @@ test('a hostile or oversized url does not break the guard', () => {
 });
 
 test('app/main.js guards every tab view with it, next to the window-open handler', () => {
-  const main = fs.readFileSync(path.join(__dirname, '..', 'app', 'main.js'), 'utf8');
+  const main = mainProcessSource();
   assert.match(main, /require\('\.\/nav-guard'\)/);
   const at = main.indexOf('wc.setWindowOpenHandler(');
   assert.ok(at > 0);

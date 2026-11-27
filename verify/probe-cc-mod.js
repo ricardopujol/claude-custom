@@ -21,8 +21,9 @@
  * the host here always holds its own lease (the poll check below is therefore always meaningful).
  *
  * Traps (CLAUDE.md): ELECTRON_RUN_AS_NODE and every CLAUDE_CUSTOM_* variable are stripped from what the children inherit. No Electron is
- * started, so the heavy lock is not needed. Nothing is killed by name: only the pids this probe started, through host/kill-tree.js.
+ * started; the host and the real claude are heavy work, so it takes the heavy-work lock itself (BACKLOG #179). Nothing is killed by name: only the pids this probe started, through host/kill-tree.js.
  */
+const { noteChild } = require('./lib/launch-electron');   // BACKLOG #179: takes the heavy-work lock now, before anything heavy starts; noteChild records each host / claude it starts
 const { spawn, spawnSync } = require('child_process');
 const fs = require('fs');
 const os = require('os');
@@ -106,6 +107,7 @@ async function partA(bin) {
   const settingsFile = path.join(os.tmpdir(), `cc-mod-probe-settings-${Date.now()}.json`);
   fs.writeFileSync(settingsFile, JSON.stringify({ permissions: { ask: ['Write'], allow: [], deny: [] } }));
   const child = pty.spawn(bin, ['--permission-mode', 'default', '--settings', settingsFile, '--plugin-dir', MOD_DIR.replace(/\\/g, '/')], { name: 'xterm-256color', cols: 110, rows: 40, cwd: REPO, env });
+  noteChild(child);   // the lock's work record: a live child keeps this probe a live holder (BACKLOG #112)
   hygiene.registerChild(child);
   child.onData((d) => term.write(d));
   const write = (s) => child.write(s);
@@ -184,6 +186,7 @@ async function partB() {
   const token = newToken();
   const env = { ...cleanEnv(), CLAUDE_CUSTOM_PORT: String(HOST_PORT), CLAUDE_CUSTOM_CWD: REPO, CLAUDE_CUSTOM_TOKEN: token, CLAUDE_CUSTOM_QUOTA_DIR: quotaDir };
   const host = spawn(process.execPath, [path.join(REPO, 'host', 'host.js')], { env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+  noteChild(host);   // the lock's work record: a live host keeps this probe a live holder (BACKLOG #112)
   hygiene.registerChild(host);
   let log = '';
   host.stdout.on('data', (d) => { log += d.toString(); });

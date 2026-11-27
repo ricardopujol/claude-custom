@@ -1,4 +1,5 @@
 'use strict';
+const { noteChild } = require('../lib/launch-electron');   // #243 Miguel I1: takes the heavy-work lock now, before anything starts; noteChild records the claude it starts
 /* Probe #71 (a): does a CLI mod (function-hooks plugin) render as terminal cells through a node-pty + xterm,
    the way claude-custom hosts claude? Do its Buttons respond to keys / SGR mouse clicks, can a button submit a
    prompt to the session, and does an edit to the mod hot-reload in a running session?
@@ -86,6 +87,7 @@ async function main() {
   const term = new Terminal({ cols: COLS, rows: ROWS, scrollback: 2000, allowProposedApi: true });
   let rawAll = '';
   const p = pty.spawn(claudeBin, ['--model', 'haiku', '--plugin-dir', MOD], { name: 'xterm-256color', cols: COLS, rows: ROWS, cwd: work, env });
+  noteChild(p);   // the lock's work record: a live p keeps this probe a live holder (BACKLOG #112)
   trackExit(p);
   p.onData(d => { rawAll += d; term.write(d); });
   const killed = () => { try { killChildTree(p); } catch { /* gone */ } };

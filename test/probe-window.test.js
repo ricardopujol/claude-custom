@@ -59,7 +59,7 @@ test('the launcher passes CLAUDE_CUSTOM_PROBE_VISIBLE through to the Electron it
 });
 
 test('the real app window takes probe options only when the probe port is set', () => {
-  const main = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'app', 'main.js'), 'utf8');
+  const main = require('./main-source').mainProcessSource();
   assert.match(main, /const forProbe = \(opts\) => \(PROBE_PORT \? require\('\.\.\/host\/probe-window'\)\.probeWindowOptions\(opts\) : opts\);/);
   assert.match(main, /win = new BrowserWindow\(forProbe\(\{/);
 });

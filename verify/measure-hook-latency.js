@@ -1,4 +1,5 @@
 'use strict';
+const { noteChild } = require('./lib/launch-electron');   // #243 Miguel I4: takes the heavy-work lock, so a latency is measured with nothing heavy beside it; noteChild records the bridge it forks
 /* Checklist item: "Real round-trip latency of the native hook helper."
    The design doc estimates the native helper at ~5ms, Node at 60-100ms and
    PowerShell at ~200ms, and says explicitly: measure, don't trust estimates.
@@ -38,6 +39,7 @@ const pct = (xs, p) => sorted(xs)[Math.min(xs.length - 1, Math.floor(xs.length *
 const mean = xs => xs.reduce((a, b) => a + b, 0) / xs.length;
 
 const child = fork(path.join(__dirname, 'bridge-server.js'), [PIPE], { stdio: 'inherit' });
+noteChild(child);   // the lock's work record: a live child keeps this probe a live holder (BACKLOG #112)
 const ask = msg => new Promise(resolve => {
   child.once('message', resolve);
   child.send(msg);

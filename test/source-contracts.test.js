@@ -360,7 +360,7 @@ test('#50: the reader\'s unsaved file reaches main only from a tab view, and the
 });
 
 test('#50 (PR #155 Dexter 2): closing the window asks about unsaved reader text, with Save wired through the pages', () => {
-  const main = fs.readFileSync(path.join(__dirname, '..', 'app', 'main.js'), 'utf8').replace(/\r\n/g, '\n');
+  const main = require('./main-source').mainProcessSource();   // the close handler is the project window's (app/project-window.js)
   const at = main.indexOf("win.on('close', (e) => {");
   assert.ok(at !== -1, 'the window has a close handler');
   const body = main.slice(at, main.indexOf("win.on('closed'", at));
@@ -377,7 +377,7 @@ test('#50 (PR #155 Dexter 2): closing the window asks about unsaved reader text,
 });
 
 test('#50 (PR #155 Miguel I1): a reloaded or crashed page can no longer leave main believing it has unsaved text', () => {
-  const main = fs.readFileSync(path.join(__dirname, '..', 'app', 'main.js'), 'utf8').replace(/\r\n/g, '\n');
+  const main = require('./main-source').mainProcessSource();
   assert.match(main, /wc\.on\('render-process-gone', \(_e, d\) => \{ readerUnsaved\.clear\(tab\.key\);/);
   assert.match(main, /wc\.on\('did-start-navigation', \(_e, _url, isInPlace, isMainFrame\) => \{ if \(isMainFrame && !isInPlace\) readerUnsaved\.clear\(tab\.key\); \}\);/);
 });
@@ -392,7 +392,7 @@ test('#50 (PR #155 Miguel I3): the reader\'s probe hooks (type, confirmAnswer...
   assert.match(renderer, /case 'repoProbe': \{\s*const r = repoBrowser\.probe\(a\.what, a\);/);
   // that case is inside the view-action switch, which only the probe driver's `view` command reaches, behind a whitelist
   assert.match(read('app', 'tab-shell.js'), /VIEW_PROBE_ACTIONS = new Set\(\[[^\]]*'repoProbe'/);
-  assert.match(read('app', 'main.js').replace(/\r\n/g, '\n'), /if \(PROBE_PORT\) startProbeDriver\(PROBE_PORT\)/);
+  assert.match(read('app', 'main.js').replace(/\r\n/g, '\n'), /if \(PROBE_PORT\) \{\s*startProbeServer\(\{/);   // single-instance PR 2: one server for the process (app/probe-driver.js)
   // the answer hook is read in exactly one place besides probe(): confirmLeave
   const reader = read('app', 'repo-reader.js');
   const uses = (reader.match(/probeAnswer/g) || []).length;
@@ -400,10 +400,10 @@ test('#50 (PR #155 Miguel I3): the reader\'s probe hooks (type, confirmAnswer...
 });
 
 test('#50 (PR #155 r2 N1): destroying a tab view clears its unsaved entry (a removed worktree leaves no phantom question)', () => {
-  const main = fs.readFileSync(path.join(__dirname, '..', 'app', 'main.js'), 'utf8').replace(/\r\n/g, '\n');
+  const main = require('./main-source').mainProcessSource();
   const at = main.indexOf('function destroyTabView(tab) {');
   assert.ok(at !== -1);
-  assert.match(main.slice(at, main.indexOf('\n}\n', at)), /readerUnsaved\.clear\(tab\.key\)/);
+  assert.match(require('./main-source').bodyAt(main, at), /readerUnsaved\.clear\(tab\.key\)/);
 });
 
 test('#50 (PR #155 Miguel I2): the Files panel highlight goes back when the person declines to leave unsaved text', () => {
@@ -748,4 +748,50 @@ test('the mood machine\'s cause tests post only tools whose Post hooks are regis
   }
   assert.ok(posted.size > 0, 'the scan found the fixtures');
   for (const t of posted) assert.ok(hooked.has(t), `${t} has no PostToolUse hook, so it can't happen live`);
+});
+
+// #74 F2 / PR #246 Miguel Y6: host/pty-env.js is now a mutated module, so the shell-branch text pin moved here from shell-host-wiring.test.js.
+test('pty-env.js: a shell tab\'s environment goes through shellEnv and gets no provider, no mod token and no harness session marker', () => {
+  const src = read('host/pty-env.js').replace(/\r\n/g, '\n');
+  const at = src.indexOf("if (kind === 'shell') {");
+  assert.ok(at >= 0, 'the shell branch exists');
+  const shellBranch = src.slice(at, src.indexOf('\n  }', at));
+  assert.match(shellBranch, /shellEnv\(\{ \.\.\.base \}\)/);
+  assert.doesNotMatch(shellBranch, /providerEnv|modEnv|CLAUDE_CUSTOM_SESSION/);
+});
+
+// --- PR #250 (Miguel S2): moved here from tab-shell-pins.test.js, which is in the mutation command and so can't read a mutated module as text ---
+test('Miguel S2: one "pinnable" rule serves pin and pinMenu, and the menu click reports a refusal instead of dropping it', () => {
+  const fs = require('fs');
+  const shell = fs.readFileSync(path.join(__dirname, '..', 'app', 'tab-shell.js'), 'utf8').replace(/\r\n/g, '\n');
+  assert.strictEqual((shell.match(/const pinnable = /g) || []).length, 1);
+  assert.ok((shell.match(/pinnable\(key\)/g) || []).length >= 2, 'used by setPinned and pinMenu');
+  assert.strictEqual((shell.match(/model\(\)\.some\(e => e\.key === key && !isCompanionEntry\(e\) && !e\.isDev\)/g) || []).length, 1, 'the predicate is written once');
+  const main = require('./main-source').mainProcessSource();
+  const menu = main.slice(main.indexOf('function tabMenuTemplate('), main.indexOf('let win = null;'));
+  assert.match(menu, /const done = \(r\) => \{ if \(r && r\.ok === false\) console\.log\(`\[menu\] pin: \$\{r\.error\}`\); \};/);
+});
+
+// --- PR #256 (Miguel Y1): moved here from project-registry / window-timers / probe-driver tests, which are in the mutation command and so can't read a mutated module as text ---
+test('the process-level helpers need no Electron (they load under plain node)', () => {
+  for (const f of ['project-registry', 'window-timers', 'project-lifecycle', 'view-closer']) {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'app', f + '.js'), 'utf8');
+    assert.doesNotMatch(src, /require\(\s*['"]electron['"]\s*\)/, f);
+  }
+});
+
+test('the probe driver\'s server is the process\'s: loopback only, once, and the window no longer opens a port of its own', () => {
+  const driver = fs.readFileSync(path.join(__dirname, '..', 'app', 'probe-driver.js'), 'utf8');
+  assert.match(driver, /server\.listen\(port, '127\.0\.0\.1'/);
+  const win = fs.readFileSync(path.join(__dirname, '..', 'app', 'project-window.js'), 'utf8');
+  assert.doesNotMatch(win, /net\.createServer|\.listen\(port/, 'a second window would collide on PROBE_PORT');
+});
+
+// PR #256 Dexter 5: an attach that is already INSIDE its port walk when the window closes must not present a view afterwards. The shell's
+// harness cannot hold one there (the queue runs the selected tab's start first), so the guard is pinned as text.
+test('Dexter 5: attachIfRunning checks `destroyed` again after its port walk, before it presents a view', () => {
+  const shell = fs.readFileSync(path.join(__dirname, '..', 'app', 'tab-shell.js'), 'utf8').replace(/\r\n/g, '\n');
+  const at = shell.indexOf('function attachIfRunning(');
+  const after = shell.slice(shell.indexOf('await hosts.choosePort(tab)', at));
+  assert.match(after.slice(0, after.indexOf('present(tab')), /tab\.closed \|\| tab\.started \|\| tab\.starting \|\| destroyed\) return;/);
 });

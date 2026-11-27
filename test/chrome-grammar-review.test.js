@@ -13,19 +13,28 @@ const HTML = read('renderer.html');
 const JS = read('renderer.js');
 const DOCK = read('dock-tree-display.js');
 
-test('finding 1: only a running suite shimmers; an unknown HP is a dashed border and nothing moves', () => {
+test('finding 1: one shimmer rule, for a loading quota and a pending chip; nothing unknown moves', () => {
   const shimmer = HTML.split('\n').filter(l => l.includes('animation: chip-shimmer'));
   assert.strictEqual(shimmer.length, 1);
   const rule = HTML.slice(0, HTML.indexOf('animation: chip-shimmer')).split('}').pop();
-  assert.ok(rule.includes('.chip-hp:has(> #hp.running)'), 'the shimmer rule names the running chip');
-  assert.ok(!rule.includes('#hp.unknown'), 'and not the unknown one');
-  assert.match(HTML, /\.chip-hp:has\(> #hp\.unknown\)[^{]*\{[^}]*border-style: dashed/);
+  assert.ok(rule.includes('#quota.is-loading'), 'the shimmer rule names the loading quota');
+  assert.ok(rule.includes('.chip:has(> .tb-chip.pending)'), 'and the pending chip');
 });
 
-test('finding 2: renderHealth draws from chipModel.healthChip and remembers the last known value; a stale chip is dimmed', () => {
-  assert.match(JS, /chipModel\.healthChip\(h, lastHealthKnown\)/);
-  assert.match(JS, /if \(view\.known\) lastHealthKnown = view\.known/);
-  assert.match(HTML, /#hp\.stale[^{]*\{[^}]*opacity/);
+// BACKLOG #163 (Ricardo 2026-11-06: "Remove it"). The HP heart (the test pass rate) left the top bar. host/health.js and
+// app/chip-model.js's healthChip stay with their unit tests for a later game layer; nothing in the page draws them now.
+test('#163: the HP heart is gone from the top bar: no markup, no CSS, no renderer wiring', () => {
+  assert.ok(!HTML.includes('id="hp"'), 'no #hp element');
+  assert.ok(!HTML.includes('chip-hp'), 'no chip-hp wrapper');
+  assert.ok(!HTML.includes('heart-pulse'), 'no heart icon in the bar');
+  // PR #246 Miguel S2: its icon path left with it (nothing else drew it)
+  assert.ok(!require('fs').readFileSync(require('path').join(__dirname, '..', 'app', 'chip-icons.js'), 'utf8').includes('heart-pulse'), 'no heart-pulse path in chip-icons.js');
+  assert.doesNotMatch(HTML, /#hp\b/, 'no #hp CSS rule');
+  assert.ok(!HTML.includes('hp-pulse'), 'no hp-pulse keyframes');
+  assert.ok(!JS.includes('renderHealth'), 'the renderer draws no health chip');
+  assert.ok(!JS.includes('lastHealthKnown'), 'and keeps no last-known health');
+  assert.ok(!JS.includes('chipModel.healthChip'), 'healthChip has no caller in the page');
+  assert.ok(!JS.includes("closest('#hp')"), 'no click on the chip asks the host to run the suite');
 });
 
 test('finding 3: the status-fields hover is built from the chips, not a regex over the joined text', () => {

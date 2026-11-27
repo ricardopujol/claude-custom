@@ -20,6 +20,7 @@
    child env. /vim toggles a persisted editor mode, so the probe toggles it
    back and reports what ~/.claude.json says afterwards; settings files are
    snapshotted and restored byte for byte, as in probe-top-bar-truth.js. */
+const { noteChild } = require('./lib/launch-electron');   // BACKLOG #179: takes the heavy-work lock now, before anything heavy starts; noteChild records each host / claude it starts
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -67,6 +68,7 @@ const vimSettings = path.join(os.tmpdir(), `cc-probe-vim-${Date.now()}.json`);
 fs.writeFileSync(vimSettings, JSON.stringify({ editorMode: 'vim' }));
 const args = process.platform === 'win32' ? ['/c', 'claude', '--settings', vimSettings] : ['--settings', vimSettings];
 const child = pty.spawn(shell, args, { name: 'xterm-256color', cols: COLS, rows: ROWS, cwd: REPO, env });
+noteChild(child);   // the lock's work record: a live child keeps this probe a live holder (BACKLOG #112)
 child.onData(d => term.write(d));
 
 const screen = () => {

@@ -25,7 +25,7 @@
  *
  * SAFE. The host's `claude` is cmd.exe (CLAUDE_CUSTOM_BIN), so nothing bills; ELECTRON_RUN_AS_NODE is deleted;
  * registry, portraits, uploads and user data are temp folders; the repo is a temp git repo. The install's global
- * layout file is moved aside for the run and put back. HEAVY: take ~\.claude\scripts\heavy-lock.ps1 first.
+ * layout file is moved aside for the run and put back. HEAVY: it takes the heavy-work lock itself.
  */
 
 const { execFileSync } = require('child_process');

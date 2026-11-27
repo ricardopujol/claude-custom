@@ -1,4 +1,5 @@
 'use strict';
+const { noteChild } = require('./lib/launch-electron');   // BACKLOG #179: takes the heavy-work lock now, before anything heavy starts; noteChild records each host / claude it starts
 const { killChildTree } = require('../host/kill-tree');
 /* Does the statusLine document carry the context window? Measured on the REAL
    CLI, sending NO prompt -- /model is a local command, so this spends no tokens.
@@ -107,6 +108,7 @@ async function main() {
   const shell = process.platform === 'win32' ? 'cmd.exe' : 'claude';
   const args = process.platform === 'win32' ? ['/c', 'claude', '--settings', settingsFile] : ['--settings', settingsFile];
   const child = pty.spawn(shell, args, { name: 'xterm-256color', cols: COLS, rows: ROWS, cwd: REPO, env });
+  noteChild(child);   // the lock's work record: a live child keeps this probe a live holder (BACKLOG #112)
   hygiene.registerChild(child);
   child.onData(() => { /* the screen is not what is measured here */ });
   let failed = false;

@@ -7,7 +7,8 @@
  *   1B  A branch tab is on the strip only while its lane has a running session, or it is the selected tab. Every other
  *       lane (not started, merged, closed by hand) is a row in the Lanes menu: placeLanes.
  *   2A  Tabs shrink to MIN_TAB; the ones that still do not fit go to the same menu as "Hidden tabs", shown as +N. The
- *       selected tab and develop always stay: splitOverflow, capacityFor.
+ *       selected tab, develop and every pinned lane (#167) always stay: splitOverflow, capacityFor.
+ *   Pins (#167): a pinned lane is on the strip even when idle (placeLanes) and is never +N (splitOverflow).
  *   Drag to reorder: develop is first and never moves; every other lane has a place in a saved order: applyOrder, moveKey.
  *
  * Entries are the strip model's (app/tab-model.js, as app/tab-shell.js fills them in): `{ key, label, isDev, selected,
@@ -43,6 +44,12 @@ function needsYou(e) {
   return !!e && typeof e === 'object' && (e.needsInput === true || hasMessages(e));
 }
 
+/**
+ * A pinned lane (BACKLOG #167; documentation/DESIGN_TABS_SESSIONS.md 3.2) is always on the strip, running or not, and is must-keep
+ * under overflow (never +N). Only a real `true` on a lane counts; a companion is never pinned.
+ */
+const isPinned = e => !!e && typeof e === 'object' && e.pinned === true && !isCompanion(e);
+
 // A lane whose folder is going, or failed to go, has something to say on the strip; it can't slip into a menu quietly.
 const needsEye = e => e.phase === 'removing' || e.badge === 'warn';
 
@@ -61,7 +68,7 @@ function placeLanes(entries, closedRows) {
   const onStrip = new Set();
   for (const e of list) {
     if (isCompanion(e)) continue;
-    if (e.isDev === true || e.selected === true || isRunning(e) || needsEye(e) || hasCompanion.has(e.key)) onStrip.add(e.key);
+    if (e.isDev === true || e.selected === true || isPinned(e) || isRunning(e) || needsEye(e) || hasCompanion.has(e.key)) onStrip.add(e.key);
   }
   const strip = [];
   const notStarted = [];
@@ -110,7 +117,7 @@ function splitOverflow(stripEntries, capacity) {
     units.push(u);
     byLane.set(e.key, u);
   }
-  const must = (u) => u.lane.isDev === true || u.entries.some(x => x.selected === true || needsYou(x));
+  const must = (u) => u.lane.isDev === true || isPinned(u.lane) || u.entries.some(x => x.selected === true || needsYou(x));
   let budget = cap - units.filter(must).reduce((n, u) => n + u.entries.length, 0);
   const shownUnits = new Set(units.filter(must));
   let full = false;
@@ -153,6 +160,30 @@ function moveKey(order, key, beforeKey) {
   const at = isString(beforeKey) ? rest.indexOf(beforeKey) : -1;
   if (at < 0) return [...rest, key];
   return [...rest.slice(0, at), key, ...rest.slice(at)];
+}
+
+/**
+ * launchSet({ lanes, devKey, pinned, order, dismissed, first }) -> the lane keys whose sessions start when the window opens
+ * (documentation/DESIGN_TABS_SESSIONS.md 3.1; Ricardo's picks P1 and P10), in the order they start:
+ *   1. `first`, the lane the window was opened from, when it is listed;
+ *   2. develop (`devKey`), when it is listed;
+ *   3. the pinned lanes, in strip order (the saved `order`, then the lanes it doesn't name, as git lists them).
+ * `lanes` are the keys git lists (develop's among them); a key that isn't listed (a pin whose worktree is gone) is never in it, and
+ * neither is one in `dismissed` (closed by hand: closed stays closed). A subset of `lanes`, no key twice, junk ignored.
+ */
+function launchSet(args) {
+  const { lanes, devKey, pinned, order, dismissed, first } = args && typeof args === 'object' ? args : {};
+  const keysOf = (v) => (Array.isArray(v) ? v : []).filter(k => isString(k) && k !== '');
+  const listed = new Set(keysOf(lanes));
+  const closed = new Set(keysOf(dismissed));
+  const ok = (k) => isString(k) && listed.has(k) && !closed.has(k);
+  const out = [];
+  const add = (k) => { if (ok(k) && !out.includes(k)) out.push(k); };
+  add(first);
+  add(devKey);
+  const pins = new Set(keysOf(pinned));
+  for (const k of applyOrder(keysOf(lanes).filter(k => k !== devKey), order, (x) => x)) if (pins.has(k)) add(k);
+  return out;
 }
 
 /**
@@ -211,7 +242,7 @@ function lanesMenuRows(menu, hiddenEntries) {
   return out;
 }
 
-const api = { MIN_TAB, isRunning, needsYou, hasMessages, placeLanes, capacityFor, splitOverflow, applyOrder, moveKey, dropBefore, leaving, lanesMenuRows };
+const api = { MIN_TAB, isRunning, needsYou, hasMessages, placeLanes, capacityFor, splitOverflow, applyOrder, moveKey, launchSet, dropBefore, leaving, lanesMenuRows };
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = api;

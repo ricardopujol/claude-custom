@@ -8,9 +8,10 @@ const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
+const { mainProcessSource } = require('./main-source');
 
 const HOST = fs.readFileSync(path.join(__dirname, '..', 'host', 'host.js'), 'utf8');
-const MAIN = fs.readFileSync(path.join(__dirname, '..', 'app', 'main.js'), 'utf8');
+const MAIN = mainProcessSource();
 
 test('host.js: the shell flag is read once, before the hook helper is looked for, and a shell host has no helper', () => {
   assert.match(HOST, /const SHELL = isShellEnv\(process\.env\);\s*\nconst helperExists = !SHELL && fs\.existsSync\(HELPER_PATH\);/);
@@ -22,17 +23,15 @@ test('host.js: a shell host takes no session lock', () => {
 
 test('host.js: the pty runs the picked shell with its (empty) arguments, not claude with claude\'s', () => {
   assert.match(HOST, /const SHELL_TARGET = SHELL \? pickShell\(process\.env\) : null;/);
-  assert.match(HOST, /const spawnPty = \(\) => pty\.spawn\(SHELL \? SHELL_TARGET\.bin : CLAUDE_BIN, SHELL \? SHELL_TARGET\.args : ARGS, \{/);
+  assert.match(HOST, /const spawnPty = \(\) => pty\.spawn\(SHELL \? SHELL_TARGET\.bin : liveClaudeBin\(\), SHELL \? SHELL_TARGET\.args : claudeArgs\(\), \{/);     // #166: claudeArgs() is ARGS, plus --continue for a lane's main session (host/continue-flag.js)
 });
 
 test('host.js: a shell\'s environment goes through shellEnv and gets no provider, no mod token and no harness session marker', () => {
+  // Since #74 F2 the env is built by host/pty-env.js: host.js hands it the kind and the parts, and its shell branch is pinned by
+  // behaviour in test/pty-env.test.js (a shell tab gets shellEnv(base), the worktree's, no provider, no mod token, no marker).
   const spawn = HOST.slice(HOST.indexOf('const spawnPty = () => pty.spawn('), HOST.indexOf('trackExit(term);'));
-  const from = spawn.indexOf('env: SHELL');
-  assert.ok(from > 0, 'the env is chosen by SHELL');
-  const shellBranch = spawn.slice(from, spawn.indexOf('\n      : {', from));
-  assert.match(shellBranch, /shellEnv\(cleanEnv\(\)\)/);
-  assert.doesNotMatch(shellBranch, /providerEnv|MOD_TOKEN|CLAUDE_CUSTOM_SESSION/);
-  assert.match(spawn.slice(spawn.indexOf('\n      : {', from)), /providerEnv/, 'claude\'s own branch still has them');
+  assert.match(spawn, /env: ptyEnv\(\{ kind: SHELL \? 'shell' : SIDE \? 'side' : 'branch', base: cleanEnv\(\), shellEnv, sessionEnv, providerEnv,/);
+  // The text pin on pty-env.js's shell branch lives in test/source-contracts.test.js (pty-env.js is a mutated module: PR #246 Y6).
 });
 
 test('host.js: every identity the host writes says whether it is a shell host, as well as a side host', () => {
@@ -49,10 +48,11 @@ test('host.js: a shell that fails to spawn ENDS the host through the same exit p
   assert.match(start, /const spawnTimed = \(\) => \{ const before = Date\.now\(\); const t = spawnPty\(\); spawnWindow = \{ before, after: Date\.now\(\) \}; return t; \};/);
   assert.match(start, /const started = startShellPty\(spawnTimed\);\s*\n\s*if \(!started\.term\) \{/);
   assert.match(start, /endHost\(started\.frame\.exitCode, started\.frame\.signal, \{ error: started\.frame\.error \}, FAILED_START_LINGER_MS\);\s*\n\s*return;/);
-  assert.match(start, /\} else \{\s*\n\s*term = spawnTimed\(\);/, 'claude keeps the plain spawn, timed');
+  // BACKLOG #217: still the plain timed spawn, now inside the try whose retryable failures host/boot-retry.js waits out.
+  assert.match(start, /\} else \{\s*\n(?:\s*\/\/[^\n]*\n)+\s*try \{\s*\n\s*term = spawnTimed\(\);/, 'claude keeps the plain spawn, timed');
   const end = HOST.slice(HOST.indexOf('function endHost('));
   assert.match(end, /releaseSessionLock\(SESSION_LOCK, lockOwner\)[\s\S]*type: 'exit', exitCode, signal, \.\.\.extra[\s\S]*process\.exit\(exitCode \?\? 0\)/);
-  assert.match(HOST, /t\.onExit\(\(\{ exitCode, signal \}\) => \{[\s\S]{0,200}endHost\(exitCode, signal\);/);
+  assert.match(HOST, /t\.onExit\(\(\{ exitCode, signal \}\) => \{[\s\S]{0,420}endHost\(exitCode, signal\);/);
 });
 
 test('host.js: a shell host polls no quota, asks for none on attach, and loads no mod', () => {
@@ -91,8 +91,8 @@ test('main.js: a shell tab\'s menu has its shell item and a Close shell that goe
 });
 
 test('main.js: the probe driver clicks the menu a person gets, and a tab\'s x with a real click (Ricardo\'s look, 2026-10-26)', () => {
-  const drv = MAIN.slice(MAIN.indexOf('function startProbeDriver('), MAIN.indexOf('async mouseMove('));
-  assert.match(drv, /Menu\.buildFromTemplate\(tabMenuTemplate\(key\)\)\.items/, 'the popup\'s own template, built by Electron');
+  const drv = MAIN.slice(MAIN.indexOf('function probeApi('), MAIN.indexOf('async mouseMove('));   // the window's half of the probe driver (the server is app/probe-driver.js)
+  assert.match(drv, /Menu\.buildFromTemplate\(tabMenuTemplate\(key\)\)\.items/,'the popup\'s own template, built by Electron');
   assert.match(drv, /if \(!hit\.enabled\) return \{ ok: false, error: `\$\{item\} is disabled`, items \};\s*hit\.click\(\);/, 'a disabled item is not clicked');
   assert.match(drv, /async xClick\(label\) \{ return stripClick\(label, true, \[\]\); \}/);
   assert.match(drv, /async ctrlClick\(label\) \{ return stripClick\(label, false, \['control'\]\); \}/);
@@ -100,7 +100,7 @@ test('main.js: the probe driver clicks the menu a person gets, and a tab\'s x wi
 });
 
 test('main.js: the probe driver clicks the strip alert\'s Stop button with a real input event, and the state says whether it is drawn (#129)', () => {
-  const drv = MAIN.slice(MAIN.indexOf('function startProbeDriver('), MAIN.indexOf('async mouseMove('));
+  const drv = MAIN.slice(MAIN.indexOf('function probeApi('), MAIN.indexOf('async mouseMove('));
   assert.match(drv, /async stopClick\(\) \{ return stripStopClick\(\); \}/);
   assert.match(drv, /const stripStopClick = async \(\) => \{[\s\S]*?querySelector\('#strip-alert \.stop'\)[\s\S]*?sendInputEvent\(\{ type: 'mouseDown', \.\.\.base \}\)/);
   assert.match(drv, /stop: !!document\.querySelector\('#strip-alert \.stop'\)/, 'stripChrome says if the offer is drawn');
@@ -126,7 +126,7 @@ test('main.js: the + menu offers a Shell tab for the selected lane', () => {
   // #160: the template is app/tab-shell.js plusMenuTemplate (its labels are pinned in test/tab-shell-develop.test.js); main hands
   // it the shell's openShell for the item's target.
   const plus = MAIN.slice(MAIN.indexOf("ipcMain.on('strip:plus'"), MAIN.indexOf("ipcMain.on('strip:plus'") + 300);
-  assert.match(plus, /Menu\.buildFromTemplate\(plusMenuFor\(\)\)/);
+  assert.match(plus, /Menu\.buildFromTemplate\(p\.plusMenuFor\(\)\)/);   // `p` is the strip's owning window (stripOwner(e))
   const builder = MAIN.slice(MAIN.indexOf('function plusMenuFor('), MAIN.indexOf('function plusMenuFor(') + 500);
   assert.match(builder, /plusMenuTemplate\(tabShell\.plusMenu\(\)/);
   assert.match(builder, /openShell: \(target\) => tabShell\.openShell\(target\)/);

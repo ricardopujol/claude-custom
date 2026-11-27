@@ -54,6 +54,7 @@ function createPreviewViews({
 } = {}) {
   const deny = { denyPorts };
   const byOwner = new Map();          // owner contents id -> record
+  // Same as canvas-views: a closed window's preview sessions stay until quit (Electron never frees one), emptied when the view goes (PR 2 plan risk 7).
   const sessions = new Map();         // partition -> { ses, ready }
   const watched = new Set();          // owner ids whose 'destroyed' we already listen for
   const remembered = new Map();       // worktree key -> last accepted address

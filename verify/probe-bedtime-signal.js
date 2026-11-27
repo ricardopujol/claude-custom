@@ -1,4 +1,5 @@
 'use strict';
+const { noteChild } = require('./lib/launch-electron');   // BACKLOG #179: takes the heavy-work lock now, before anything heavy starts; noteChild records each host / claude it starts
 const { killChildTree, trackExit } = require('../host/kill-tree');
 /* What does a /bedtime run emit, and what rule starts, paces and ends a night?   (re-runnable)
 
@@ -154,6 +155,7 @@ async function capture() {
   const term = pty.spawn(claudeBin, ['--model', 'haiku', '--settings', settingsFile], {
     name: 'xterm-256color', cols: 120, rows: 40, cwd: work, env,
   });
+  noteChild(term);   // the lock's work record: a live term keeps this probe a live holder (BACKLOG #112)
   let screen = '';
   term.onData(d => { screen += d; });
   trackExit(term);  // node-pty reports no exitCode: record its exit now, so killChildTree can tell

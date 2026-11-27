@@ -83,6 +83,66 @@ test('the identity file is NOT removed by a host that never owned it', () => {
     'the error handler must distinguish "we never bound" from a normal shutdown');
 });
 
+// #222: the window reads `hosts/<port>.token` as soon as the port answers; a host that takes the shared schedules lock first
+// (up to 3 s) leaves the previous host's token there that long. The token files go first, before anything that can block.
+test('#222: the token files are written first in the listening handler, before schedulesControl.start()', () => {
+  const start = HOST.indexOf("wss.on('listening'");
+  assert.ok(start !== -1);
+  const body = HOST.slice(start, HOST.indexOf('\n});', start));
+  const token = body.indexOf('writeTokenFiles();');          // the calls end in `;`, so a comment naming them is not matched
+  const schedules = body.indexOf('schedulesControl.start();');
+  assert.ok(token !== -1 && schedules !== -1, 'both calls are in the handler');
+  assert.ok(token < schedules, 'writeTokenFiles() must come before schedulesControl.start()');
+});
+
+// A top-level function's text, from its `function` keyword to its closing brace at column 0 (the file has CRLF endings).
+function fnBody(at) {
+  const rest = HOST.slice(at);
+  const end = rest.search(/\r?\n\}\r?\n/);
+  return end === -1 ? rest : rest.slice(0, end);
+}
+
+// Dexter 5 / Miguel Y2: the window waits for the identity file as its proof of who bound, so it comes right after the token files.
+test('#222: the identity is written right after the token files, before schedulesControl.start() (the 3 s lock wait)', () => {
+  const start = HOST.indexOf("wss.on('listening'");
+  const body = HOST.slice(start, HOST.indexOf('\n});', start));
+  const token = body.indexOf('writeTokenFiles();');
+  const identity = body.indexOf('writeIdentity({');
+  const schedules = body.indexOf('schedulesControl.start();');
+  assert.ok(token !== -1 && identity !== -1 && schedules !== -1);
+  assert.ok(token < identity && identity < schedules, 'order: token files, identity, then schedulesControl.start()');
+});
+
+test('#222: shutdown() unlinks this host\'s token file with its identity, and the token unlink has the bound guard ON ITS OWN', () => {
+  const idx = HOST.indexOf('unlinkSync(PORT_TOKEN_FILE)', HOST.indexOf('function shutdown('));     // the one inside shutdown()
+  assert.ok(idx !== -1);
+  const line = HOST.slice(HOST.lastIndexOf('\n', idx), HOST.indexOf('\n', idx));
+  assert.match(line, /removeIdentity/, 'guarded by removeIdentity');
+  assert.match(line, /boundPort === PORT/, 'and by "this process bound the port" itself: a loser must never delete the winner\'s secret');
+});
+
+test('#222 (Miguel Y1): shutdown() defaults removeIdentity to "this process bound the port", so a bare SIGTERM of a loser keeps the winner\'s files', () => {
+  const at = HOST.indexOf('function shutdown(');
+  assert.match(HOST.slice(at, at + 400), /removeIdentity = removeIdentity && boundPort === PORT;/);
+});
+
+test('#222 (Dexter 4): when claude exits (endHost) the host removes its token file and identity, only when it bound: on the process exit event, so no exit path skips it', () => {
+  assert.match(HOST, /process\.on\('exit', removeOwnFiles\)/);
+  assert.match(fnBody(HOST.indexOf('function endHost(')), /process\.exit\(/, 'endHost ends through process.exit, which runs the exit handlers');
+  const fnAt = HOST.indexOf('function removeOwnFiles(');
+  assert.ok(fnAt !== -1);
+  const fn = fnBody(fnAt);
+  assert.match(fn, /boundPort !== PORT/, 'only when this process bound the port');
+  assert.match(fn, /unlinkSync\(fileFor\(HARNESS_DIR, PORT\)\)/);
+  assert.match(fn, /unlinkSync\(PORT_TOKEN_FILE\)/);
+});
+
+test('#222: the refusal line names the port, so a shared host.log can say which host refused', () => {
+  const idx = HOST.indexOf('[host] refused a connection');
+  assert.ok(idx !== -1);
+  assert.ok(/refused a connection[^\n]*PORT/.test(HOST.slice(idx, idx + 120)), 'the log line carries PORT');
+});
+
 // Dexter, PR 2 F1 (High): the ▾ list may stop a pid only on an EXACT proof,
 // the OS start time in the identity file. The host learns it asynchronously at
 // boot, so it publishes it both ways round: in the listening handler when boot

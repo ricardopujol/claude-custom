@@ -11,11 +11,12 @@ const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
+const { mainProcessSource } = require('./main-source');
 
 const APP = path.join(__dirname, '..', 'app');
 const strip = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*/gm, '');
 const read = (f) => fs.readFileSync(path.join(APP, f), 'utf8');
-const MAIN = strip(read('main.js'));
+const MAIN = strip(mainProcessSource());
 const PRELOAD = strip(read('preload.js'));
 const RENDERER = strip(read('renderer.js'));
 const HTML = read('renderer.html');
@@ -49,7 +50,9 @@ test('a change in the live claims re-publishes the shell', () => {
 test('the shell reads the live claims from it, and it starts once the shell is open and stops on quit', () => {
   assert.match(MAIN, /occupancy: \{ claims: \(\) => occupancyService\.current\(\), known: \(folder\) => occupancyService\.known\(folder\) \}/);
   assert.match(MAIN, /occupancyService\.start\(\)/);
-  assert.match(MAIN, /app\.on\('will-quit', \(\) => \{[^}]*occupancyService\.close\(\)/);
+  // on quit main asks every window to close its occupancy (the window's closeOccupancy closes the service)
+  assert.match(MAIN, /app\.on\('will-quit', \(\) => \{[^}]*forEachProject\(\(p\) => p\.closeOccupancy\(\)\)/);
+  assert.match(MAIN, /function closeOccupancy\(\) \{ if \(transcriptOccupancy\) transcriptOccupancy\.close\(\); if \(occupancyService\) occupancyService\.close\(\); \}/);
 });
 
 // The fallback producer (host/occupancy-transcripts.js): claims read off the subagent transcripts, for the
@@ -79,11 +82,13 @@ test('the scanner starts after the reader, and on quit it removes the claims it 
   const service = MAIN.indexOf('occupancyService.start()');
   const scanner = MAIN.indexOf('transcriptOccupancy.start()');
   assert.ok(service !== -1 && scanner > service, 'the reader first: the scanner asks it who is live');
-  assert.match(MAIN, /app\.on\('will-quit', \(\) => \{[^}]*transcriptOccupancy\.close\(\)/);
+  // the scanner is closed before the service it reads (closeOccupancy's order), by the same will-quit listener
+  assert.ok(MAIN.indexOf('transcriptOccupancy.close()') !== -1 && MAIN.indexOf('transcriptOccupancy.close()') < MAIN.indexOf('occupancyService.close()'));
+  assert.match(MAIN, /app\.on\('will-quit', \(\) => \{[^}]*forEachProject\(\(p\) => p\.closeOccupancy\(\)\)/);
 });
 
 test('occupancy:get answers only one of this window\'s tab pages', () => {
-  assert.match(MAIN, /ipcMain\.handle\('occupancy:get', \(e\) => \(isTabView\(e\.sender\) \? tabShell\.occupancyFor\(e\.sender\) : null\)\)/);
+  assert.match(MAIN, /ipcMain\.handle\('occupancy:get', \(e\) => \(isTabView\(e\.sender\) \? viewOwner\(e\.sender\)\.tabShell\.occupancyFor\(e\.sender\) : null\)\)/);
 });
 
 // --- preload.js ----------------------------------------------------------------------------------

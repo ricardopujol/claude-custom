@@ -74,6 +74,7 @@
          rather than shown as free/unknown; worth a note for #4's design (a
          local model must not be able to display a paid-looking cost). */
 
+const { noteChild } = require('./lib/launch-electron');   // BACKLOG #179: takes the heavy-work lock now, before anything heavy starts; noteChild records each host / claude it starts
 const { spawnSync } = require('child_process');
 const http = require('http');
 const crypto = require('crypto');
@@ -221,7 +222,7 @@ async function runClaudeAttempt(name, { baseUrl, authVar, extraArgs = [], timeou
   // bare child.kill(), which on Windows with shell:true only kills cmd.exe,
   // not the real claude process tree beneath it (Miguel, PR #61 review H3).
   const r = await spawnWithTimeout({
-    cmd: 'claude', args, env, timeoutMs, shell: process.platform === 'win32',
+    cmd: 'claude', args, env, timeoutMs, shell: process.platform === 'win32', onSpawn: noteChild,   // the lock's work record (BACKLOG #112)
   });
   if (r.error) return { name, code: null, stdout: r.stdout, stderr: `spawn error: ${r.error}` };
   if (r.timedOut) console.log(`[${at()}] ${name} TIMED OUT after ${timeoutMs}ms -- tree-killed pid ${r.pid}`);

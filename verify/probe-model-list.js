@@ -98,6 +98,7 @@
    whether 'fable' simply joins the hardcoded three as a fourth documented
    alias next time that file is touched. */
 
+const { noteChild } = require('./lib/launch-electron');   // BACKLOG #179: takes the heavy-work lock now, before anything heavy starts; noteChild records each host / claude it starts
 const fs = require('fs');
 
 // --- statusLine mode, same as probe-top-bar-truth.js. MUST run before the
@@ -244,6 +245,7 @@ function runClaude(args) {
     : ['--settings', settingsTmp];
   const shell = process.platform === 'win32' ? 'cmd.exe' : 'claude';
   const child = pty.spawn(shell, args, { name: 'xterm-256color', cols: COLS, rows: ROWS, cwd: REPO, env });
+  noteChild(child);   // the lock's work record: a live child keeps this probe a live holder (BACKLOG #112)
   child.onData((d) => term.write(d));
 
   const screen = () => {

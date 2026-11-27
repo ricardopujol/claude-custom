@@ -31,6 +31,7 @@
  * .harness/state/ at start, the same as any probe that starts a host on this checkout.
  */
 require('./lib/mark-probe');   // BACKLOG #169: this script starts a host, so its children carry the probe mark
+const { noteChild } = require('./lib/launch-electron');   // BACKLOG #179: takes the heavy-work lock now, before anything heavy starts; noteChild records each host / claude it starts
 const { spawn, execFileSync } = require('child_process');
 const crypto = require('crypto');
 const fs = require('fs');
@@ -173,6 +174,7 @@ async function main() {
   fs.mkdirSync(env.CLAUDE_CUSTOM_REGISTRY, { recursive: true });
 
   host = spawn(process.execPath, [path.join(ROOT, 'host', 'host.js')], { cwd: ROOT, env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+  noteChild(host);   // the lock's work record: a live host keeps this probe a live holder (BACKLOG #112)
   hygiene.registerChild(host);
   host.stdout.on('data', d => { hostLog += d; });
   host.stderr.on('data', d => { hostLog += d; });

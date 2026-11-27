@@ -20,7 +20,7 @@
 
    Usage:  node verify/probe-electron-zombies.js [--cycles 5] [--views 3] [--close exit|kill] [--watch 60] [--linger 5]
    --close exit  the app's own way out (views closed, window closed, app.exit(0)).  --close kill  taskkill /T /F.
-   Heavy work: take ~/.claude/scripts/heavy-lock.ps1 first; one Electron at a time (cycles are sequential).
+   Heavy work: it takes the heavy-work lock itself (verify/README.md); one Electron at a time (cycles are sequential).
    PASS/FAIL is on "every cycle ran and was measured", never on the linger numbers: they are the finding.
 
    RESULTS 2026-10-08 13:25, quiet machine (34 GB free, 2-9 % CPU), 5 cycles x 7 processes (main, gpu, utility,

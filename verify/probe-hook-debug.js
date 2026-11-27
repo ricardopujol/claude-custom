@@ -16,6 +16,7 @@
 
      both execute    -> H1: hooks accumulate; do NOT union (would double-fire)
      only marker     -> H2: user hooks replaced; the writer MUST union */
+const { noteChild } = require('./lib/launch-electron');   // BACKLOG #179: takes the heavy-work lock now, before anything heavy starts; noteChild records each host / claude it starts
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -50,6 +51,7 @@ async function run(label, args) {
   const p = pty.spawn(BIN, ['--debug', ...args], {
     name: 'xterm-256color', cols: 200, rows: 50, cwd: REPO, env,
   });
+  noteChild(p);   // the lock's work record: a live p keeps this probe a live holder (BACKLOG #112)
   let out = '';
   p.onData(d => { out += d; });
   await sleep(15000);

@@ -25,9 +25,11 @@ test('every action shortcutFor can return has a row (a key added there without a
 });
 
 test('every action main.js dispatches on has a row', () => {
-  const src = read('app', 'main.js');
+  // registerShortcuts moved into app/project-window.js (indented, so its end is found by brace matching, not by a column-0 brace)
+  const src = require('./main-source').mainProcessSource();
   const start = src.indexOf('function registerShortcuts(');
-  const body = src.slice(start, src.indexOf('\n}', start));
+  assert.ok(start !== -1, 'registerShortcuts exists');
+  const body = require('./main-source').bodyAt(src, start);
   const used = new Set([...body.matchAll(/action === '([a-z-]+)'/g)].map(m => m[1]));
   assert.ok(used.size >= 7, [...used].join());
   const inTable = new Set(ROWS.map(r => r.action).filter(Boolean));

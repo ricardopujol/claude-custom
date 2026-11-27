@@ -12,6 +12,7 @@
    Note: deliberately does NOT pass --dangerously-skip-permissions. The question
    under test is settings-layer precedence, which is orthogonal to permissions,
    and the probe should not spawn a bypassed agent just to read a status line. */
+const { noteChild } = require('./lib/launch-electron');   // BACKLOG #179: takes the heavy-work lock now, before anything heavy starts; noteChild records each host / claude it starts
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -42,6 +43,7 @@ async function run(label, extraArgs) {
   const p = pty.spawn(BIN, extraArgs, {
     name: 'xterm-256color', cols: COLS, rows: ROWS, cwd: REPO, env,
   });
+  noteChild(p);   // the lock's work record: a live p keeps this probe a live holder (BACKLOG #112)
   p.onData(d => term.write(d));
   await sleep(10000);
 

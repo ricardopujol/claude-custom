@@ -57,6 +57,7 @@
        run's SubagentStop arrives: a race, not proof a run came back.
      - SendMessage's input properties: to, summary, message, notify_when_idle. */
 
+const { noteChild } = require('./lib/launch-electron');   // BACKLOG #179: takes the heavy-work lock now, before anything heavy starts; noteChild records each host / claude it starts
 const http = require('http');
 const fs = require('fs');
 const os = require('os');
@@ -293,7 +294,7 @@ async function runScenario(mode) {
   const args = ['-p', 'say hi', '--output-format', 'json', '--no-session-persistence', '--settings', settingsFile,
     '--permission-mode', 'bypassPermissions', '--allowedTools', 'Agent,Bash,SendMessage'];
   console.log(`\n=== ${mode}: fake server :${fake.port}, token ${token}`);
-  const r = await spawnWithTimeout({ cmd: 'claude', args, env, timeoutMs: 120_000, shell: process.platform === 'win32' });
+  const r = await spawnWithTimeout({ cmd: 'claude', args, env, timeoutMs: 120_000, shell: process.platform === 'win32', onSpawn: noteChild });
   fake.stop();
   await new Promise(res => fake.server.close(res));
   const hooks = readHookLog(hookLog);

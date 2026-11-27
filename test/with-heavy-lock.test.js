@@ -35,7 +35,7 @@ test('runs the command under the lock, passes the re-entrancy flag, returns its 
   const p = main(['node', '--test', 'x'], r.deps);
   r.child.emit('exit', 3, null);
   assert.strictEqual(await p, 3);
-  assert.deepStrictEqual(plain(r), ['acquire:npm test', 'spawn', 'release']);
+  assert.deepStrictEqual(plain(r), ['acquire:node x', 'spawn', 'release']);
   assert.strictEqual(r.spawned().cmd, 'node');
   assert.deepStrictEqual(r.spawned().args, ['--test', 'x']);
   assert.strictEqual(r.spawned().opts.env[ENV_VAR], 'npm test (pid 9 start 99)', '#237 Dexter 2: the flag names this run\'s holder, not a bare 1');
@@ -132,7 +132,7 @@ test('SIGHUP (a closed console): the tree is killed, THEN the slot is released, 
   const r = rig();
   const p = main(['node'], r.deps);
   r.proc.emit('SIGHUP');
-  assert.deepStrictEqual(plain(r), ['acquire:npm test', 'spawn', 'kill:4242', 'release']);
+  assert.deepStrictEqual(plain(r), ['acquire:node', 'spawn', 'kill:4242', 'release']);
   r.child.emit('exit', null, 'SIGTERM');
   assert.strictEqual(await p, 129);
   assert.strictEqual(r.events.filter(e => e === 'release').length, 1);
@@ -233,8 +233,11 @@ test('#237 Miguel S2: the queue variant, the error shape and the timed-out wordi
   assert.match(header, /the 'error'/);
   assert.match(header, /ran past its wait and was stopped/);
   const readme = fs.readFileSync(path.join(__dirname, '..', 'verify', 'README.md'), 'utf8');
-  const queued = notRunLine(new HeavyLockError('busy', 'x', { detail: '2 ahead in the queue', waitedMs: 20 * 60000 }));
+  const queued = notRunLine(new HeavyLockError('busy', 'x', { detail: '2 ahead in the queue', waitedMs: 20 * 60000, firstInLine: 'not held back by the load gate' }));
   assert.ok(readme.includes(`    ${queued}\n`) || readme.includes(`    ${queued}\r\n`), `README shows the real queue line: ${queued}`);
+  const gated = notRunLine(new HeavyLockError('busy', 'x', { detail: '2 ahead in the queue', waitedMs: 20 * 60000, firstInLine: 'held back by the load gate since 10:05:00' }));
+  assert.ok(readme.includes(`    ${gated}\n`) || readme.includes(`    ${gated}\r\n`), `README shows the gated queue line: ${gated}`);
+  assert.match(readme, /not taking the lock \(re-entrant, under that holder, the one HEAVY_LOCK_HELD names\)/, 'README shows the real re-entrant line (Miguel M1)');
   assert.match(readme, /\[heavy-lock\] the lock could not be taken \(heavy-lock\.ps1 failed \(exit 1\): \.\.\.\): NOT RUN/);
   assert.match(readme, /\(heavy-lock\.ps1 ran past its wait and was stopped\)/);
 });
@@ -266,7 +269,34 @@ test('Dexter r2 1: the suite\'s child pid is recorded as work right after it sta
   const p = main(['node', '--test'], r.deps);
   r.child.emit('exit', 0, null);
   await p;
-  assert.deepStrictEqual(r.events.filter(e => !e.startsWith('log:')), ['acquire:npm test', 'spawn', 'work:4242', 'provisional:4242', 'work:4242', 'release']);
+  assert.deepStrictEqual(r.events.filter(e => !e.startsWith('log:')), ['acquire:node --test', 'spawn', 'work:4242', 'provisional:4242', 'work:4242', 'release']);
+});
+
+test('#183: the lock is taken under the command\'s own first words, not always "npm test"', async () => {
+  const { labelFor } = require('../scripts/with-heavy-lock');
+  assert.strictEqual(labelFor(['node', 'verify/probe-x.js', '--flag'], {}), 'node verify/probe-x.js');
+  assert.strictEqual(labelFor(['node', '--test', '--test-concurrency=2', 'test/**/*.test.js'], {}), 'node test/**/*.test.js', 'Miguel S1: the first non-flag argument, not a flag');
+  assert.strictEqual(labelFor(['node', '--no-warnings', 'verify/probe-x.js'], {}), 'node verify/probe-x.js');
+  assert.strictEqual(labelFor(['node', '--test'], {}), 'node --test', 'no non-flag argument: the first two words');
+  assert.strictEqual(labelFor(['node'], {}), 'node');
+  assert.strictEqual(labelFor(['node', 'verify/probe-ñ.js'], {}), 'node verify/probe-?.js', 'Dexter 2: printable ASCII only');
+  assert.strictEqual(labelFor(['node', '--test', 'x'], { npm_lifecycle_event: 'test' }), 'npm test', 'run from `npm test`: named as such');
+  assert.strictEqual(labelFor(['node', 'verify/probe-x.js'], { npm_lifecycle_event: 'probe' }), 'node verify/probe-x.js');
+  assert.ok(!/[()]/.test(labelFor(['node', 'a (pid 5)'], {})), 'a label can never forge the owner shape "(pid N)"');
+  assert.ok(labelFor(['node', 'x'.repeat(500)], {}).length <= 80);
+  const r = rig();
+  r.deps.env = { A: 'a' };
+  const p = main(['node', 'verify/probe-x.js'], r.deps);
+  r.child.emit('exit', 0, null);
+  await p;
+  assert.ok(r.events.includes('acquire:node verify/probe-x.js'));
+  // Miguel S2: main reads the INJECTED env, so the real `npm test` path is pinned end to end.
+  const n = rig();
+  n.deps.env = { npm_lifecycle_event: 'test' };
+  const pn = main(['node', '--test', 'x'], n.deps);
+  n.child.emit('exit', 0, null);
+  await pn;
+  assert.ok(n.events.includes('acquire:npm test'));
 });
 
 test('Dexter r2 1: a lock without addWork (or one that throws) does not stop the command', async () => {

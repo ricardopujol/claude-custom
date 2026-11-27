@@ -183,6 +183,7 @@ function sanitizeStatus(s) {
  *   hosts.tokenFor(port)   -> string | null     a RUNNING host's token
  *   hosts.tokenFile(port)  -> string | null     ONLY `hosts/<port>.token`: written by
  *                                               the host that won the bind, and nobody else
+ *   hosts.boundBy(port)    -> { pid, startedAt } | null   `hosts/<port>.json`, the identity of the host that bound (#222); optional
  *   hosts.newToken()       -> string
  *   hosts.control({ port, token, msg })    -> Promise<{ ok, reply? , error? }>
  *   hosts.identity({ install, port }), hosts.readToken(install, port)  (planGoTo's)
@@ -208,6 +209,10 @@ function sanitizeStatus(s) {
 // start, where it became a tab error and a view that never appeared.
 const HOST_DEPS = ['choosePort', 'probe', 'spawn', 'wait', 'tokenFor', 'tokenFile', 'newToken', 'control',
   'identity', 'readToken'];
+// #222: how long a start waits for the identity file of the host that bound (BOUND_POLLS x BOUND_POLL_MS = 5 s).
+const BOUND_POLLS = 50;
+const BOUND_POLL_MS = 100;
+const BOUND_SKEW_MS = 5000;      // an identity stamped further ahead than this is not from a clock that agrees with ours
 // The same, for the worktree contract scripts (PR 3).
 const OPS_DEPS = ['available', 'create', 'setup', 'remove'];
 
@@ -225,7 +230,7 @@ const errorText = (err) => (err && err.message) || String(err);
 
 /** The strip's kept layout, strictly typed, or an empty one: a missing, throwing or odd layout is "nothing kept". */
 function readLayout(layout, log) {
-  const empty = { order: [], closed: [] };
+  const empty = { order: [], closed: [], pinned: [] };
   if (!layout || typeof layout.load !== 'function') return empty;
   try {
     const l = layout.load();
@@ -234,7 +239,8 @@ function readLayout(layout, log) {
     const closed = (Array.isArray(l.closed) ? l.closed : [])
       .filter(c => c && typeof c.key === 'string' && c.key !== '' && typeof c.path === 'string' && c.path !== '')
       .map(c => ({ key: c.key, path: c.path, branch: typeof c.branch === 'string' && c.branch !== '' ? c.branch : null }));
-    return { order: (Array.isArray(l.order) ? l.order : []).filter(k => typeof k === 'string' && k !== ''), closed };
+    const keys = (list) => (Array.isArray(list) ? list : []).filter((k, i, all) => typeof k === 'string' && k !== '' && all.indexOf(k) === i);
+    return { order: (Array.isArray(l.order) ? l.order : []).filter(k => typeof k === 'string' && k !== ''), closed, pinned: keys(l.pinned) };
   } catch (err) {
     log('[shell] layout.load threw:', err && err.message);
     return empty;
@@ -286,6 +292,7 @@ function createShell(deps) {
   const kept = readLayout(layout, log);
   let state = { ...lifecycle.initial(), dismissed: kept.closed.map(c => c.key) };
   let order = kept.order;        // lane keys in the person's drag order (app/tab-lanes.js); develop is not in it
+  let pinned = kept.pinned;      // lane keys the person pinned (BACKLOG #167): always on the strip, started at launch; develop is never in it
   let selectedKey = null;
   let polling = false;
   let lastError = null;
@@ -513,6 +520,8 @@ function createShell(deps) {
       // The strip paints these; it decides nothing (PR 3: badge and phase line).
       return {
         ...e, starting: !!(t && t.starting), startError: t ? t.error : null,
+        // #167: a pinned lane (never develop, never a side or shell tab) is on the strip and starts at launch.
+        pinned: !isCompanionEntry(e) && !e.isDev && pinned.includes(e.key),
         // Its session's host stopped answering after it ran (the strip keeps such a lane only while it is selected).
         ended: !!t && t.ended === true,
         // #129: its host is being ended (the strip greys it and says so; it can't be selected meanwhile).
@@ -591,9 +600,12 @@ function createShell(deps) {
     if (prune && state.tabs.length > 0) {
       const known = new Set([...state.tabs.map(t => keyOf(t.path)), ...closed.map(c => c.key), ...reopenedUnlisted]);
       order = order.filter(k => known.has(k));
+      // P7: a pin whose folder git no longer lists AT ALL is forgotten. Listed but not openable (detached mid-rebase, prunable,
+      // initializing) is still listed: its pin stays (PR #250 Dexter 2). Before git has given a usable list nothing is pruned.
+      if (listedKeys !== null) pinned = pinned.filter(k => listedKeys.has(k) || known.has(k));
     }
     try {
-      const r = layout.save({ order, closed });
+      const r = layout.save({ order, closed, pinned });
       if (r && r.ok === false) log('[shell] layout.save refused:', r.error);
     } catch (err) {
       log('[shell] layout.save threw:', err && err.message);
@@ -623,6 +635,43 @@ function createShell(deps) {
     persistLayout();
     publish();
     return { ok: true };
+  }
+
+  /**
+   * Pin or unpin a lane (BACKLOG #167). Only a lane the strip lists can be pinned: not develop (always in the launch set), not a side
+   * or shell tab. An unpin is allowed for any key that is pinned, listed or not. Saved.
+   */
+  /** A lane the strip lists that can be pinned: not develop (always in the launch set), not a side or shell tab. */
+  const pinnable = (key) => model().some(e => e.key === key && !isCompanionEntry(e) && !e.isDev);
+
+  function setPinned(key, on) {
+    if (mode !== 'tabs') return { ok: false, error: 'not a project window' };
+    if (typeof key !== 'string' || key === '') return { ok: false, error: 'not a lane' };
+    const has = pinned.includes(key);
+    if (on === false) {
+      if (!has) return { ok: true };
+    } else {
+      if (!pinnable(key)) return { ok: false, error: 'not a lane that can be pinned' };
+      if (has) return { ok: true };
+    }
+    pinned = on === false ? pinned.filter(k => k !== key) : [...pinned, key];
+    persistLayout();
+    publish();
+    return { ok: true };
+  }
+  const pin = (key) => setPinned(key, true);
+  const unpin = (key) => setPinned(key, false);
+
+  /**
+   * The Pin / Unpin item of a lane tab's right-click menu: `{ show, pinned, label, target }`. Shown for a lane only (not develop, not a
+   * side or shell tab, not a key the strip doesn't list). The labels are Claude's call, shown at Ricardo's live look.
+   */
+  function pinMenu(key) {
+    const none = { show: false, pinned: false, label: '', target: null };
+    if (mode !== 'tabs' || typeof key !== 'string' || key === '') return none;
+    if (!pinnable(key)) return none;
+    const on = pinned.includes(key);
+    return { show: true, pinned: on, label: on ? 'Unpin' : 'Pin (starts at launch)', target: key };
   }
 
   /**
@@ -662,6 +711,7 @@ function createShell(deps) {
       isDev: entry.isDev === true, port: null, token: null, view: null,
       started: false, starting: false, error: null, status: null, closed: false, startPromise: null, pending: null,
       attachPromise: null, unconfirmed: null, ended: false, occupancySent: EMPTY_OCCUPANCY,
+      startId: 0,     // counts this record's sessions (present / resetEnded): a probe answer belongs to the session it asked about
     };
   }
 
@@ -697,6 +747,7 @@ function createShell(deps) {
     tab.view = views.create(tab);
     tab.occupancySent = EMPTY_OCCUPANCY;     // a fresh page knows nothing yet
     tab.started = true;
+    tab.startId = (tab.startId || 0) + 1;
     tab.ended = false;          // a host of its own again: watched again (Dexter F2)
     // A host given up on earlier, if it ever binds, meets this one's lock and
     // exits on its own (session-gate idleExit): nothing left to warn about.
@@ -717,7 +768,8 @@ function createShell(deps) {
       if (tab.closed || tab.started || tab.starting || destroyed) return;
       let chosen = null;
       try { chosen = await hosts.choosePort(tab); } catch (err) { log('[shell] port probe failed:', err && err.message); }
-      if (!chosen || chosen.action !== 'attach' || tab.closed || tab.started || tab.starting) return;
+      // destroyed too: the window can close during the port walk, and a view made now would belong to nobody (PR #256 Dexter 5)
+      if (!chosen || chosen.action !== 'attach' || tab.closed || tab.started || tab.starting || destroyed) return;
       const token = hosts.tokenFor(chosen.port);
       if (!token) { log(`[shell] ${tab.key}: a host is on ${chosen.port} but its token can't be read`); return; }
       // A retry after a start whose spawn timed out: the host it waited for is up, so the start's leftovers go (a stale `pending`
@@ -743,6 +795,36 @@ function createShell(deps) {
     }
   }
 
+  // #222: which token a window presents for a host IT spawned (`rec` = { port, token, child, spawnAt }), once the port answers.
+  // `hosts/<port>.token` may still hold the PREVIOUS host's token, so it is taken only on proof. The identity file is written
+  // by the host that bound, right after its token files, and `startedAt` is the time of that write (a republish rewrites it).
+  // A FRESH identity (written since `rec.spawnAt`, which is stamped before the port walk, and not in the future) of our child's
+  // pid means our token is right; a fresh one of another pid, or our child's exit before it bound (EADDRINUSE), means another
+  // host holds the port, so its token file is right. An identity older than the spawn is a leftover and proves nothing.
+  // Nothing proven in time: our own token (the likeliest truth).
+  async function tokenForOwnSpawn(port, own, rec) {
+    const mine = rec.child && Number.isInteger(rec.child.pid) ? rec.child.pid : null;
+    if (mine === null || typeof hosts.boundBy !== 'function') {
+      log(`[shell] port ${port}: no spawn pid or no hosts.boundBy, so the token file is used unproven`);
+      return hosts.tokenFile(port) || own;
+    }
+    for (let i = 0; i < BOUND_POLLS; i++) {
+      let id = null;
+      try { id = hosts.boundBy(port); } catch { id = null; }
+      const fresh = !!id && Number.isInteger(id.pid) && Number.isFinite(id.startedAt)
+        && id.startedAt >= rec.spawnAt && id.startedAt <= now() + BOUND_SKEW_MS;
+      if (fresh && id.pid === mine) return own;
+      if (fresh) return hosts.tokenFile(port) || own;
+      if (exitedHosts.has(rec)) {
+        log(`[shell] port ${port}: the host this window spawned exited before it bound, so another host holds the port`);
+        return hosts.tokenFile(port) || own;
+      }
+      await sleep(BOUND_POLL_MS);
+    }
+    log(`[shell] port ${port}: no host identity proved who bound it in time; presenting the token this window spawned with`);
+    return own;
+  }
+
   // First selection: choose the port NOW, spawn if nobody serves this folder,
   // wait for it, then draw. One chain, so two tabs can't take one port.
   function start(tab) {
@@ -758,6 +840,8 @@ function createShell(deps) {
       let spawned = false;
       let port = null;
       let token = null;
+      let ownSpawn = null;                         // the record of a host this window spawned (its child and stamp) once it answered
+      const stamp = now();                         // BEFORE the port walk: a host that binds during the walk still writes its identity after this
       try {
         if (tab.closed || destroyed) return;
         if (tab.started) return;
@@ -773,6 +857,7 @@ function createShell(deps) {
         tab.pending = null;
         if (pend && chosen.action === 'attach') {
           token = pend.token;                      // the ORIGINAL host, its ORIGINAL token
+          ownSpawn = pend;
         } else if (pend) {
           // Still not answering: give that host one more wait, spawn nothing.
           // A second failure forgets it, so the next Retry may spawn afresh
@@ -785,13 +870,15 @@ function createShell(deps) {
             throw new Error(`the host did not come up on port ${port} in time`);
           }
           token = pend.token;
+          ownSpawn = pend;
         } else if (chosen.action === 'attach') {
           token = hosts.tokenFor(port);
           if (!token) throw new Error(`a host is on port ${port} but its token can't be read`);
         } else {
           token = hosts.newToken();
-          const rec = { port, token };
+          const rec = { port, token, child: null, spawnAt: stamp };
           const child = hosts.spawn({ tab, port, token });
+          rec.child = child || null;
           // The window spawned it, so the child's exit is proof the host is dead (PR #231 Dexter M2): a host that crashed while
           // starting leaves no file and no listener, and a close must not wait on it for ever.
           if (child && typeof child.once === 'function') {
@@ -806,13 +893,14 @@ function createShell(deps) {
             if (tab.closed && isCompanionEntry(tab)) stopFromStart(tab, port, token);
             throw new Error(`the host did not come up on port ${port} in time`);
           }
+          ownSpawn = rec;
         }
-        // Dexter, PR #75 R2-2: present the token of whoever BOUND the port. Only
-        // the winner of the bind writes `hosts/<port>.token` (F2), so the file
-        // names the host actually listening; a token kept or generated here is
-        // only a guess about who that is. It stands in only while the file isn't
-        // written yet -- our own host, just past its bind.
-        token = hosts.tokenFile(port) || token;
+        // Present the token of whoever BOUND the port (Dexter, PR #75 R2-2). Only the winner of the bind writes `hosts/<port>.token`
+        // (F2), but the file may be the PREVIOUS host's until that winner writes it (#222). So: for a host THIS window spawned
+        // (a fresh spawn or a pending one), the file is taken only when the identity file, or our child's exit, shows another host
+        // won the bind, else our own token stands; for a host found running, the file names it and is read as it is.
+        if (ownSpawn) token = await tokenForOwnSpawn(port, token, ownSpawn);
+        else token = hosts.tokenFile(port) || token;
         if (tab.closed || destroyed) {
           // Closed while starting: don't leave the host we just made behind. A side tab's host is its own even when it was
           // FOUND (attached): nobody else will end it once its branch tab is gone (PR #149 Dexter 4).
@@ -837,7 +925,7 @@ function createShell(deps) {
   }
 
   /**
-   * A branch tab whose claude exited keeps a dead page, and a click on it starts a fresh session (BACKLOG #140): the page is
+   * A branch tab whose claude exited keeps a dead page, and a click on it starts a session again (BACKLOG #140); a main tab's host resumes ITS OWN last conversation when it has one recorded (#166, host/main-session.js), else it is fresh: the page is
    * dropped and the record goes back to unstarted, so select() starts it as it retries a failed start. Side and shell tabs
    * have their own reopen; a folder being removed or already merged (finishing), or a reader with unsaved edits (#50), is left as it is.
    */
@@ -848,9 +936,39 @@ function createShell(deps) {
     if (tab.view) { try { views.destroy(tab); } catch (err) { log('[shell] destroy failed:', err && err.message); } }
     tab.view = null;
     tab.started = false;
+    tab.startId = (tab.startId || 0) + 1;
     tab.port = null;
     tab.token = null;
     tab.status = null;
+  }
+
+  /**
+   * BACKLOG #140 (2026-11-07 sighting): the 3 s poll is what marks a session ended, so a click in the seconds after claude exited
+   * found a tab that still looked running and showed its dead page: no terminal, no session. A person's click on a started tab asks
+   * its port once; a refusal is the same proof the poll takes (captureListening), and the tab is restarted as an ended one is.
+   */
+  // A lane the merged close or the remover owns, or a reader with unsaved edits, is left to the poll and the reducer (PR #251 Dexter 1):
+  // the reducer moves a merged lane on only when the POLL reports its host refused, and a click must not consume that report.
+  const ownedElsewhere = (tab) => {
+    const phase = phaseOf(tab.key);
+    return phase === 'finishing' || phase === 'removing' || !!readerUnsavedOf(tab)
+      || mergedBusy.has(tab.key) || closing.has(tab.key) || ending.has(tab.key);
+  };
+
+  async function restartIfDead(tab) {
+    const sessionId = tab.startId;
+    const same = () => tabs.get(tab.key) === tab && tab.startId === sessionId && tab.started === true && tab.closed !== true && selectedKey === tab.key;
+    if (tab.started !== true || tab.starting === true || tab.ended === true || isCompanionEntry(tab) || !Number.isInteger(tab.port) || ownedElsewhere(tab)) return;
+    let answer;
+    try { answer = await hosts.probe(tab.port); } catch { return; }
+    // the record may have changed while the port was asked (a restart, a close, another tab selected): only the same session is acted on
+    if (!same() || tab.starting === true || ownedElsewhere(tab)) return;
+    // A refusal is proof, and so is a poll that marked it ended while the probe was out (PR #251 Dexter 2: the click must not be lost).
+    if (answer !== 'refused' && tab.ended !== true) return;
+    tab.ended = true;
+    resetEnded(tab);
+    if (!tab.started && !tab.starting) { sendSelected(tab); await start(tab); }
+    publish();
   }
 
   /** Select a tab, starting it (or retrying a failed start) as needed; `restart`: a person's click also restarts an ended session. */
@@ -870,6 +988,7 @@ function createShell(deps) {
       if (restart) resetEnded(tab);
       sendSelected(tab);
       if (!tab.started && !tab.starting) started = start(tab);
+      else if (restart) started = restartIfDead(tab);
     }
     publish();
     return started;
@@ -886,7 +1005,18 @@ function createShell(deps) {
       const key = keyOf(a.path);
       if (a.type === 'open') {
         openedNow.add(key);
-        if (tabs.has(key)) continue;
+        if (tabs.has(key)) {
+          // A record made before git answered (develop, P10): git lists it now, so it adopts its side and shell hosts like any tab,
+          // from the same read as the rest of this batch.
+          const early = tabs.get(key);
+          if (early.early === true) {
+            if (sideList === undefined) sideList = listSideHosts();
+            adoptSide(early, sideList);
+            if (shellList === undefined) shellList = listShellHosts();
+            adoptShell(early, shellList);
+          }
+          continue;
+        }
         const entry = state.tabs.find(t => keyOf(t.path) === key) || { path: a.path, branch: a.branch, isDev: false };
         const tab = newRecord(entry);
         tabs.set(key, tab);
@@ -960,6 +1090,8 @@ function createShell(deps) {
         const { state: next, actions } = lifecycle.removeResult(state, p, r);
         state = next;
         apply(actions, before);
+        // #167 (P7): the merged close ignores a pin, and the pin goes with the lane (folder removed, or kept for its brief), in one save.
+        if (r && (r.ok === true || r.kept === true) && pinned.includes(key)) { pinned = pinned.filter(k => k !== key); persistLayout(); }
         // #139 (P5): a merged lane's tab that the removal closed leaves "Closed <lane> (merged)" on the strip's notice line, after
         // apply (the selection it makes would clear it). A tab that was drawn always gets it, whoever ended its session.
         if (hadTab && !tabs.has(key)) {
@@ -971,15 +1103,27 @@ function createShell(deps) {
       });
   }
 
+  // Every folder git listed in its last USABLE answer (one with develop in it), openable or not; null until there is one.
+  let listedKeys = null;
+  const usableAnswer = (o) => !!o && Array.isArray(o.worktrees) && o.worktrees.some(w => w && w.isDev === true);
+
   function reconcileWith(observation) {
     const before = model();
+    const usable = usableAnswer(observation);
+    if (usable) listedKeys = new Set(observation.worktrees.map(w => keyOf(w.path)));
     const { state: next, actions } = lifecycle.reconcile(state, observation);
     state = next;
     reopenedUnlisted.clear();     // git has answered: state.tabs is the truth again
     apply(actions, before);
+    if (usable) settleEarlyTabs();
     // The reducer forgets a hand close once git stops listing the worktree: so does the saved list.
     const stillClosed = closedByHand.filter(c => state.dismissed.includes(c.key));
     if (stillClosed.length !== closedByHand.length) { closedByHand = stillClosed; persistLayout(); }
+    // ... and a pin on a folder git stopped listing at all (P7; see persistLayout). An unusable answer is no answer: it prunes nothing.
+    if (usable) {
+      const listed = new Set([...listedKeys, ...closedByHand.map(c => c.key)]);
+      if (pinned.some(k => !listed.has(k))) { pinned = pinned.filter(k => listed.has(k)); persistLayout(); }
+    }
     if (selectWhenListed !== null && tabs.has(selectWhenListed)) {
       const k = selectWhenListed;
       selectWhenListed = null;
@@ -987,6 +1131,23 @@ function createShell(deps) {
     } else if (selectedKey === null || !tabs.has(selectedKey)) {
       const first = firstSelection();
       if (first !== null) select(first);
+    }
+    if (usable) startLaunchSet();     // an unusable answer must not use up the once-per-window launch set (PR #250 Miguel Y2)
+  }
+
+  /**
+   * A record made before git had answered (develop, P10) meets a USABLE git list (one with develop in it): it takes its branch (and
+   * apply gave it its side and shell hosts, from the batch's one read). It is never stopped here: an attached session was alive before
+   * this window and is the person's (Remote Control survives the window on purpose), and a list that does not name develop is
+   * unusable (host/tab-lifecycle.js reconcile), which never reaches this (PR #250 Dexter 5).
+   */
+  function settleEarlyTabs() {
+    for (const t of tabs.values()) {
+      if (t.early !== true) continue;
+      const entry = state.tabs.find(x => keyOf(x.path) === t.key);
+      if (!entry) { log(`[shell] ${t.key}: started at launch; git's list names no such tab (left as it is)`); continue; }
+      t.early = false;
+      t.branch = entry.branch === undefined ? null : entry.branch;
     }
   }
 
@@ -1030,10 +1191,13 @@ function createShell(deps) {
       // Captured now, reconciled now, in this order, before the next poll
       // starts: the markers first, then the hosts (see observeWorktrees).
       const seen = observeWorktrees(text, container, git.marker);
+      const sessionsAsked = new Map([...tabs].map(([k, t]) => [k, t.startId]));
       const listening = await captureListening(tabs.values(), hosts.probe);
-      // Refused once: that session ended. Its port is free for another tab.
+      // Refused once: that session ended. Its port is free for another tab. An answer about a session that has since been
+      // restarted (a click's restartIfDead) is about the old one: dropped, never applied to the new one (PR #251 Dexter 2).
       for (const [k, v] of Object.entries(listening)) {
         const t = tabs.get(k);
+        if (t && t.startId !== sessionsAsked.get(k)) { delete listening[k]; continue; }
         if (v === false && t) t.ended = true;
       }
       if (seen) reconcileWith({ ...seen, listening });
@@ -1231,8 +1395,60 @@ function createShell(deps) {
       await start(tab);
       return tab;
     }
+    startDevelopAtOnce();
     await poll();
     return null;
+  }
+
+  /**
+   * P10 (Ricardo's pick, BACKLOG #166): develop's session starts the moment the window opens, from its own folder, before the first
+   * git poll has answered; the poll then reconciles (develop is always listed). It is a record the poll hasn't listed yet (`early`):
+   * reconcileWith gives it its branch, or ends it when git doesn't list the folder. Not when develop was closed by hand (closed
+   * stays closed), and not when the window was opened from a lane's worktree: that lane is the first start then (the poll's
+   * first selection), and develop follows in the launch set.
+   */
+  /**
+   * The same question firstSelection answers once git has: is the window opened from a LANE's worktree? Before git has answered the
+   * lanes are unknown, so by shape: inside the project container, and neither the container itself (what main.js sends for a window
+   * opened on the project) nor develop's folder nor inside it. Anything else (outside the project, no folder) resolves to develop.
+   */
+  function launchedFromALane(devPath) {
+    if (typeof launchedFrom !== 'string' || launchedFrom === '') return false;
+    if (keyOf(launchedFrom) === keyOf(container) || keyOf(launchedFrom) === devKey || isInside(launchedFrom, devPath)) return false;
+    return isInside(launchedFrom, container);
+  }
+
+  function startDevelopAtOnce() {
+    if (mode !== 'tabs' || devKey === null || tabs.has(devKey) || state.dismissed.includes(devKey)) return;
+    const devPath = path.join(container, 'dev');
+    if (launchedFromALane(devPath)) return;
+    const rec = newRecord({ path: devPath, branch: null, isDev: true });
+    rec.early = true;
+    tabs.set(devKey, rec);
+    start(rec);
+  }
+
+  let launchSetDone = false;
+
+  /**
+   * After the window's first reconcile with git's answer: the launch set (app/tab-lanes.js launchSet), each session through the
+   * start chain, in order. A start that fails shows its error on its own tab and holds nobody else. Once per window: a pin made
+   * later starts nothing by itself (it is on the strip, idle, until clicked or the next launch).
+   */
+  function startLaunchSet() {
+    if (launchSetDone || mode !== 'tabs') return;
+    launchSetDone = true;
+    const lanes = state.tabs.map(t => keyOf(t.path));
+    // the lane the window was opened from, by the same rule as the first selection (it is already starting, in the chain's first place)
+    const named = typeof launchedFrom === 'string' && launchedFrom !== '' ? firstSelection() : null;
+    const first = named === null ? undefined : named;
+    for (const k of tabLanes.launchSet({ lanes, devKey, pinned, order, dismissed: state.dismissed, first })) {
+      const tab = tabs.get(k);
+      if (!tab || tab.started || tab.starting || ending.has(k)) continue;
+      // #139: the window starts no claude in a lane on its way out (a merged lane shows as merged and waits for the person)
+      if (wasMerged(k)) { log(`[shell] ${k}: merged; the launch doesn't start it`); continue; }
+      start(tab);
+    }
   }
 
   // --- #77: is this tab safe to close with no confirm? -------------------------------------------------------
@@ -1757,6 +1973,23 @@ function createShell(deps) {
     selectWhenListed = target.key;
     await poll();
     return { ok: true };
+  }
+
+  /**
+   * Reopen the lane closed by hand whose folder is `cwd` (or contains it), and select it: what Open on a background host of this project
+   * does when its tab was closed here (PR #247 Dexter 2). { ok, key } or { ok: false, error }.
+   */
+  async function reopenFolder(cwd) {
+    const k = typeof cwd === 'string' && cwd ? keyOf(cwd) : null;
+    if (k === null) return { ok: false, error: 'no folder' };
+    const rows = closedRows();
+    const row = rows.find(c => c.key === k) || rows.find((c) => {
+      const entry = closedByHand.find(x => x.key === c.key);
+      return !!entry && isInside(cwd, entry.path);
+    });
+    if (!row) return { ok: false, error: 'no closed lane for that folder' };
+    const r = await reopen(row.key);
+    return { ...r, key: row.key };
   }
 
   /** What the `+` menu offers. */
@@ -2310,7 +2543,7 @@ function createShell(deps) {
 
   return {
     open, poll, select: userSelect, closeTab, report, raise, attentionClick, goTo, selectFolder, tabStates, typeMerged, typed, menuState, override,
-    createWorktree, openCreate, cancelCreate, openPicker, closePicker, plusMenu, reopen, reorder, lanesMenu, looked, isLooked, openSide, sideMenu, openShell, shellMenu, issueOf,
+    createWorktree, openCreate, cancelCreate, openPicker, closePicker, plusMenu, reopen, reopenFolder, reorder, pin, unpin, pinMenu, lanesMenu, looked, isLooked, openSide, sideMenu, openShell, shellMenu, issueOf,
     next: () => step(1), previous: () => step(-1),
     isTabView, tabForSender, tabByKey, tabmodeOf, snapshot, model, destroy, branchOf, occupancyFor, boxAnswered,
     // #139: the merged closes the last poll started (a test awaits them; main never needs to).
@@ -2535,18 +2768,31 @@ const STRIP_ISSUE_ACTIONS = new Set(['read', 'open', 'pick', 'filter', 'submit']
  * POST a body to 127.0.0.1 -- and `screenshot` writes a file. A driver started
  * without a real token refuses everything rather than trusting anyone.
  */
-async function handleProbeCommand(line, api, expectedToken) {
-  let cmd;
-  try { cmd = JSON.parse(line); } catch { return { ok: false, error: 'not JSON' }; }
+/** The refusal for a command that doesn't carry the probe's secret, or null when it does (app/probe-driver.js checks it before it looks up a window). */
+function probeAuthError(cmd, expectedToken) {
   if (typeof expectedToken !== 'string' || expectedToken.length < PROBE_TOKEN_MIN) {
     return { ok: false, error: 'probe driver has no token' };
   }
   if (!cmd || typeof cmd !== 'object') return { ok: false, error: 'no cmd' };
   if (typeof cmd.token !== 'string' || !sameSecret(cmd.token, expectedToken)) return { ok: false, error: 'bad token' };
+  return null;
+}
+
+async function handleProbeCommand(line, api, expectedToken) {
+  let cmd;
+  try { cmd = JSON.parse(line); } catch { return { ok: false, error: 'not JSON' }; }
+  const denied = probeAuthError(cmd, expectedToken);
+  if (denied !== null) return denied;
   if (typeof cmd.cmd !== 'string') return { ok: false, error: 'no cmd' };
   try {
     switch (cmd.cmd) {
       case 'state': return { ok: true, ...(await api.state()) };
+      // single-instance PR 2: the process's own commands (app/probe-driver.js answers them): the windows it holds, and opening one more.
+      case 'windows': return { ok: true, ...(await api.windows()) };
+      case 'webContents': return await api.webContents();
+      case 'openProject':
+        if (typeof cmd.cwd !== 'string' || cmd.cwd === '') return { ok: false, error: 'openProject needs a cwd' };
+        return await api.openProject(cmd.cwd);
       case 'select': return await api.select(String(cmd.label));
       case 'close': return await api.close(String(cmd.label));
       case 'ctrlClick':
@@ -2738,6 +2984,6 @@ function probeLineReader(maxBytes) {
 
 module.exports = {
   createShell, createQueue, captureListening, observeWorktrees, sanitizeStatus,
-  handleProbeCommand, VIEW_PROBE_ACTIONS, probeLineReader, noWindowText, shortcutFor, shortcutWillAct, focusStep, menuText, NO_PORT_ERROR,
+  handleProbeCommand, probeAuthError, VIEW_PROBE_ACTIONS, probeLineReader, noWindowText, shortcutFor, shortcutWillAct, focusStep, menuText, NO_PORT_ERROR,
   lanesMenuTemplate, plusMenuTemplate,
 };

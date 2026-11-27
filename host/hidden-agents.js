@@ -44,7 +44,7 @@
  */
 
 const crypto = require('node:crypto');
-const { normalizeProjectPath } = require('./project-path');
+const { normalizeProjectPath, legacyNormalizeProjectPath } = require('./project-path');
 const { reconcileHidden, cleanNames, HIDDEN_NAME_MAX } = require('../app/hidden-agents-display');
 
 const HIDDEN_MAX = 200;
@@ -58,8 +58,8 @@ function validRosterMsg(msg) {
   return nameOf(msg.agent) !== null;
 }
 
-function storeKey(project) {
-  const id = normalizeProjectPath(project);
+function storeKey(project, normalize = normalizeProjectPath) {
+  const id = normalize(project);
   if (id === null) throw new Error('hidden-agents: project is not a usable path');
   const h = crypto.createHash('sha1').update(id).digest('hex').slice(0, 16);
   return `hidden-agents-${h}`;
@@ -72,7 +72,11 @@ function createHiddenAgents({ store, project } = {}) {
   if (typeof project !== 'string' || !project.trim()) throw new Error('createHiddenAgents: project is required');
 
   const key = storeKey(project);
-  const saved = store.read(key, null);
+  // A project opened through a junction was saved under its junction spelling
+  // before fix/junction-paths; read that key when the real one has nothing.
+  // The next write goes to the real key.
+  const legacy = storeKey(project, legacyNormalizeProjectPath);
+  const saved = store.read(key, null) || (legacy !== key ? store.read(legacy, null) : null);
   let hidden = cleanNames(saved && typeof saved === 'object' ? saved.hidden : null).slice(-HIDDEN_MAX);
   let dirty = false;
 

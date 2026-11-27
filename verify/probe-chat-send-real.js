@@ -1,9 +1,12 @@
 'use strict';
+const { noteChild } = require('./lib/launch-electron');   // BACKLOG #179: takes the heavy-work lock now, before anything heavy starts; noteChild records each host / claude it starts
 const { killChildTree, trackExit } = require('../host/kill-tree');
 /* What does the chat view's type box (app/chat-view-state.js runChatSend) do against the REAL `claude` CLI? (PR #226 Dexter R2-1.
    Re-runnable. Zero spend, zero network: the fake-endpoint technique of verify/probe-panel-line-input.js.)
 
-     node verify/probe-chat-send-real.js [--dump] [--only=<case,...>] [--measure] [--measure-clear]
+     node verify/probe-chat-send-real.js [--dump] [--only=<case,...>] [--measure] [--measure-clear] [--grant]
+
+   --grant runs the drop's grant sequence (host/grant-sequence.js runDrop) instead: the draft is kept through a grant (BACKLOG #136).
 
    The interactive CLI runs in a node-pty at ANTHROPIC_BASE_URL (a local server speaking just enough of POST /v1/messages) with a fake
    token, in a throwaway config dir and folder. The page's own send runs against that CLI's screen (an @xterm/headless terminal fed by
@@ -141,6 +144,7 @@ async function withCli(claudeBin, fn) {
 
   const term = new Terminal({ cols: COLS, rows: ROWS, scrollback: 2000, allowProposedApi: true });
   const p = pty.spawn(claudeBin, ['--model', 'haiku'], { name: 'xterm-256color', cols: COLS, rows: ROWS, cwd: work, env });
+  noteChild(p);   // the lock's work record: a live p keeps this probe a live holder (BACKLOG #112)
   trackExit(p);
   p.onData(d => term.write(d));
   const flush = () => new Promise(r => term.write('', r));
@@ -203,6 +207,70 @@ async function runSend(claudeBin, c, dump) {
       sendOk: !!result.ok, note: result.note || null, requestCarriedWholeText: reached, requests: requests.filter(r => r.main).length,
       ...(c.draft ? { draftShown, draftLeaked, boxAfter: leftLive && leftLive.box ? leftLive.box : null } : {}) };
   });
+}
+
+// --grant (BACKLOG #136 residuals, Ricardo 2026-11-06): the host's drop sequence (host/grant-sequence.js runDrop, the real one) against the
+// real CLI's screen. A draft is typed, a drop that needs a grant runs (`/add-dir <a throwaway folder>`, the CLI's own "Add directory" dialog
+// answered with Enter by a watcher here), and the box must then hold the draft with the path after it; nothing may reach the model. A draft
+// taller than the box is never cleared (no Ctrl+U at all), the folder is reported, and the path goes after it. A drop with no grant puts a
+// space before the path. Zero spend: the same fake endpoint.
+const GRANT_CASES = [
+  { name: 'grant-line', draft: ['OLDDRAFT fix the build'], expect: 'restored' },
+  { name: 'grant-wrapped', draft: ['OLDDRAFT ' + filler(300)], expect: 'restored', rowsAtLeast: 3 },
+  { name: 'grant-shift-enter', draft: ['OLDDRAFT first line', '\x1b\r', 'OLDDRAFT second line'], expect: 'restored', rowsAtLeast: 2 },
+  { name: 'grant-taller-than-box', draft: Array.from({ length: 20 }, (_, k) => `OLDDRAFT row ${k + 1}`).flatMap((l, i) => (i ? ['\x1b\r', l] : [l])), expect: 'kept' },
+  { name: 'drop-no-grant', draft: ['OLDDRAFT look at'], expect: 'spaced', noGrant: true },
+];
+
+async function runGrant(claudeBin, c) {
+  const { runDrop, CTRL_U } = require(path.join(ROOT, 'host', 'grant-sequence'));
+  const { liveBox } = require(path.join(ROOT, 'app', 'top-bar-display'));
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'probe-grant-out-'));
+  try {
+    return await withCli(claudeBin, async ({ p, screen, requests }) => {
+      for (const part of c.draft) { p.write(part); await sleep(150); }
+      await sleep(800);
+      let cur = await screen();
+      const before = liveBox(cur);
+      const draftRows = before && before.box ? before.box.length : 0;
+      const writes = [];
+      let dialogs = 0;
+      let lastAnswer = 0;
+      // The person answering the CLI's own Add-directory dialog: Enter on its default row, once per dialog drawn.
+      const watcher = setInterval(async () => {
+        const l = (await screen()).join('\n');
+        if (/Add directory to workspace/.test(l) && Date.now() - lastAnswer > 1500) { lastAnswer = Date.now(); dialogs++; await sleep(300); p.write('\r'); }
+      }, 300);
+      const failed = [];
+      const file = path.join(outside, 'note.md');
+      fs.writeFileSync(file, '# note\n');
+      const text = file + ' ';
+      try {
+        await runDrop({
+          dirs: c.noGrant ? [] : [outside], text,
+          env: { lines: () => cur, sync: async () => { cur = await screen(); }, termRows: () => ROWS,
+            write: (d) => { writes.push(d); p.write(d); }, sleep, keyGap: 120, exclusive: fn => fn(), log: () => {} },
+          onGranted: () => {}, onFailed: (d, why) => failed.push(why),
+        });
+      } finally { clearInterval(watcher); }
+      await sleep(1500);
+      const after = await screen();
+      const live = liveBox(after);
+      const rows = live && live.box ? live.box : [];
+      const joined = rows.map((r, i) => (i === 0 ? r.slice(1) : r).trim()).join(' ').replace(/\s+/g, ' ').trim();
+      const draftJoined = c.draft.filter(x => x !== '\x1b\r').join(' ');
+      const leaked = requests.some(r => r.last.includes('OLDDRAFT'));
+      let pass;
+      if (c.expect === 'restored') pass = dialogs === 1 && commandTyped(after, `${draftJoined} ${text}`, { termRows: ROWS }) && failed.length === 0;
+      else if (c.expect === 'kept') pass = dialogs === 0 && !writes.includes(CTRL_U) && failed.length === 1 && writes.length === 1 && writes[0] === ' ' + text && rows.length >= Math.floor(ROWS / 2) - 5;
+      else pass = dialogs === 0 && writes.length === 1 && writes[0] === ' ' + text && joined === `${draftJoined} ${file}`;
+      pass = pass && !leaked && (!c.rowsAtLeast || draftRows >= c.rowsAtLeast);
+      return { name: c.name, pass, draftRows, dialogs, failed, clearKeys: writes.filter(w => w === CTRL_U).length, leaked,
+        boxAfter: rows.length > 4 ? [...rows.slice(0, 2), '…', ...rows.slice(-2)] : rows };
+    });
+  } finally {
+    try { fs.rmSync(outside, { recursive: true, force: true }); } catch { /* temp */ }
+  }
 }
 
 // What does the box show for ONE write of N characters, and for a bracketed paste of N lines? (the paste threshold)
@@ -271,6 +339,16 @@ async function measureClear(claudeBin) {
   if (!claudeBin) { console.log('FAIL claude not found under npm root -g'); process.exit(1); }
   const only = process.argv.find(a => a.startsWith('--only='));
   let failed = false;
+  if (process.argv.includes('--grant')) {
+    for (const c of GRANT_CASES) {
+      if (only && !only.slice(7).split(',').includes(c.name)) continue;
+      let r;
+      try { r = await runGrant(claudeBin, c); } catch (e) { r = { name: c.name, pass: false, error: e.message }; }
+      if (!r.pass) failed = true;
+      console.log(`${r.pass ? 'PASS' : 'FAIL'} ${JSON.stringify(r)}`);
+    }
+    process.exit(failed ? 1 : 0);
+  }
   for (const c of CASES) {
     if (only && !only.slice(7).split(',').includes(c.name)) continue;
     let r;

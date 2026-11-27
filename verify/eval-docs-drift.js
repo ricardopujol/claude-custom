@@ -6,7 +6,7 @@
  *
  *   node verify/eval-docs-drift.js --repo <dir> --docs <dir> [--n 10] [--out <file>] [--branch develop]
  *
- * Run it under the heavy-work lock (~\.claude\scripts\heavy-lock.ps1): it keeps the GPU busy for a few minutes.
+ * It takes the heavy-work lock itself (BACKLOG #179; a busy slot waits, or ends NOT RUN with exit 75): it keeps the GPU busy for a few minutes.
  * The flags are then judged by a person who reads the docs: this script only counts how many it raised.
  *
  * WHAT THIS DOES NOT MEASURE. The documents are read as they are TODAY, against merges that are usually older: by now they have
@@ -15,6 +15,7 @@
  * answer timeout (GENERATE_TIMEOUT_MS), so a merge that would time out in the app times out here.
  */
 
+require('./lib/launch-electron');   // BACKLOG #179: takes the heavy-work lock now, before the model is loaded; it's released when this process ends
 const fs = require('fs');
 const path = require('path');
 const { createAskOllama } = require('../host/ask-ollama');

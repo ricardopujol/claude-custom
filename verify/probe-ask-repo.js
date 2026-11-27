@@ -5,8 +5,8 @@
  *
  *   node verify/probe-ask-repo.js [--wt <worktree>] [--dir <index folder>] [--model <answer model>] [--k 8]
  *
- * HEAVY: it uses the GPU (embedding a whole repo took 7-10 minutes on 2026-10-03) and loads a 7B model. Take
- * ~/.claude/scripts/heavy-lock.ps1 first, and it unloads the answer model when done (keep_alive 0). The index goes to --dir
+ * HEAVY: it uses the GPU (embedding a whole repo took 7-10 minutes on 2026-10-03) and loads a 7B model. It takes
+ * the heavy-work lock itself (BACKLOG #179; a busy slot waits, or ends NOT RUN with exit 75), and it unloads the answer model when done (keep_alive 0). The index goes to --dir
  * (default: the OS temp folder), never into the worktree. It never starts, stops or installs anything: if Ollama is down it
  * says so and exits 2.
  *
@@ -14,6 +14,7 @@
  * judge the rest: the measurement report is test-time evidence, not a pass/fail gate.
  */
 require('./lib/mark-probe');   // BACKLOG #169: this script starts a host or an Electron, so its children carry the probe mark
+require('./lib/launch-electron');   // BACKLOG #179: takes the heavy-work lock now, before the model is loaded; it's released when this process ends
 const os = require('os');
 const path = require('path');
 const { createIndex } = require('../host/ask-index');

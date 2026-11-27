@@ -347,7 +347,7 @@ function canvasMcpConfig(c) {
  * a working session to buy a mood engine that cannot run yet. The helper
  * arrives in step 2; until then the harness runs without hooks.
  */
-function buildClaudeArgs({ settingsFile, helperExists, canvasMcp, modDir, side = false } = {}) {
+function buildClaudeArgs({ settingsFile, helperExists, canvasMcp, modDir, side = false, resumeSessionId = null } = {}) {
   // #81: a side session is the CLI's own plan mode, which can read and answer and cannot write. Bypassing permissions would
   // override it, so the two never go together; and it is offered no panel of Claude's own.
   // Plan mode is only where it STARTS (Shift+Tab, or accepting the plan, leaves it): the deny is what keeps it read-only, and
@@ -357,6 +357,11 @@ function buildClaudeArgs({ settingsFile, helperExists, canvasMcp, modDir, side =
   const args = side === true
     ? ['--permission-mode', 'plan', '--tools', SIDE_ALLOWED_TOOLS.join(','), '--disallowedTools', SIDE_DENIED_TOOLS.join(','), '--strict-mcp-config']
     : ['--dangerously-skip-permissions'];
+  // BACKLOG #166: a lane's MAIN session resumes ITS OWN conversation, `--resume <session id>` (host/main-session.js). Never `--continue`:
+  // that takes the folder's newest conversation, which may be a side session's (PR #250 Dexter 1). Opt-in, a well-formed id only, and
+  // never on a side session. Whether the transcript exists is the caller's question (host/continue-flag.js hasTranscript): the
+  // interactive CLI resuming nothing exits 1.
+  if (side !== true && /^[A-Za-z0-9][A-Za-z0-9-]{7,80}$/.test(typeof resumeSessionId === 'string' ? resumeSessionId : '')) args.push('--resume', resumeSessionId);
   if (helperExists && settingsFile) args.push('--settings', settingsFile);
   // The tools learn their session from the SessionStart hook; with no hook helper no session id ever arrives and every call would answer
   // 'not ready yet' for ever, so they are not offered at all (PR #125 Dexter #8).
@@ -369,4 +374,14 @@ function buildClaudeArgs({ settingsFile, helperExists, canvasMcp, modDir, side =
   return args;
 }
 
-module.exports = { OCCUPANCY_MATCHER, BEDTIME_MATCHER, CRON_MATCHER, CHANGES_POST_MATCHER, CHANGES_FAILURE_MATCHER, buildHarnessSettings, writeHarnessSettings, buildClaudeArgs, findUserStatusLine, findUserTheme };
+/**
+ * What claude is started with at one spawn (PR #250 Miguel Y1): a side session and a shell host get `args` as they are; a main session
+ * is rebuilt from `options` with the mod's directory kept and `--resume <resumeId>` when there is an id. PURE, so host.js's wiring is
+ * a tested function and not a regex over its source.
+ */
+function argsForSpawn({ side = false, shell = false, args, options, modDir = null, resumeId = null } = {}) {
+  if (side === true || shell === true) return args;
+  return buildClaudeArgs({ ...options, modDir, resumeSessionId: resumeId });
+}
+
+module.exports = { OCCUPANCY_MATCHER, BEDTIME_MATCHER, CRON_MATCHER, CHANGES_POST_MATCHER, CHANGES_FAILURE_MATCHER, buildHarnessSettings, writeHarnessSettings, buildClaudeArgs, argsForSpawn, findUserStatusLine, findUserTheme };

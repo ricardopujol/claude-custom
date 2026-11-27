@@ -1,7 +1,7 @@
 'use strict';
 /**
- * The agent cues (BACKLOG #155, #156, #78), measured in a real window. Heavy: take heavy-lock.ps1 first
- * (`node scripts/with-heavy-lock.js node verify/probe-agent-cues.js`). About 2.5 minutes: it waits past 90 s of real time.
+ * The agent cues (BACKLOG #155, #156, #78), measured in a real window. Heavy:
+ * it takes the heavy-work lock itself when it starts (verify/README.md, "The heavy lock"): don't take the lock by hand first. About 2.5 minutes: it waits past 90 s of real time.
  *
  * A real host and a real window, `claude` replaced by cmd.exe (CLAUDE_CUSTOM_BIN) so nothing is billed. Hook events go through the
  * real native helper into the real hook bridge. The window's `attention` and `tab:status` messages to main are recorded by the

@@ -6,6 +6,7 @@
    This is the first check that exercises the pieces together rather than the
    bridge and the helper separately. */
 require('./lib/mark-probe');   // BACKLOG #169: this script starts a host or an Electron, so its children carry the probe mark
+const { noteChild } = require('./lib/launch-electron');   // BACKLOG #179: takes the heavy-work lock now, before anything heavy starts; noteChild records each host / claude it starts
 const { spawn, spawnSync } = require('child_process');
 const path = require('path');
 
@@ -17,6 +18,7 @@ const host = spawn(process.execPath, [path.join(REPO, 'host', 'host.js')], {
   env: { ...process.env, CLAUDE_CUSTOM_PORT: String(PORT), CLAUDE_CUSTOM_CWD: REPO },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
+noteChild(host);   // the lock's work record: a live host keeps this probe a live holder (BACKLOG #112)
 
 let log = '';
 host.stdout.on('data', d => { log += d.toString(); });

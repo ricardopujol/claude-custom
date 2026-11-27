@@ -20,7 +20,7 @@
      5. dark again, no picture of its own: the generated art is back, the dark palette as in shot 1.
 
    Usage:  node verify/probe-light-mode.js        (OUT_DIR=<dir> and PORT=<n> optional)
-   Takes the heavy-work lock first (C:\Users\ricar\.claude\scripts\heavy-lock.ps1): one Electron at a time. */
+   Takes the heavy-work lock itself when it starts (verify/README.md): one Electron at a time. */
 const { spawn } = require('child_process');
 const { spawnElectron, noteChild } = require('./lib/launch-electron');
 const fs = require('fs');

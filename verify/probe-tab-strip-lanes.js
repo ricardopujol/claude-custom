@@ -346,6 +346,30 @@ async function main() {
       (rowOf(s, 'feat/03') || {}).state === 'ended' && !(s.stripLayout.items || []).some(i => i.label === 'feat/03'), JSON.stringify(rowOf(s, 'feat/03')));
   }
 
+  // ===== #140 (2026-11-07 sighting): a click on a Lanes row gives the lane a tab AND a session =====
+  // A lane with no tab (a Not started row) and a lane whose session ended (an Ended row), each clicked as a person clicks it: the
+  // driver's `menu` item runs the same click handler as the popup. The click isn't awaited by the driver, so wait for the state.
+  const clickLanesRow = async (label) => {
+    const listed = await command(app, { cmd: 'menu', which: 'lanes' });
+    const text = ((listed && listed.items) || []).map(i => i.label).find(l => typeof l === 'string' && l.startsWith(label));
+    return text ? command(app, { cmd: 'menu', which: 'lanes', item: text }) : { ok: false, error: `no Lanes row starting ${label}` };
+  };
+  const hasSession = (x, label) => {
+    const t = (x.tabs || []).find(tt => tt.label === label);
+    const h = hostOf(x, label);
+    return !!t && t.started === true && t.ended !== true && !!h && h.started === true && Number.isInteger(h.port) && Number.isInteger(h.pid)
+      && x.stripKeys.includes(t.key) ? { t, h } : null;
+  };
+  for (const [label, what] of [['feat/10', 'a lane with no tab'], ['feat/03', 'a lane whose session ended']]) {
+    const clicked = await clickLanesRow(label);
+    s = await waitFor(async () => { const x = await state(app); return hasSession(x, label) ? x : null; }, 30000, 400);
+    if (s) remember(s);
+    const got = s ? hasSession(s, label) : null;
+    check(`#140: clicking ${what} in the Lanes menu gives it a tab and a running session`, clicked.ok === true && !!got,
+      JSON.stringify({ clicked: clicked.ok === true ? true : clicked, tab: (await state(app)).tabs.find(t => t.label === label), host: got && got.h }));
+    await command(app, { cmd: 'select', label: 'develop' }, 30000);
+  }
+
   // ===== closed stays closed, order survives =====
   const closedRes = await command(app, { cmd: 'close', label: 'feat/04' }, 30000);
   s = await state(app);

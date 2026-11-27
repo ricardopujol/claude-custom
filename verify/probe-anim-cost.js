@@ -1,6 +1,6 @@
 'use strict';
 /**
- * PROBE: BACKLOG #62, what an animated background costs. (re-runnable; HEAVY: take heavy-lock.ps1 first)
+ * PROBE: BACKLOG #62, what an animated background costs. (re-runnable; HEAVY: it takes the heavy-work lock itself)
  *
  *   node verify/probe-anim-cost.js [--ms=120000] [--only=gif,mp4]
  *

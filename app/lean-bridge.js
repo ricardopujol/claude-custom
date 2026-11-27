@@ -1,7 +1,8 @@
 'use strict';
 /**
- * Main's half of lean mode (BACKLOG #62, documentation/DESIGN_LEAN_MODE.md): the window-level state
- * (app/lean-state.js) behind three IPC channels, and the push of every change to the tab pages and the strip.
+ * Main's half of lean mode (BACKLOG #62, documentation/DESIGN_LEAN_MODE.md): the state (app/lean-state.js,
+ * ONE for the whole process since single-instance PR 2, Ricardo: "All of Jiandu") behind its IPC channels, and the push of every
+ * change to the tab pages and the strip of every window.
  *
  *   lean:get     (invoke)  a tab view or the strip asks the state
  *   lean:set     (send)    the ☾ Lean button / Back to normal: a boolean, from a tab view or the strip
@@ -13,7 +14,7 @@
  *                          view and pushes the window's whole set to the strip as `lean-faces` whenever it changes
  *
  * `isView` / `isStrip` say who a sender is, as in app/playback-bridge.js: a handler that answers anyone is not a
- * boundary. A tab view going away calls `dropOwner` so its night cannot keep the window lean for ever.
+ * boundary. A tab view going away calls `dropOwner` so its night cannot keep the process lean for ever.
  * Its own module so it can be tested without booting Electron.
  */
 const { createLean } = require('./lean-state');
@@ -26,40 +27,69 @@ const PUSH_CHANNEL = 'lean-state';
 const FACES_CHANNEL = 'lean:faces';
 const FACES_PUSH = 'lean-faces';
 
-function registerLeanHandlers({ ipcMain, isView, isStrip, push, pushFaces = () => {}, lean = createLean(), faces = createFaces() }) {
-  const view = (s) => typeof isView === 'function' && isView(s) === true;
-  const strip = (s) => typeof isStrip === 'function' && isStrip(s) === true;
+/**
+ * ONE window's lean UNIT over the process's lean state (`lean`, shared by every window: single-instance PR 2, Q3 answer: lean is app-wide):
+ * the window's own faces (the working agents' portraits stay per strip) and the push of every change (main's `push` reaches every window).
+ * It touches no ipcMain: registerLeanHandlers registers the channels once and hands each message to the unit of the window it came from.
+ */
+function createLeanUnit({ push, pushFaces = () => {}, lean = createLean(), faces = createFaces() }) {
   const announce = (changed) => {
     if (!changed) return;
     try { push(lean.view()); } catch { /* the window is going away */ }
   };
-
-  ipcMain.handle(GET_CHANNEL, (e) => (e && (view(e.sender) || strip(e.sender)) ? lean.view() : null));
-  ipcMain.on(SET_CHANNEL, (e, on) => {
-    if (!e || !(view(e.sender) || strip(e.sender)) || typeof on !== 'boolean') return;
-    announce(lean.setByHand(on));
-  });
-  ipcMain.on(NIGHT_CHANNEL, (e, startedAt) => {
-    if (!e || !view(e.sender)) return;
-    const owner = e.sender.id;
-    if (startedAt === null) announce(lean.nightEnded(owner));
-    else if (typeof startedAt === 'number') announce(lean.nightStarted(owner, startedAt));
-  });
-
   const announceFaces = (changed) => {
     if (!changed) return;
     try { pushFaces(faces.flat()); } catch { /* the window is going away */ }
   };
-  ipcMain.on(FACES_CHANNEL, (e, list) => {
-    if (!e || !view(e.sender)) return;
-    announceFaces(faces.set(e.sender.id, list));
-  });
-
   return {
     view: () => lean.view(),
     faces: () => faces.flat(),
     dropOwner: (owner) => { announce(lean.nightEnded(owner)); announceFaces(faces.drop(owner)); },
+    setByHand: (on) => announce(lean.setByHand(on)),
+    night: (owner, startedAt) => {
+      if (startedAt === null) announce(lean.nightEnded(owner));
+      else if (typeof startedAt === 'number') announce(lean.nightStarted(owner, startedAt));
+    },
+    setFaces: (owner, list) => announceFaces(faces.set(owner, list)),
   };
 }
 
-module.exports = { registerLeanHandlers, GET_CHANNEL, SET_CHANNEL, NIGHT_CHANNEL, PUSH_CHANNEL, FACES_CHANNEL, FACES_PUSH };
+/**
+ * Two forms. With `unitOf(sender)` (several windows): the unit of the window that owns the sender, as `{ unit, isView }`, or null for a
+ * page that is not one of ours. Without it (the single form): `isView` / `isStrip` say who a sender is, one unit is made from
+ * `lean`/`faces`/`push`/`pushFaces`, and it is what's returned.
+ */
+function registerLeanHandlers({ ipcMain, unitOf, isView, isStrip, push, pushFaces, lean, faces }) {
+  let single = null;
+  let resolve = unitOf;
+  if (typeof unitOf !== 'function') {
+    single = createLeanUnit({ push, pushFaces, lean, faces });
+    resolve = (s) => {
+      if (typeof isView === 'function' && isView(s) === true) return { unit: single, isView: true };
+      if (typeof isStrip === 'function' && isStrip(s) === true) return { unit: single, isView: false };
+      return null;
+    };
+  }
+  const of = (e) => (e ? resolve(e.sender) || null : null);
+
+  ipcMain.handle(GET_CHANNEL, (e) => { const r = of(e); return r ? r.unit.view() : null; });
+  ipcMain.on(SET_CHANNEL, (e, on) => {
+    const r = of(e);
+    if (!r || typeof on !== 'boolean') return;
+    r.unit.setByHand(on);
+  });
+  ipcMain.on(NIGHT_CHANNEL, (e, startedAt) => {
+    const r = of(e);
+    if (!r || !r.isView) return;
+    r.unit.night(e.sender.id, startedAt);
+  });
+  ipcMain.on(FACES_CHANNEL, (e, list) => {
+    const r = of(e);
+    if (!r || !r.isView) return;
+    r.unit.setFaces(e.sender.id, list);
+  });
+
+  return single;
+}
+
+module.exports = { registerLeanHandlers, createLeanUnit, GET_CHANNEL, SET_CHANNEL, NIGHT_CHANNEL, PUSH_CHANNEL, FACES_CHANNEL, FACES_PUSH };

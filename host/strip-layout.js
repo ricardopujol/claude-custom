@@ -4,7 +4,11 @@
  * the order the person dragged the lanes into, and the lanes they closed by hand, so a closed tab stays closed after a restart
  * (it is a row in the Lanes menu until they reopen it).
  *
- *   <project>\.claude-custom\tab-strip.json   { version: 1, order: [laneKey], closed: [{ key, path, branch, at }], reopened: [{ key, at }] }
+ *   <project>\.claude-custom\tab-strip.json   { version: 1, order: [laneKey], closed: [{ key, path, branch, at }], pinned: [laneKey], reopened: [{ key, at }] }
+ *
+ * `pinned` (BACKLOG #167; documentation/DESIGN_TABS_SESSIONS.md 3.2) is the lanes the person pinned: always on the strip, and started at
+ * launch. It is saved like `order`: this window's only if this window changed it. A window running code from before pins rewrites the
+ * file without it (the same caveat as below), which un-pins everything; one window per project makes that rare.
  *
  * `at` is when the lane was closed and `reopened` holds a tombstone for each lane reopened, both in ms and both taken when the person
  * ACTED, not when the file was written: with two windows open, the newer action on a lane wins whichever window made it (PR #227
@@ -37,6 +41,7 @@ const { normPath } = require('./project-layout');
 const FILE_NAME = 'tab-strip.json';
 const VERSION = 1;
 const MAX_ORDER = 500;
+const MAX_PINNED = 100;
 const MAX_CLOSED = 100;
 
 const text = (s) => (typeof s === 'string' && s !== '' ? s : null);
@@ -51,6 +56,13 @@ function cleanOrder(list) {
   const out = [];
   for (const k of Array.isArray(list) ? list : []) if (text(k) && !out.includes(k)) out.push(k);
   return out.slice(0, MAX_ORDER);
+}
+
+/** The pinned lanes (BACKLOG #167): keys like `order`'s, once each, in the order they were pinned. */
+function cleanPinned(list) {
+  const out = [];
+  for (const k of Array.isArray(list) ? list : []) if (text(k) && !out.includes(k)) out.push(k);
+  return out.slice(0, MAX_PINNED);
 }
 
 function cleanClosed(list) {
@@ -69,13 +81,13 @@ function cleanClosed(list) {
   return out.slice(0, MAX_CLOSED);
 }
 
-/** The clean `{ order, closed }` of a file's text; throws when the text isn't a JSON object. */
+/** The clean `{ order, closed, pinned }` of a file's text; throws when the text isn't a JSON object. */
 function parseLayout(body) {
   const raw = JSON.parse(body);
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('not an object');
   // A file of a later version is the person's data in a shape this code doesn't know: an unknown store, never read as v1 and rewritten.
   if (raw.version !== undefined && raw.version !== VERSION) throw new Error('unknown version');
-  return { order: cleanOrder(raw.order), closed: cleanClosed(raw.closed) };
+  return { order: cleanOrder(raw.order), closed: cleanClosed(raw.closed), pinned: cleanPinned(raw.pinned) };
 }
 
 const stamp = (n) => (typeof n === 'number' && Number.isFinite(n) && n >= 0 ? n : 0);
@@ -138,7 +150,7 @@ function createStripLayout({
   now = () => Date.now(),
 } = {}) {
   let unknown = null;     // why the file can't be written over, once load has seen it
-  let last = { order: [], closed: [] };   // what THIS window last loaded or saved: the base the ORDER is merged against
+  let last = { order: [], closed: [], pinned: [] };   // what THIS window last loaded or saved: the base the ORDER and the PINS are merged against
   // What this window holds closed NOW (its view), and since when. Updated by every save CALL, whether or not the write works, so the
   // time of an action is the time it was made and a failed write doesn't move it (PR #231 Dexter 8b).
   let held = new Map();                   // key -> entry
@@ -146,38 +158,39 @@ function createStripLayout({
   const pendingReopens = new Map();       // key -> when this window reopened it, until a write has carried it
   let clock = 0;                          // the last stamp handed out: a window's own actions only go up, whatever its clock does
 
-  /** `{ order, closed, error }`: read from disk each time it's asked (the shell asks once, at its start). */
+  /** `{ order, closed, pinned, error }`: read from disk each time it's asked (the shell asks once, at its start). */
   function load() {
     unknown = null;
-    last = { order: [], closed: [] };
+    last = { order: [], closed: [], pinned: [] };
     held = new Map();
     heldAt = new Map();
     pendingReopens.clear();
-    if (!file) return { order: [], closed: [], error: null };
+    if (!file) return { order: [], closed: [], pinned: [], error: null };
     let body;
     try { body = readText(file); } catch (err) {
-      if (err && err.code === 'ENOENT') return { order: [], closed: [], error: null };
+      if (err && err.code === 'ENOENT') return { order: [], closed: [], pinned: [], error: null };
       unknown = `can't read ${file}: ${(err && err.message) || String(err)}`;
-      return { order: [], closed: [], error: unknown };
+      return { order: [], closed: [], pinned: [], error: unknown };
     }
     try {
       const l = parseLayout(body);
-      last = { order: l.order, closed: l.closed };
+      last = { order: l.order, closed: l.closed, pinned: l.pinned };
       const at = parseStamps(body).closedAt;
       held = new Map(l.closed.map(c => [c.key, c]));
       heldAt = new Map(l.closed.map(c => [c.key, at.get(c.key) || 0]));
       return { ...l, error: null };
     } catch {
       unknown = `${file} isn't a tab strip file; left alone`;
-      return { order: [], closed: [], error: unknown };
+      return { order: [], closed: [], pinned: [], error: unknown };
     }
   }
 
-  /** Save `{ order, closed }`. `{ ok: true }`, or `{ ok: false, error }`; never a throw. */
+  /** Save `{ order, closed, pinned }`. `{ ok: true }`, or `{ ok: false, error }`; never a throw. */
   function save(layout) {
     if (unknown) return { ok: false, error: unknown };
     const src = layout && typeof layout === 'object' ? layout : {};
-    const mine = { order: cleanOrder(src.order), closed: cleanClosed(src.closed) };
+    const mine = { order: cleanOrder(src.order), closed: cleanClosed(src.closed), pinned: cleanPinned(src.pinned) };
+    const carriesPins = Array.isArray(src.pinned);
     if (!file) return { ok: true };
     // The actions this save carries are stamped NOW, at the call: a lane that wasn't held closed and is, was closed; one that was
     // and isn't, was reopened. One stamp per call, and always above this window's last.
@@ -189,7 +202,7 @@ function createStripLayout({
     try {
       // Other windows of this project write the same file, each from its own memory: merge into what is on disk instead of
       // replacing it (PR #227 Dexter 2); the order is this window's only if this window changed it.
-      let onDisk = { order: [], closed: [] };
+      let onDisk = { order: [], closed: [], pinned: [] };
       let diskStamps = { closedAt: new Map(), reopenedAt: new Map() };
       try {
         const body = readText(file);
@@ -210,11 +223,15 @@ function createStripLayout({
       const lastKeys = new Set(last.order);
       const shared = mine.order.filter(k => lastKeys.has(k));
       const orderChanged = mine.order.some(k => !lastKeys.has(k)) || JSON.stringify(shared) !== JSON.stringify(last.order.filter(k => mine.order.includes(k)));
+      // The pins are the same: this window's only if this window changed them (a prune of a lane git dropped counts as a change; a
+      // pin made in another window since this one loaded survives a save that left the pins alone). A caller that carries no `pinned`
+      // at all leaves the file's pins as they are.
+      const pinsChanged = carriesPins && JSON.stringify(mine.pinned) !== JSON.stringify(last.pinned);
       mkdir(path.dirname(file));
-      writeText(file, JSON.stringify({ version: VERSION, order: orderChanged ? mine.order : onDisk.order, closed: merged.closed, reopened: merged.reopened }, null, 2) + '\n');
+      writeText(file, JSON.stringify({ version: VERSION, order: orderChanged ? mine.order : onDisk.order, closed: merged.closed, pinned: pinsChanged ? mine.pinned : onDisk.pinned, reopened: merged.reopened }, null, 2) + '\n');
       pendingReopens.clear();     // the file carries them now
       for (const c of merged.closed) if (held.has(c.key)) heldAt.set(c.key, c.at);
-      last = mine;
+      last = { order: mine.order, closed: mine.closed, pinned: carriesPins ? mine.pinned : last.pinned };
     } catch (err) {
       return { ok: false, error: (err && err.message) || String(err) };
     }

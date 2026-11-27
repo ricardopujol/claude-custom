@@ -139,6 +139,9 @@ contextBridge.exposeInMainWorld('harness', {
   readClipboard: () => ipcRenderer.invoke('clipboard:read'),
   // Ctrl+C with a selection: main writes it (app/clipboard-bridge.js).
   writeClipboard: (text) => ipcRenderer.invoke('clipboard:write', text),
+  // Ctrl+V with files copied in Explorer (BACKLOG #136 (1)): main runs a native paste into this page, whose paste event carries the
+  // Files (and so pathForFile above), only when files are all the clipboard holds.
+  pasteFiles: () => ipcRenderer.invoke('clipboard:paste-files'),
 
   // The secret store. Every call crosses into main, where the vault lives --
   // the window never holds the file, the key, or more than one secret at a

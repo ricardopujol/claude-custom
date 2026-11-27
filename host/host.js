@@ -20,7 +20,7 @@ const path = require('path');
 const fs = require('fs');
 const pty = require('node-pty');
 const { WebSocketServer } = require('ws');
-const { writeHarnessSettings, buildClaudeArgs, findUserStatusLine, findUserTheme } = require('./settings-writer');
+const { writeHarnessSettings, buildClaudeArgs, argsForSpawn, findUserStatusLine, findUserTheme } = require('./settings-writer');
 const { claudeConfigDir, setConfigAnchor } = require('./claude-config-dir');
 const { createHookBridge } = require('./hook-bridge');
 const { createTerminalState } = require('./terminal-state');
@@ -39,7 +39,7 @@ const { handlePortraitMessage, handleGlobalPortraitMessage } = require('./portra
 const { watchGlobalDir } = require('./global-watch');
 const { createHiddenAgents, validRosterMsg } = require('./hidden-agents');
 const { createMedals } = require('./medals');
-const { createUsageCounters } = require('./usage-counters');
+const { createUsageCounters, countingOff } = require('./usage-counters');
 const { validGive, validRemove } = require('../app/medals-display');
 const { createBubbles, createBubbleSettings } = require('./bubbles');
 const { createBubbleGate } = require('./bubble-gate');
@@ -145,6 +145,7 @@ const { writeIdentity, fileFor, readIdentity, readTokenFile } = require('./host-
 const { markFromEnv } = require('./probe-mark');
 const { pickerPayload, createProjectsReader } = require('./project-picker');
 const { resolveLaunchTarget, pickShell, shellEnv } = require('./launch-target');
+const { ptyEnv } = require('./pty-env');
 const { samePath } = require('./project-path');
 const { lockPathFor, acquire: acquireSessionLock, release: releaseSessionLock,
         updateOwn: updateSessionLock, readHolder } = require('./session-lock');
@@ -153,6 +154,7 @@ const { createSelfStartTime, isAlive: procAlive, startTimes } = require('./proc-
 const { isSideEnv, siblingSessions } = require('./side-session');
 // BACKLOG #119 A5: a tab's plain shell is a host of its own too (host/shell-tab.js): its pty runs the person's shell, not claude.
 const { isShellEnv, startShellPty, identityFields, FAILED_START_LINGER_MS } = require('./shell-tab');
+const { createBootRetry, settleVersion, claudeLooksInstalled, createLiveBin } = require('./boot-retry');
 const { identitiesIn } = require('./background-hosts');
 // Worktree occupancy (backlog #44 + #47): which worktree each of this session's subagents is working in,
 // as claim files the other windows read. See host/occupancy-producer.js.
@@ -171,6 +173,8 @@ const { liveSessionsIn } = require('./session-registry');
 const { worktreeEnv, worktreeRoot } = require('./worktree-env');
 const { allocate: allocatePortBlock, excludedRanges } = require('./port-blocks');
 const { branchHealth } = require('./branch-health');
+const { recordMainSession, resumeIdFor } = require('./main-session');
+const { createResumeWatch, WITHIN_MS: RESUME_RETRY_MS } = require('./resume-retry');
 
 // --- locate the real claude binary -----------------------------------------
 // npm installs a native claude.exe; spawning it directly avoids a cmd.exe shim
@@ -195,6 +199,14 @@ function resolveClaude() {
 }
 
 const CLAUDE_BIN = resolveClaude();
+// Whether a claude is installed here at boot (BACKLOG #217): only then is a later "not found" an update in progress, not a claude that
+// isn't installed. The exe alone is not proof: an update has it deleted for a moment, and a tab opened then boots with the bare PATH
+// fallback (measured 2026-11-11), so the CLI's own folders count too (host/boot-retry.js claudeLooksInstalled).
+const CLAUDE_BIN_EXISTED = claudeLooksInstalled({
+  bin: CLAUDE_BIN, explicit: Boolean(process.env.CLAUDE_CUSTOM_BIN), exists: fs.existsSync, home: os.homedir(),
+});
+// The path to run, for the pty, the version read and Ask alike. A boot with no exe left the bare name; once the update has put the exe back, it is found again.
+const liveClaudeBin = createLiveBin({ initial: CLAUDE_BIN, exists: fs.existsSync, resolve: resolveClaude, log: (line) => console.log('[host]', line) });
 const CWD = process.env.CLAUDE_CUSTOM_CWD || process.cwd();
 // A relative CLAUDE_CONFIG_DIR means a folder under THIS tab's cwd (where its `claude` runs), not the host process's.
 setConfigAnchor(CWD);
@@ -463,7 +475,8 @@ console.log('[host] theme          :', theme.name);
 const mood = createMoodMachine({ mono: () => performance.now() });
 const processes = createProcessTracker();
 const store = createStore({ dir: path.join(HARNESS_DIR, 'state') });
-const usageCounters = createUsageCounters({ store, log: (...a) => console.log(...a) });      // invisible: which features get used (scripts/usage-report.js); above its users (canvasControl's emit)
+// Off in a host a probe or a test started (BACKLOG #97): only a person's own windows count.
+const usageCounters = createUsageCounters({ store, off: countingOff(process.env), log: (...a) => console.log(...a) });      // invisible: which features get used (scripts/usage-report.js); above its users (canvasControl's emit)
 // The Git panel's data. The branch ledger is the PROJECT's (every tab of it shares one), so it
 // lives in <project>\.claude-custom\ beside the look, behind the same `*` .gitignore, and never
 // through a linked folder (ledgerFileFor).
@@ -509,7 +522,7 @@ const changesNotifier = createChangesNotifier({ announce: (msg) => broadcastCont
 // person's plan (host/ask-claude.js: no tools, no API key in its environment). The index is per worktree, kept under the harness state.
 const askOllama = createAskOllama({ baseUrl: seams.ollamaUrl || undefined });
 const askIndex = createAskIndex({ dir: seams.askIndexDir || path.join(HARNESS_DIR, 'state', 'ask-index'), embed: (t) => askOllama.embed(t), embedModel: askOllama.embedModel });
-const askClaude = createClaudeAnswerer({ claudeBin: CLAUDE_BIN, anchor: CWD });
+const askClaude = createClaudeAnswerer({ claudeBin: liveClaudeBin, anchor: CWD });
 // The explainer joins the roster (BACKLOG #33 gamification): its live state (host/ask-explainer.js, told by the service what happened) and its
 // two counts (host/ask-counts.js, install-wide like the medals). Every window of this host gets them as an `explainer` frame; the page puts it
 // on the roster only once the person has named it.
@@ -763,6 +776,24 @@ const settingsFile = writeHarnessSettings(HARNESS_DIR, {
 const ARGS_OPTIONS = { settingsFile, helperExists, canvasMcp, side: SIDE };
 // Rebuilt once, at boot, with the claude-custom mod when its switch, the CLI's version and its directory allow it (prepareMod below).
 let ARGS = buildClaudeArgs(ARGS_OPTIONS);
+// The mod's directory ARGS was last rebuilt with (prepareMod), so a spawn-time rebuild keeps the plugin.
+let ARGS_MOD_DIR = null;
+// The main session's id, per folder (host/main-session.js): the next main session resumes ITS OWN conversation with it.
+const MAIN_SESSIONS_FILE = path.join(HARNESS_DIR, 'state', 'main-sessions.json');
+/**
+ * What claude is started with RIGHT NOW (BACKLOG #166; PR #250 Dexter 1): ARGS for a side session and a shell host; for a lane's main
+ * session `--resume <its recorded session id>` when the CLI's own store still has that transcript, else a FRESH session. Never
+ * `--continue` (the folder's newest conversation, which may be a side session's). Asked at each spawn (a session started after the
+ * kill switch, a lock or a click on an ended tab resumes too). The interactive CLI resuming nothing exits 1 (host/continue-flag.js).
+ */
+let RESUME_REFUSED = false;      // the CLI refused a --resume once (host/resume-retry.js): the retry starts fresh
+let LAST_SPAWN_RESUMED = false;  // the arguments of the last claudeArgs() carried --resume
+function claudeArgs() {
+  const resumeId = SIDE || SHELL || RESUME_REFUSED ? null : resumeIdFor({ file: MAIN_SESSIONS_FILE, cwd: CWD, store: { log: (l) => console.log(l) } });
+  const args = argsForSpawn({ side: SIDE, shell: SHELL, args: ARGS, options: ARGS_OPTIONS, modDir: ARGS_MOD_DIR, resumeId });
+  LAST_SPAWN_RESUMED = args.includes('--resume');
+  return args;
+}
 // A shell host runs the person's shell with no arguments (host/launch-target.js pickShell); claude's arguments are for claude.
 const SHELL_TARGET = SHELL ? pickShell(process.env) : null;
 // What every writeIdentity call says about this host's role (host/shell-tab.js identityFields): one place, so a fourth call can't forget it.
@@ -1025,6 +1056,9 @@ function handleDrop(msg, ws) {
     env: grantEnv(),
     onGranted: (dir) => { grantedDirs.push(dir); console.log('[host] drop requests :', dir); tell({ requested: [dir] }); },
     onFailed: (dir, why) => tell({ refused: [{ dir, why }] }),
+    // A draft the grant cleared that could not be typed back (not even late, when an unanswered dialog is answered: grant-sequence.js
+    // lateRetype) reaches the page as a notice that stays, with its full text and a Copy button (PR #246 D1, R2-2)
+    onDraftLeft: (draftText, why) => tell({ draftLeft: { text: draftText, why } }),
   })).catch((err) => console.log('[host] drop failed:', err && err.message));
   void ws;
 }
@@ -1632,6 +1666,8 @@ if (helperExists) {
     if (ev.event === 'SessionStart' && ev.payload && ev.payload.session_id) {
       sessionId = ev.payload.session_id;
       console.log('[host] session id     :', sessionId);
+      // a main host keeps its own id, so its next session resumes it (a side host and a shell host never do: they start fresh)
+      if (!SIDE && !SHELL) recordMainSession({ file: MAIN_SESSIONS_FILE, cwd: CWD, sessionId });
       if (SIDE) republishIdentity();     // the identity names it, for the producers that read transcripts
       canvasControl.sessionChanged(sessionId);
       // the roster cards match an agent's worktree claim on it (backlog #57): a /clear starts a new one
@@ -1927,6 +1963,21 @@ async function restartAfterRefusal() {
   }
 }
 
+// BACKLOG #217: a spawn that fails because the binary is not usable right now (claude.exe mid-update) is retried (host/boot-retry.js).
+// A monotonic clock, so a wall-clock step can't stretch or cut the bound. No timer is ever cleared: every exit path of the host is a
+// process.exit, which takes a pending retry with it, and startSession itself refuses after a stop, a kill switch or when a pty exists.
+const bootRetry = createBootRetry({
+  now: () => performance.now(),
+  setTimer: (fn, ms) => setTimeout(fn, ms),
+  say: sayInTab,
+  end: (reason) => endHost(1, null, { error: reason }, FAILED_START_LINGER_MS),
+  log: (line) => console.error('[host]', line),
+  prepare: prepareMod,
+  unreadable: () => modVersionUnreadable,
+  binExisted: () => CLAUDE_BIN_EXISTED,
+  startSession: () => startSession(),
+});
+
 function startSession() {
   if (term) return;
   // The kill switch (host/kill-switch.js): asked now, not at the next poll, so a sentinel already there is never raced by the spawn;
@@ -1945,28 +1996,19 @@ function startSession() {
   // arrived while blocked or booting only reached termState, which starts at
   // 120x30 and follows every validated resize since.
   const { cols, rows } = termState.size();
-  const spawnPty = () => pty.spawn(SHELL ? SHELL_TARGET.bin : CLAUDE_BIN, SHELL ? SHELL_TARGET.args : ARGS, {
+  const spawnPty = () => pty.spawn(SHELL ? SHELL_TARGET.bin : liveClaudeBin(), SHELL ? SHELL_TARGET.args : claudeArgs(), {
     name: 'xterm-256color',
     cols,
     rows,
     cwd: CWD,
     // The bundled ConPTY, so the CLI's OSC 7501 query reaches us and our answer reaches it (host/conpty-choice.js).
     ...PTY_BACKEND.options,
-    env: SHELL
-      // A5: an arbitrary program gets the person's environment and the worktree's, and none of the harness's own (host/launch-target.js shellEnv).
-      ? { ...shellEnv(cleanEnv()), TERM: 'xterm-256color', COLORTERM: 'truecolor', ...sessionEnv }
-      : {
-        ...cleanEnv(),
-        TERM: 'xterm-256color',
-        COLORTERM: 'truecolor',
-        // Marks this session as harness-hosted; the hook bridge keys off it later.
-        CLAUDE_CUSTOM_SESSION: '1',
-        // BACKLOG #119 A2: where the mod (loaded with --plugin-dir) posts, and the per-spawn token that authorises it. Only when the
-        // mod server is up; the window's session token never goes here.
-        ...(modPort === null ? {} : { CLAUDE_CUSTOM_MOD_PORT: String(modPort), CLAUDE_CUSTOM_MOD_TOKEN: MOD_TOKEN }),
-        ...sessionEnv,
-        ...providerEnv,
-      },
+    // host/pty-env.js: a shell tab (A5) gets the person's environment and the worktree's and none of the harness's own; a claude
+    // session is marked and gets the mod's and the provider's. Every kind gets PYTHON_BASIC_REPL=1 (BACKLOG #74 F (2)).
+    env: ptyEnv({ kind: SHELL ? 'shell' : SIDE ? 'side' : 'branch', base: cleanEnv(), shellEnv, sessionEnv, providerEnv,
+      // BACKLOG #119 A2: where the mod (loaded with --plugin-dir) posts, and the per-spawn token that authorises it. Only when the
+      // mod server is up; the window's session token never goes here.
+      modEnv: modPort === null ? {} : { CLAUDE_CUSTOM_MOD_PORT: String(modPort), CLAUDE_CUSTOM_MOD_TOKEN: MOD_TOKEN } }),
   });
   // The clock just before and just after the spawn: ConPTY creates the process inside pty.spawn, so its creation time falls between
   // the two, and the job guard can prove it holds our pty without the proc-start read (host/job-guard.js spawnWindowOf).
@@ -1983,8 +2025,16 @@ function startSession() {
     }
     term = started.term;
   } else {
-    term = spawnTimed();
+    // BACKLOG #217: a claude.exe being rewritten by an update fails the spawn; that is waited out (host/boot-retry.js), not left as an
+    // empty tab. Any other spawn error propagates exactly as before.
+    try {
+      term = spawnTimed();
+    } catch (err) {
+      if (!bootRetry.failed(err)) throw err;
+      return;
+    }
   }
+  bootRetry.started();
   trackExit(term);        // so shutdown can kill its whole process tree by pid, proven by start time (host/pty-stop.js)
   // And every process it starts joins a job the kill switch can end, parent links or not (BACKLOG #127). Never throws; a session
   // the guard could not arm is exactly the session it was before.
@@ -1996,7 +2046,21 @@ function startSession() {
   // And the identity names it, so a stop (▾, `--stop`) waits for this claude
   // too, lock or no lock (Dexter, PR #83 F1).
   republishIdentity();
-  wireTerm(term);
+  // PR #250 safety net: a --resume the CLI refuses (measured: "No conversation found", exit 1, at once) must not kill the tab at every
+  // launch. The host starts it ONCE more, fresh, and says why (host/resume-retry.js).
+  const retryFresh = () => {
+    console.log(`[host] the CLI refused --resume (exit 1 within ${RESUME_RETRY_MS / 1000} s, "No conversation found"): starting this session fresh, once`);
+    RESUME_REFUSED = true;
+    term = spawnTimed();
+    trackExit(term);
+    jobGuard.attach({ pid: term.pid, startOf: () => trackedStart(term), spawnWindow })
+      .catch((err) => console.log('[job-guard] attach failed:', err && err.message));
+    console.log('[host] pty pid       :', term.pid);
+    if (lockState.state === 'held') updateSessionLock(SESSION_LOCK, lockOwner, { claudePid: term.pid });
+    republishIdentity();
+    wireTerm(term);
+  };
+  wireTerm(term, !SHELL && LAST_SPAWN_RESUMED ? createResumeWatch() : null, retryFresh);
 }
 
 // --- attach surface ---------------------------------------------------------
@@ -2044,7 +2108,7 @@ const wss = new WebSocketServer({
     const token = new URL(req.url, 'ws://127.0.0.1').searchParams.get('token');
     const verdict = allowConnection({ origin, token }, { expectedToken: SESSION_TOKEN });
     if (!verdict.ok) {
-      console.log('[host] refused a connection:', verdict.reason);
+      console.log(`[host] refused a connection on port ${PORT}:`, verdict.reason);
       return done(false, 403, 'Forbidden');
     }
     done(true);
@@ -2200,8 +2264,9 @@ function sayInTab(text) {
 }
 
 // The pty's two event handlers, attached when startSession() spawns it.
-function wireTerm(t) {
+function wireTerm(t, watch = null, retryFresh = null) {
   t.onData((data) => {
+    if (watch) watch.feed(data);
     termState.write(data, programStatusHost.deliver());
     const frame = Buffer.from(data, 'utf8');
     for (const ws of clients) {
@@ -2211,8 +2276,22 @@ function wireTerm(t) {
 
   t.onExit(({ exitCode, signal }) => {
     console.log(`[host] claude exited code=${exitCode} signal=${signal}`);
+    if (watch && retryFresh && watch.shouldRetry({ exitCode })) {
+      try { retryFresh(); return; } catch (err) { console.log('[host] the fresh retry could not start:', err && err.message); }
+    }
     endHost(exitCode, signal);
   });
+}
+
+// #222: a host that bound its port takes its identity file and its token file with it when it ends without shutdown() (claude exited),
+// so the next host on this port finds no leftover token to mistake for its own. A host that never bound leaves the winner's files alone.
+// Best effort, and wrapped whole: it must never keep the host from exiting.
+function removeOwnFiles() {
+  try {
+    if (boundPort !== PORT) return;
+    try { fs.unlinkSync(fileFor(HARNESS_DIR, PORT)); } catch { /* already gone */ }
+    try { fs.unlinkSync(PORT_TOKEN_FILE); } catch { /* already gone */ }
+  } catch { /* boundPort not initialised yet: nothing was bound */ }
 }
 
 // The session is over: tell every client, then end the host. `extra` rides on the exit frame (a failed shell start says why).
@@ -3274,9 +3353,10 @@ let boundPort = null;                 // set only once the bind has succeeded
 
 wss.on('listening', () => {
   boundPort = PORT;
-  schedulesControl.start();                   // BACKLOG #119 A7: only a host that owns its port keeps an entry in the shared schedules file
-  console.log(`[host] listening on ws://127.0.0.1:${PORT}`);
+  // #222: the token files, then the identity (the window's proof of who bound), BEFORE schedulesControl.start(), which can wait up to 3 s
+  // on a shared file lock. A window reads them the moment the port answers.
   writeTokenFiles();
+  console.log(`[host] listening on ws://127.0.0.1:${PORT}`);
   try {
     console.log('[host] identity     :', writeIdentity({ dir: HARNESS_DIR, port: PORT, cwd: CWD, ...identityFor(),
       processStartedAt: lockOwner ? lockOwner.processStartedAt : undefined, claudePid: term ? term.pid : undefined }));
@@ -3287,6 +3367,7 @@ wss.on('listening', () => {
     // because "why did it open a second host" is otherwise unanswerable.
     console.error('[host] could not publish identity:', err.message);
   }
+  schedulesControl.start();                   // BACKLOG #119 A7: only a host that owns its port keeps an entry in the shared schedules file
 });
 
 // Once claude starts (or restarts): the identity again, now naming it. Only by
@@ -3339,6 +3420,7 @@ wss.on('error', (err) => {
 // identity file are released AFTER it, because both mean "a live claude is in this worktree" (PR #217 Dexter F1, F2). The watchdog's
 // kill makes them stale within the bound.
 function shutdown({ removeIdentity = true } = {}) {
+  removeIdentity = removeIdentity && boundPort === PORT;     // #222: a process that never bound the port never deletes the winner's files (a bare SIGTERM of a loser)
   runShutdown({
     logFile: path.join(HARNESS_DIR, 'host.log'),
     start: ownStartTime(),
@@ -3358,6 +3440,8 @@ function shutdown({ removeIdentity = true } = {}) {
       // pid is gone, so this is tidiness rather than correctness -- which is why it
       // is safe to swallow, and why the pid check exists instead of relying on it.
       () => { if (removeIdentity) fs.unlinkSync(fileFor(HARNESS_DIR, PORT)); },
+      // #222: and its token file, so the next host on this port finds none to mistake for its own (a killed host still leaves one).
+      () => { if (removeIdentity && boundPort === PORT) fs.unlinkSync(PORT_TOKEN_FILE); },
     ],
   });
 }
@@ -3376,6 +3460,8 @@ process.on('exit', () => { killTree(healthChild); releaseSessionLock(SESSION_LOC
 process.on('exit', () => { hostQuota.release(); });
 // This session's scheduled work is over with it: neighbours see "session ended" at once (and a durable cron job stays on the list).
 process.on('exit', () => { schedulesControl.end(); });
+// #222: ... and so are its identity and token files, on EVERY exit path that runs JS, endHost's (claude exited) included; a host that never bound leaves the winner's.
+process.on('exit', removeOwnFiles);
 
 // --- the claude-custom mod (BACKLOG #119 A2) ------------------------------------------------------------------------
 // mods/claude-custom is loaded into `claude` with --plugin-dir. It reads the CLI's own usage, subagent states and permission asks and
@@ -3391,6 +3477,7 @@ let modPort = null;
 // Why the mod is not loaded, if it is not: said once in the log and kept for the diagnostics pane (hello + `modStatus`), so a quiet feed
 // is never a mystery (PR #197 Miguel Y9). null while it is on or before it has been decided.
 let modStatus = null;
+let modVersionUnreadable = false;      // the last prepareMod found `claude --version` unreadable (the boot and the retry read it again)
 function setModStatus(status) {
   modStatus = status;
   broadcastControl({ type: 'modStatus', modStatus });
@@ -3403,7 +3490,9 @@ async function prepareMod() {
     const enabled = modEnabled({ env: process.env, stateDir: path.join(HARNESS_DIR, 'state') });
     // A stand-in binary asked for with CLAUDE_CUSTOM_MOD=1 has no version worth reading.
     const forced = !!process.env.CLAUDE_CUSTOM_BIN;
-    const version = enabled && !forced ? await readCliVersion(CLAUDE_BIN) : null;
+    const version = enabled && !forced ? await readCliVersion(liveClaudeBin()) : null;
+    // Only a read that GAVE NOTHING (an exe half-written by an update) can change on a second look; an old CLI or a mod switched off can't.
+    modVersionUnreadable = enabled && !forced && !Array.isArray(version);
     const why = modOffReason({ enabled, version, dir: MOD_DIR, forced });
     if (why !== null) {
       console.log('[host] claude-custom mod: not loaded --', why);
@@ -3411,7 +3500,9 @@ async function prepareMod() {
       return;
     }
     modPort = await modServer.listen();
-    ARGS = buildClaudeArgs({ ...ARGS_OPTIONS, modDir: modPluginDirFor({ enabled, version, dir: MOD_DIR, forced }) });
+    const modDir = modPluginDirFor({ enabled, version, dir: MOD_DIR, forced });
+    ARGS = buildClaudeArgs({ ...ARGS_OPTIONS, modDir });
+    ARGS_MOD_DIR = modDir;
     console.log('[host] claude-custom mod: on, posts to 127.0.0.1:' + modPort + ' (CLI', version ? version.join('.') : 'stand-in', ')');
     setModStatus({ state: 'on', reason: null });
   } catch (err) {
@@ -3445,6 +3536,8 @@ const handleModRecord = createModRecordHandler({
 (async () => {
   const [processStartedAt, excluded] = await Promise.all([createSelfStartTime()(), excludedRanges(), prepareMod()]);
   excludedPorts = excluded;
+  // A version that read nothing (claude.exe mid-update) is read again before the session starts, so a spawn that then works loads the mod.
+  await settleVersion({ prepare: prepareMod, unreadable: () => modVersionUnreadable, sleep: (ms) => new Promise((r) => setTimeout(r, ms)) });
   lockOwner = { pid: process.pid, processStartedAt, startedAt: Date.now(), port: PORT, claudePid: null, install: path.join(__dirname, '..') };
   // The identity again, now with the OS start time: the exact proof the ▾
   // list needs before it may stop this pid (Dexter, PR 2 F1). Only by the host

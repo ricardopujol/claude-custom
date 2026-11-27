@@ -10,13 +10,14 @@ const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
+const { mainProcessSource } = require('./main-source');
 
 const APP = path.join(__dirname, '..', 'app');
 const strip = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*/gm, '');
 const RAW = fs.readFileSync(path.join(APP, 'renderer.js'), 'utf8');
 const HTML = fs.readFileSync(path.join(APP, 'renderer.html'), 'utf8');
 const PRELOAD = strip(fs.readFileSync(path.join(APP, 'preload.js'), 'utf8'));
-const MAIN = strip(fs.readFileSync(path.join(APP, 'main.js'), 'utf8'));
+const MAIN = strip(mainProcessSource());
 const BLOCK = strip(RAW.slice(RAW.indexOf('// RESOURCES-BEGIN'), RAW.indexOf('// RESOURCES-END')));
 
 test('main answers resources:pause and resources:resume only for a tab page, and refuses anything else', () => {

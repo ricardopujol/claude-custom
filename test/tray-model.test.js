@@ -208,3 +208,15 @@ test('startsHidden: only with the switch on and the tray icon on, so the window 
   assert.strictEqual(startsHidden({}), false);
   assert.strictEqual(startsHidden(null), false);
 });
+
+// PR #256 Dexter 6: the tray's "hidden" is ANY window hidden (or no window to show), so "Show all windows" is offered whenever one needs it
+const { anyWindowHidden } = require('../app/tray-model');
+test('anyWindowHidden: one hidden window of several is enough; none, or a destroyed one, counts as hidden', () => {
+  const w = (visible, destroyed = false) => ({ isDestroyed: () => destroyed, isVisible: () => visible });
+  assert.strictEqual(anyWindowHidden([w(true), w(false)]), true, 'B is hidden while A is visible');
+  assert.strictEqual(anyWindowHidden([w(false), w(true)]), true);
+  assert.strictEqual(anyWindowHidden([w(true), w(true)]), false);
+  assert.strictEqual(anyWindowHidden([]), true, 'no window: it can only be shown');
+  assert.strictEqual(anyWindowHidden([w(true), w(true, true)]), true, 'a destroyed window is not visible');
+  assert.strictEqual(anyWindowHidden([w(true), null]), true, 'a window not made yet is not visible');
+});

@@ -488,7 +488,8 @@ test('#138 (Ricardo round 2): only the terminal closes an open side panel: a pre
 
 test('#138: the press plumbing for native views is gone: nothing tells the page about a press in Claude\'s panel or the Preview', () => {
   assert.doesNotMatch(JS, /onPressed|canvas:pressed/);
-  for (const f of ['main.js', 'preload.js', 'canvas-views.js', 'preview-views.js']) {
+  // project-window.js holds the window's side of it (the views, the tab page's wiring): a negative scan has to read it too
+  for (const f of ['main.js', 'project-window.js', 'preload.js', 'canvas-views.js', 'preview-views.js']) {
     assert.doesNotMatch(fs.readFileSync(path.join(__dirname, '..', 'app', f), 'utf8'), /canvas:pressed|tellPressed|onPress\b|onPressed/, f);
   }
 });

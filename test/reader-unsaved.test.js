@@ -6,6 +6,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const { createUnsaved, closeDetail } = require('../app/reader-unsaved');
+const { mainProcessSource } = require('./main-source');
 
 test('a tab\'s unsaved file is remembered per tab, replaced by the next report, and forgotten by a null', () => {
   const u = createUnsaved();
@@ -176,6 +177,6 @@ test('Miguel 2 (PR #216): pathsForClose names a branch tab\'s own file and its s
 test('Miguel 2 (PR #216): the dialog in main.js reads the names through pathsForClose', () => {
   const fs = require('fs');
   const path = require('path');
-  const main = fs.readFileSync(path.join(__dirname, '..', 'app', 'main.js'), 'utf8');
+  const main = mainProcessSource();
   assert.match(main, /const unsaved = readerUnsaved\.pathsForClose\(tab\.key\);/);
 });

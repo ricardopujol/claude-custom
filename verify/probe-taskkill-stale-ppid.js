@@ -1,4 +1,5 @@
 'use strict';
+require('./lib/launch-electron');   // #243 Miguel I4: takes the heavy-work lock: up to 4000 node starts one after another are load
 /* PROBE (re-runnable): does `taskkill /PID n /T` follow a STALE parent link? (PR #113, Dexter finding 1)
  *
  *   node verify/probe-taskkill-stale-ppid.js        (exit 0 = measured; the verdict is printed either way)
@@ -10,7 +11,8 @@
  *   2. P is killed by its PID. O lives on with ppid = P's pid.
  *   3. New sleepers Q are started (and ended by their own PID when they miss) until one gets P's pid.
  *   4. `taskkill /PID Q /T /F`: does O die, although it started BEFORE Q?
- * Light on the machine: a few dozen idle node processes at most, every one ended by its own PID before exit.
+ * Step 3 can start up to 4000 node sleepers, one after another, until one lands on P's pid: a few idle ones alive at a time,
+ * every one ended by its own PID, but thousands of starts are load, so it takes the heavy-work lock itself (#243 Miguel I4).
  */
 const { spawn, spawnSync } = require('child_process');
 const sleeperSrc = 'setTimeout(() => {}, 90000)';
@@ -21,7 +23,7 @@ const endMine = () => { for (const pid of mine) { try { process.kill(pid); } cat
 process.on('exit', endMine);
 
 function sleeper() {
-  const c = spawn(process.execPath, ['-e', sleeperSrc], { stdio: 'ignore', windowsHide: true });
+  const c = spawn(process.execPath, ['-e', sleeperSrc], { stdio: 'ignore', windowsHide: true });   // lock-ok: an idle node sleeper this probe ends by its own pid; a noteChild per start (a 1 s query) would break the pid-reuse race
   mine.add(c.pid);
   return c;
 }
@@ -29,7 +31,7 @@ function sleeper() {
 async function main() {
   // P starts O and reports its pid on stdout, then waits.
   const parentSrc = `const {spawn}=require('child_process');const c=spawn(process.execPath,['-e',${JSON.stringify(sleeperSrc)}],{stdio:'ignore',windowsHide:true,detached:true});c.unref();console.log(c.pid);setTimeout(()=>{},90000)`;
-  const P = spawn(process.execPath, ['-e', parentSrc], { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true });
+  const P = spawn(process.execPath, ['-e', parentSrc], { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true });   // lock-ok: the sleeper parent P, ended by its own pid within the step
   mine.add(P.pid);
   const oPid = await new Promise((resolve) => { P.stdout.once('data', d => resolve(Number(String(d).trim()))); });
   mine.add(oPid);

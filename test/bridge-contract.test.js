@@ -36,6 +36,7 @@ const path = require('path');
 
 const APP = path.join(__dirname, '..', 'app');
 const read = (f) => fs.readFileSync(path.join(APP, f), 'utf8');
+const { mainProcessSource } = require('./main-source');
 
 // Comments are stripped before matching: a channel named only in prose is not
 // a wiring, and the documentation of a bug must not satisfy the detector for
@@ -43,7 +44,7 @@ const read = (f) => fs.readFileSync(path.join(APP, f), 'utf8');
 const strip = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
 
 test('every IPC channel main sends on is listened for in a preload', () => {
-  const main = strip(read('main.js'));
+  const main = strip(mainProcessSource());   // both files: the sends moved with the window into app/project-window.js
   // The tab views use preload.js; the strip page (the window's own page) has its own.
   const preload = strip(read('preload.js')) + strip(read('preload-strip.js'));
 
@@ -134,7 +135,7 @@ test('every class the renderer toggles has a rule in renderer.html', () => {
 test('the attention cue is wired end to end, by name', () => {
   // The specific instance, stated plainly, so a failure above says WHICH
   // feature broke rather than only which rule did.
-  const main = strip(read('main.js'));
+  const main = strip(mainProcessSource());
   const preload = strip(read('preload.js'));
   const renderer = strip(read('renderer.js'));
   const html = read('renderer.html');

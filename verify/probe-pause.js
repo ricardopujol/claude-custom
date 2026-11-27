@@ -162,6 +162,7 @@
          (see (a) above) -- not documented in --help or in either of the
          ~/.claude directories that sound like they should hold it. */
 
+const { noteChild } = require('./lib/launch-electron');   // BACKLOG #179: takes the heavy-work lock now, before anything heavy starts; noteChild records each host / claude it starts
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
@@ -274,6 +275,7 @@ async function detectSuspendPrimitive() {
   const child = spawn(process.execPath, ['-e',
     `let n=0;setInterval(()=>{n++;require('fs').appendFileSync(${JSON.stringify(heartbeat)},n+' '+Date.now()+'\\n')},300)`],
     { detached: true, stdio: 'ignore' });
+  noteChild(child);   // the lock's work record: a live child keeps this probe a live holder (BACKLOG #112)
   const lines = () => { try { return fs.readFileSync(heartbeat, 'utf8').trim().split('\n').filter(Boolean).length; } catch { return 0; } };
   hygiene.registerChild(child);
 
@@ -482,6 +484,7 @@ async function realSessionTest(suspendPrimitive) {
   const term = pty.spawn(CLAUDE_BIN, args, {
     name: 'xterm-256color', cols: 120, rows: 45, cwd: REPO, env: { ...cleanEnv(), TERM: 'xterm-256color' },
   });
+  noteChild(term);   // the lock's work record: a live term keeps this probe a live holder (BACKLOG #112)
   console.log(`pty pid (claude.exe): ${term.pid}`);
   hygiene.registerChild(term);
 
@@ -749,6 +752,7 @@ async function inventory() {
     term = pty.spawn(CLAUDE_BIN, ['--permission-mode', 'bypassPermissions'], {
       name: 'xterm-256color', cols: 120, rows: 45, cwd: REPO, env: { ...cleanEnv(), TERM: 'xterm-256color' },
     });
+    noteChild(term);   // the lock's work record: a live term keeps this probe a live holder (BACKLOG #112)
     hygiene.registerChild(term);
     const xterm = new Terminal({ cols: 120, rows: 45, allowProposedApi: true });
     term.onData(d => xterm.write(d));

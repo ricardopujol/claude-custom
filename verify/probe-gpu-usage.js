@@ -6,7 +6,7 @@
  *   env -u ELECTRON_RUN_AS_NODE node verify/probe-gpu-usage.js              (exit 0 = every check held)
  *   GPU_PROBE_SHOTS=<dir>                                                   where the screenshots go
  *
- * Take the heavy-work lock first (C:\Users\ricar\.claude\scripts\heavy-lock.ps1): this starts Electron and a real
+ * It takes the heavy-work lock itself (verify/README.md): this starts Electron and a real
  * PowerShell/WMI sample every 10 s.
  *
  * The unit tests pin the arithmetic and the markup (test/resource-gpu.test.js, test/resources-display-gpu.test.js,

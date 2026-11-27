@@ -16,6 +16,7 @@ const path = require('path');
 
 const side = require('../host/side-session');
 const { buildClaudeArgs } = require('../host/settings-writer');
+const { mainProcessSource } = require('./main-source');
 
 const argValue = (args, flag) => { const i = args.indexOf(flag); return i < 0 ? null : args[i + 1]; };
 const sideArgs = (over = {}) => buildClaudeArgs({ settingsFile: 's.json', helperExists: true, side: true, ...over });
@@ -85,7 +86,7 @@ test('sideHostsOf: an identity file that could not be read, or no list at all, i
   assert.deepStrictEqual(side.sideHostsOf([{ port: 7701, parsed: null }]), [], 'a half-written file (rename is atomic, so not a live host\'s) is not "unreadable"');
 });
 
-const MAIN = fs.readFileSync(path.join(__dirname, '..', 'app', 'main.js'), 'utf8').replace(/\r\n/g, '\n');
+const MAIN = mainProcessSource();
 
 test('main.js: a listing that throws is unknown (null) for the side-host lookup, so the shell walks every tab', () => {
   const at = MAIN.indexOf('function ownIdentities()');

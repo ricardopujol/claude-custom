@@ -1,4 +1,5 @@
 'use strict';
+const { noteChild } = require('./lib/launch-electron');   // BACKLOG #179: takes the heavy-work lock now, before anything heavy starts; noteChild records each host / claude it starts
 const { killChildTree, trackExit } = require('../host/kill-tree');
 /* Where does the REAL CLI echo a submitted prompt, relative to where its cursor is when UserPromptSubmit fires?
    (re-runnable, bills the plan: two haiku turns, about a minute)
@@ -73,6 +74,7 @@ async function main() {
   const claudeBin = findClaude();
   if (!claudeBin) throw new Error('claude not found under npm root -g');
   const p = pty.spawn(claudeBin, ['--model', 'haiku', '--settings', settingsFile], { name: 'xterm-256color', cols: COLS, rows: ROWS, cwd: work, env });
+  noteChild(p);   // the lock's work record: a live p keeps this probe a live holder (BACKLOG #112)
   p.onData(d => term.write(d));
   trackExit(p);  // node-pty reports no exitCode: record its exit now, so killChildTree can tell
   const killed = () => { try { killChildTree(p); } catch { /* gone */ } };

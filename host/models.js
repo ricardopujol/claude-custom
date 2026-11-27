@@ -29,11 +29,6 @@
  * would shrink the diversity the council exists for.
  */
 
-const TARGETS = Object.freeze({
-  SESSION: 'session',   // must be able to call tools
-  COUNCIL: 'council',   // chat is enough
-});
-
 /** Dollars per million tokens, or null when the figure is not a usable number. */
 function perMillion(price) {
   if (price === null || price === undefined || price === '') return null;
@@ -81,29 +76,6 @@ function normalizeCatalogue(rows) {
   return out;
 }
 
-function filterModels(models, { target, search, minContext, freeOnly } = {}) {
-  let out = Array.isArray(models) ? models.slice() : [];
-
-  // Only the SESSION target restricts by tools. An unknown target restricts
-  // nothing, so a typo shows too much rather than too little -- visible, not
-  // silent.
-  if (target === TARGETS.SESSION) out = out.filter(m => m.tools);
-
-  if (search) {
-    const q = String(search).toLowerCase();
-    out = out.filter(m => m.id.toLowerCase().includes(q) || m.name.toLowerCase().includes(q));
-  }
-
-  if (Number.isFinite(Number(minContext)) && Number(minContext) > 0) {
-    out = out.filter(m => m.context >= Number(minContext));
-  }
-
-  // `free`, not "price is zero or missing": an unpriced model is not free.
-  if (freeOnly) out = out.filter(m => m.free);
-
-  return out;
-}
-
 function sortModels(models, by) {
   const out = Array.isArray(models) ? models.slice() : [];
   // Tie-broken on id so the order is TOTAL -- otherwise two equally priced
@@ -128,5 +100,5 @@ function sortModels(models, by) {
 }
 
 module.exports = {
-  normalizeModel, normalizeCatalogue, filterModels, sortModels, perMillion, TARGETS,
+  normalizeModel, normalizeCatalogue, sortModels, perMillion,
 };

@@ -1,4 +1,5 @@
 'use strict';
+const { noteChild } = require('./lib/launch-electron');   // BACKLOG #179: takes the heavy-work lock now, before anything heavy starts; noteChild records each host / claude it starts
 const { killChildTree, trackExit } = require('../host/kill-tree');
 /* Does the REAL `claude` CLI keep a `/skill` line submitted while a turn is running, and run it as a skill?
    (BACKLOG #61, step 0 of documentation/PLAN_WAND_SUBMIT.md. Re-runnable. Zero spend, zero network.)
@@ -117,6 +118,7 @@ async function main() {
   const COLS = 120, ROWS = 40;
   const term = new Terminal({ cols: COLS, rows: ROWS, scrollback: 2000, allowProposedApi: true });
   const p = pty.spawn(claudeBin, ['--model', 'haiku'], { name: 'xterm-256color', cols: COLS, rows: ROWS, cwd: work, env });
+  noteChild(p);   // the lock's work record: a live p keeps this probe a live holder (BACKLOG #112)
   p.onData(d => term.write(d));
   trackExit(p);  // node-pty reports no exitCode: record its exit now, so killChildTree can tell
   const killed = () => { try { killChildTree(p); } catch { /* gone */ } };

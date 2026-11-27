@@ -1,4 +1,5 @@
 'use strict';
+const { noteChild } = require('./lib/launch-electron');   // BACKLOG #179: takes the heavy-work lock now, before anything heavy starts; noteChild records each host / claude it starts
 const { killChildTree, trackExit } = require('../host/kill-tree');
 /* What does the REAL `claude` CLI's Ctrl-U do to a line that WRAPS over several rows? And does appending to such a line, with no clear at all, work?
    (BACKLOG #119 A3, PR #199 Dexter r2 N1. Re-runnable. Zero spend, zero network: the fake-endpoint technique of verify/probe-panel-line-input.js.)
@@ -78,6 +79,7 @@ async function runCase(claudeBin, c, dump) {
   const ROWS = 40;
   const term = new Terminal({ cols: c.cols, rows: ROWS, scrollback: 2000, allowProposedApi: true });
   const p = pty.spawn(claudeBin, ['--model', 'haiku'], { name: 'xterm-256color', cols: c.cols, rows: ROWS, cwd: work, env });
+  noteChild(p);   // the lock's work record: a live p keeps this probe a live holder (BACKLOG #112)
   trackExit(p);
   p.onData(d => term.write(d));
   const flush = () => new Promise(r => term.write('', r));

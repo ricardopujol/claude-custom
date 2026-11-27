@@ -69,16 +69,55 @@
  * tests for the path-does-not-exist case. Accepted here, deliberately, and
  * recorded downstream in app/secret-vault.js as well -- but this is the
  * load-bearing copy, because this is the module that owns the gap.
+ *
+ * A THIRD TRUST INPUT, ADDED BY PR #257 (Miguel 5, Dexter 5C). `samePath` now
+ * follows junctions and symlinks (host/real-path.js), so it answers "the same
+ * FOLDER", not "the same SPELLING". That is the intended meaning, and it closes
+ * the junction gap above in the fail-closed direction. Its consequences for
+ * the credential predicate, accepted here on purpose:
+ *
+ *   - MAKING A LINK IS A SCOPE GRANT. Any folder that IS a junction or symlink
+ *     to project A sees A's secret scope. `mklink /J` needs no elevation, but
+ *     whoever can make that link can already read A's folder, so this gives
+ *     them nothing the disk did not.
+ *   - A RETARGETED LINK MOVES A SCOPE. A scope saved under `C:\link\proj` while
+ *     `C:\link` pointed to A is resolved at READ time, so after `C:\link` is
+ *     pointed to B, B's spellings see it (within real-path's 30 s cache).
+ *     Before PR #257 only the `C:\link\proj` spelling saw it. Unlikely for a
+ *     profile junction such as `C:\Users\ricar`, and it needs the user to move
+ *     their own link, but it is a new fail-OPEN edge, so it is named here.
+ *   - Network paths (UNC, mapped drives) are NOT followed, so they compare by
+ *     spelling exactly as before.
  * ===========================================================================
  */
 
 const path = require('path');
+const { realPathLoose } = require('./real-path');
 
 // Absence is not a path. Returning null here rather than the string 'null' is
 // the whole reason `samePath(null, null)` is false: a coercing compare makes
 // two missing values agree, and the handshake would then attach to a host
 // whose project it could not identify.
+//
+// JUNCTIONS ARE FOLLOWED (fix/junction-paths, 2026-11-25): after resolving, the
+// path goes through host/real-path.js, so `C:\Users\ricar\x` (a junction) and
+// `C:\Users\Ricardo Pujol\x` are one project, one port and one secret scope
+// (see "A THIRD TRUST INPUT" in the header for what that costs).
+// That closes the junction case of the device+file-id gap named above; 8.3
+// names are closed too where the path exists. A path that does not exist
+// resolves its deepest existing ancestor, so this still works before a folder
+// is made. The other gaps in the list above stand as written.
 function normalizeProjectPath(p) {
+  return normalize(p, true);
+}
+
+// What a build before fix/junction-paths produced (junctions NOT followed).
+// Only for reading state saved under that identity; never for new state.
+function legacyNormalizeProjectPath(p) {
+  return normalize(p, false);
+}
+
+function normalize(p, followLinks) {
   if (typeof p !== 'string' || !p.trim()) return null;
 
   // RESOLVE FIRST. Without it the three transforms below miss everything
@@ -95,6 +134,7 @@ function normalizeProjectPath(p) {
   } catch {
     return null;                        // a path resolve refuses is not a path
   }
+  if (followLinks) resolved = realPathLoose(resolved);
 
   const out = resolved.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
 
@@ -146,4 +186,4 @@ function projectLabel(p) {
   return trimmed;
 }
 
-module.exports = { samePath, normalizeProjectPath, projectLabel };
+module.exports = { samePath, normalizeProjectPath, legacyNormalizeProjectPath, projectLabel };

@@ -10,8 +10,9 @@ const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
+const { mainProcessSource } = require('./main-source');
 
-const MAIN = fs.readFileSync(path.join(__dirname, '..', 'app', 'main.js'), 'utf8').replace(/\r\n/g, '\n');
+const MAIN = mainProcessSource();
 
 function block(startMarker, endMarker) {
   const at = MAIN.indexOf(startMarker);
@@ -40,7 +41,7 @@ test('the file is the one every host watches: STOP-ALL in the home folder\'s .cl
   assert.match(b, /runStopAll\(\{/);
   assert.match(b, /seam: readSeams\(process\.env\)\.claudeHome,/);
   assert.match(b, /home: os\.homedir\(\),/);
-  assert.match(b, /confirm: confirmStopAll,/);
+  assert.match(b, /confirm: \(file\) => confirmStopAll\(file, p\.win\),/);   // the question sits on the asking strip's window
   assert.match(b, /write: \(f, data\) => writeFileAtomic\(f, data\),/);
   assert.doesNotMatch(b, /require\('os'\)/);
 });
@@ -56,11 +57,12 @@ test('hosts too old to watch the file are counted from this build and its siblin
 test('a failed write is said in a dialog, not swallowed', () => {
   const b = block("ipcMain.handle('strip:stopAll', async (e) => {", '\n  });');
   assert.match(b, /if \(r\.outcome === 'failed'[ )&]/);
-  assert.match(b, /dialog\.showMessageBox\(win, \{ type: 'error'/);
+  assert.match(b, /dialog\.showMessageBox\(p\.win, \{ type: 'error'/);
 });
 
 test('the confirm: one question, Cancel is the default, and the probe driver never writes the real file', () => {
-  const b = block('async function confirmStopAll(file) {', '\n}\n');
+  const b = block('async function confirmStopAll(file, parent) {', '\n}\n');
+  assert.match(b, /dialog\.showMessageBox\(parent, \{/, 'the question sits on the window of the strip that asked');
   assert.match(b, /if \(PROBE_PORT\) \{ probeConfirms\.push\(\{ label: 'stop-all'/);
   assert.match(b, /return false; \}/);
   assert.match(b, /defaultId: 1,/);

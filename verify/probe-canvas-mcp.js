@@ -21,6 +21,7 @@
  * The fake endpoint, the throwaway config and the temp state dir keep it free: no network, no real account, no global config
  * touched. The CLI child is started by this script and killed by its own PID (host/kill-tree.js); nothing is stopped by name.
  */
+const { noteChild } = require('./lib/launch-electron');   // BACKLOG #179: takes the heavy-work lock now, before anything heavy starts; noteChild records each host / claude it starts
 const http = require('http');
 const fs = require('fs');
 const os = require('os');
@@ -111,6 +112,7 @@ async function runCli({ base, enabled, script }) {
   const canvasMcp = enabled ? { nodePath: nodePath, scriptPath: script, root: state, pointerFile } : null;
   const args = [...buildClaudeArgs({ helperExists: false, canvasMcp }), '-p', 'show me something', '--model', 'haiku'];
   const child = spawn(claudeBin, args, { cwd: work, env, stdio: ['ignore', 'pipe', 'pipe'] });
+  noteChild(child);   // the lock's work record: a live child keeps this probe a live holder (BACKLOG #112)
   const started = Date.now();
   let out = ''; child.stdout.on('data', d => { out += d; }); child.stderr.on('data', d => { out += d; });
   const code = await new Promise(r => { const t = setTimeout(() => { try { killChildTree(child); } catch { /* gone */ } r('timeout'); }, 90000); child.on('exit', c => { clearTimeout(t); r(c); }); });

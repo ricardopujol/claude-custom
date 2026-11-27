@@ -199,6 +199,29 @@ test('lanesMenu: only the most recent closed lane carries the shortcut, and Ctrl
   assert.ok(h.shell.model().some(e => e.key === key('feat-b')) && !h.shell.model().some(e => e.key === key('feat-a')));
 });
 
+test('reopenFolder: a lane closed by hand is reopened and selected from its folder (what Open on its background host does)', async () => {
+  const h = await opened({ running: { 7701: wt('feat-a'), 7702: wt('feat-b') } });
+  await h.shell.closeTab(key('feat-a'));
+  await flush();
+  assert.ok(!h.shell.model().some(e => e.key === key('feat-a')));
+  const r = await h.shell.reopenFolder(wt('feat-a'));
+  assert.deepStrictEqual([r.ok, r.key], [true, key('feat-a')]);
+  await flush();
+  assert.ok(h.shell.model().some(e => e.key === key('feat-a')), 'the tab is back');
+});
+
+test('reopenFolder: a folder INSIDE the closed lane finds it; a lane that is not closed, or an unknown folder, is { ok: false } and changes nothing', async () => {
+  const h = await opened({ running: { 7701: wt('feat-a'), 7702: wt('feat-b') } });
+  await h.shell.closeTab(key('feat-a'));
+  await flush();
+  assert.strictEqual((await h.shell.reopenFolder(wt('feat-b'))).ok, false, 'feat-b is open: nothing to reopen');
+  assert.strictEqual((await h.shell.reopenFolder(wt('feat-zzz'))).ok, false);
+  assert.strictEqual((await h.shell.reopenFolder(undefined)).ok, false);
+  assert.ok(!h.shell.model().some(e => e.key === key('feat-a')), 'still closed');
+  const r = await h.shell.reopenFolder(path.join(wt('feat-a'), 'app'));
+  assert.strictEqual(r.ok, true);
+});
+
 // --- #141: drag order, saved ----------------------------------------------------------------------
 
 test('reorder: a lane dropped before another moves there; develop stays first; the order is saved', async () => {
