@@ -328,8 +328,9 @@ async function case8() {
   const recBefore = await waitFor(async () => { const r = await command(app, { cmd: 'openWindows' }); const w = r.record && r.record.windows; return w && w.length === 2 && w.some((x) => x.hidden) ? r.record : null; }, 20000);
   check('8: the record lists A and B, B hidden', !!recBefore, JSON.stringify(recBefore));
   const hostPids = new Map([...((st && st.hosts) || []), ...((stB && stB.hosts) || [])].filter((h) => Number.isInteger(h.pid)).map((h) => [`${h.key}`, h.pid]));
-  // The crash: this probe's own Electron main, by its pid, without /T (the hosts are detached and must outlive it)
-  try { execFileSync('taskkill', ['/PID', String(app.child.pid), '/F'], { stdio: 'pipe', windowsHide: true }); } catch { /* reported below */ }
+  // The crash: this probe's own Electron main, through the handle the probe holds (that one process, not its tree: the hosts are
+  // detached and must outlive it)
+  try { app.child.kill('SIGKILL'); } catch { /* reported below */ }
   const died = await waitFor(() => (app.exited ? true : null), 60000, 500);
   check('8: the Electron main was killed by its pid', died === true);
   check('8: ...and the hosts\' pids are still alive', [...hostPids.values()].every(isRunning), JSON.stringify([...hostPids.values()]));

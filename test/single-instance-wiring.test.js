@@ -8,7 +8,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
-const { mainOnly, stripComments } = require('./main-source');
+const { mainOnly, stripComments, bodyAt } = require('./main-source');
 
 const MAIN = stripComments(mainOnly());
 const ready = MAIN.slice(MAIN.indexOf('app.whenReady().then('));
@@ -37,10 +37,9 @@ test('whenReady: services, menu, IPC, indexing, tray, then the launch window, it
 
 test('a launch whose project is another process\'s window, or whose start ended with no window, goes through quitIfEmpty (never a swallowed launch)', () => {
   assert.match(readyBody, /if \(launched\.elsewhere\) \{ quitIfEmpty\(\); return; \}/);
-  const fn = MAIN.slice(MAIN.indexOf('function quitIfEmpty('));
-  const body = fn.slice(0, fn.indexOf('\n}\n'));
+  const body = bodyAt(MAIN, MAIN.indexOf('function quitIfEmpty('));
   assert.match(body, /registry\.size\(\) > 0 \|\| openQueue\.busy\(\)/);
-  assert.ok(body.indexOf('appClaim.stop()') < body.indexOf('app.quit()'), 'the claim stops first: launches held on it hear no');
+  assert.match(body, /appClaim\.stop\(\);\s*app\.quit\(\);/, 'the claim stops first: launches held on it hear no');
 });
 
 test('every app.exit in whenReady after the app claim ran stops the app claim first (a held launch hears no)', () => {
@@ -71,14 +70,12 @@ test('cache-dirs exports removeOwn and main calls it only on the handed-over exi
 
 test('step 11: ONE before-quit handler, the gate first; only when it passes, quitting = true and the app claim and every window claim stop', () => {
   assert.strictEqual((MAIN.match(/app\.on\('before-quit'/g) || []).length, 1);
-  const h = MAIN.slice(MAIN.indexOf("app.on('before-quit'"));
-  const body = h.slice(0, h.indexOf('\n});') + 4);
+  const body = (MAIN.match(/app\.on\('before-quit', \(e\) => \{[\s\S]*?\n\}\);/) || [''])[0];
   assert.match(body, /if \(quitGate\.onBeforeQuit\(e\)\) return;\s*quitting = true; forEachProject\(\(p\) => p\.claim\.stop\(\)\); appClaim\.stop\(\);/);
 });
 
 test('step 11: quitCancelled puts quitting back, resets the gate, resumes the app claim and every open window\'s claim; the tray\'s quit is app.quit alone', () => {
-  const fn = MAIN.slice(MAIN.indexOf('function quitCancelled('));
-  const body = fn.slice(0, fn.indexOf('\n}\n'));
+  const body = bodyAt(MAIN, MAIN.indexOf('function quitCancelled('));
   for (const piece of ['quitting = false;', 'quitGate.reset();', 'appClaim.resume()', 'p.claim.resume()', 'p.allowClose(false)']) assert.ok(body.includes(piece), piece);
   assert.match(MAIN, /quitCancelled: \(\) => quitCancelled\(\),/);
   assert.match(MAIN, /quit: \(\) => app\.quit\(\),/);
@@ -98,8 +95,7 @@ test('step 11: the question sits on the dirty window used last, shown first; the
 test('step 12: the restore decision after the tray and before the launch window; the restores after markReady; the record follows windowsChanged and is clean on will-quit and session-end', () => {
   inOrder(readyBody, ['startTray()', 'const restorePlan = await decideRestore();', "await startProject(LAUNCH_CWD, { launch: true, show: 'setting' })",
     'appClaim.markReady();', 'runRestores(restorePlan);']);
-  const decide = MAIN.slice(MAIN.indexOf('async function decideRestore('));
-  const body = decide.slice(0, decide.indexOf('\n}\n'));
+  const body = bodyAt(MAIN, MAIN.indexOf('async function decideRestore('));
   inOrder(body, ['if (!APP_LOCK.on) return [];', 'if (!ownsAppLock()) return [];', 'readRecord(OPEN_WINDOWS_FILE)', 'restoreDecision({',
     'createOpenWindowsWriter({', 'owns: ownsAppLock', 'openRecord.writer.begin({ restoring: d.restore.length > 0']);
   assert.match(MAIN, /function windowsChanged\(\) \{[\s\S]{0,200}if \(openRecord\.writer\) openRecord\.writer\.sync\(currentWindows\(\)\);/);
