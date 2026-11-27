@@ -205,7 +205,8 @@ async function main() {
   const tSaid = Date.now() - t2;
   // Chromium's shutdown can take a minute or more under load (BACKLOG #74 A), so "gone" is checked at the end, not here.
   console.log(`      (second launch: decided to end after ${tSaid} ms; alive now: ${isRunning(app2.child.pid)})`);
-  check('2: a second launch from dev\\ decided at once: it said why (handed to the first window) and never reached a window', !!said2 && /this project's window \(pid \d+\) has it; this launch ends/.test(app2.out) && !/\[main\] Open refused/.test(app2.out), `${tSaid} ms`);
+  check('2: a second launch from dev\\ decided at once: it said why (handed to the first window) and never reached a window', !!said2 && /this project's window \(pid \d+\) has it; this launch ends/.test(app2.out) && !/\[main\] Open refused/.test(app2.out),
+    `${tSaid} ms; exit=${app2.exited ? app2.exitCode : 'running'}; ${app2.out.split('\n').filter((l) => /\[main\]|Error|error/.test(l)).slice(-8).join(' | ').slice(0, 1500)}`);
   const told = await waitFor(() => /a second launch asked for this window \(null\): focused/.test(app1.out), 15000);
   check('2: the first window was told: focus, no lane', !!told, app1.out.slice(-300));
   const st2 = await stateOf(app1);
@@ -225,9 +226,12 @@ async function main() {
   check('4: a graceful quit removed the owner file', gone === true, `file=${JSON.stringify(readOwner(p))}`);
   // Chromium's shutdown is slow under load (BACKLOG #74 A): the file goes first, the process much later. So step 5's DEAD owner is a
   // short-lived process of this probe's own, proven by pid and start time while it ran, written down after it ended.
-  const shortLived = require('child_process').spawn(process.execPath, ['-e', 'setTimeout(() => {}, 1500)'], { stdio: 'ignore', windowsHide: true });   // lock-ok: a 1.5 s node that ends by itself, awaited below
+  const shortLived = require('child_process').spawn(process.execPath, ['-e', 'setTimeout(() => {}, 15000)'], { stdio: 'ignore', windowsHide: true });   // lock-ok: a 15 s node that ends by itself, awaited below (1.5 s was shorter than the start query under load)
+  // The exit is listened for BEFORE the start-time query: under load that PowerShell query outlasts the 1.5 s, and a listener added after
+  // the exit waited for ever (found by the single-instance PR 3 run, 2026-11-27).
+  const shortExited = new Promise((resolve) => shortLived.on('exit', resolve));
   const shortStart = (await startTimes([shortLived.pid])).get(shortLived.pid);
-  await new Promise((resolve) => shortLived.on('exit', resolve));
+  await shortExited;
   check('5: setup: a process of ours that has ended, with the pid and start time it had', typeof shortStart === 'string' && !isRunning(shortLived.pid));
 
   // 5 ---------------------------------------------------------------------------------
@@ -257,6 +261,7 @@ async function main() {
   await sleep(5000);                                 // the other one has had every chance to say it too
   const enders = [r1, r2].filter(a => /this launch ends/.test(a.out));
   const keepers = [r1, r2].filter(a => !/this launch ends/.test(a.out));
+  console.log(`      (7: ${[r1, r2].map((a) => `${a.child.pid}: ${a.out.split('\n').filter((l) => /\[main\] one window:/.test(l)).join(' | ')}`).join(' || ')})`);
   check('7: two launches started together: one hands over and ends, the other keeps the project', !!decided && enders.length === 1 && keepers.length === 1,
     `enders=${enders.length} keepers=${keepers.length}`);
   if (keepers.length === 1) {
@@ -298,6 +303,9 @@ async function main() {
     await sleep(5000);
     e9.push(...pair.filter(a => /this launch ends/.test(a.out)));
     k9 = pair.filter(a => !/this launch ends/.test(a.out));
+    // each launch's own claim lines say which path it took (PR #258 Dexter 1: a missed ack, an unproven owner, a takeover race)
+    const claimLines = pair.map((a) => `${a.child.pid}: ${a.out.split('\n').filter((l) => /\[main\] one window:/.test(l)).join(' | ')}`);
+    console.log(`      (9: ${claimLines.join(' || ')})`);
     check('9: two launches after a close: one opens the window, the other is handed to it', e9.length === 1 && k9.length === 1, `enders=${e9.length} keepers=${k9.length}`);
     if (k9.length === 1) {
       const s9 = await firstWindowUp(k9[0]);

@@ -166,14 +166,12 @@ test('a host is spawned through hostEnv, never an inline environment', () => {
   assert.match(body, /detached: true/);
 });
 
-test('Open from the ▾ menu spawns a window through attachEnv, detached, never an inline environment', () => {
-  const at = MAIN.indexOf('spawnWindow: ({ cwd, port }) => {');
-  assert.ok(at !== -1, 'the ▾ actions must get a spawnWindow');
+test('PR 3: Open from the ▾ menu on another project\'s session opens its window in THIS process (no attach-only spawn, no second tray)', () => {
+  assert.strictEqual(MAIN.indexOf('spawnWindow'), -1, 'the attach-only spawn is gone from the menu\'s Open');
+  const at = MAIN.indexOf('createBackgroundActions({');
   const body = MAIN.slice(at, MAIN.indexOf('confirmStop:', at));
-  assert.match(body, /env: attachEnv\(process\.env, \{ cwd, port \}\)/);
-  assert.match(body, /spawn\(process\.execPath, \[INSTALL_DIR\]/);
-  assert.match(body, /detached: true/);
-  assert.doesNotMatch(body, /\.\.\.process\.env|ELECTRON_RUN_AS_NODE/);
+  assert.match(body, /openProject: \(\{ cwd, port \}\) => openProject\(\{ cwd, port, show: 'shown' \}\),/);
+  assert.doesNotMatch(body, /attachEnv|spawn\(/);
 });
 
 test('an attach-only window (Open from ▾) never spawns: it refuses and says why (Dexter, PR 2 F2)', () => {
@@ -181,7 +179,7 @@ test('an attach-only window (Open from ▾) never spawns: it refuses and says wh
   const body = MAIN.slice(at, MAIN.indexOf('function spawnHost(', at));
   assert.match(body, /attachOnlyDecision\(decideAttach\(\{/);
   assert.match(body, /attachOnlyRefusal = decision/);
-  const start = MAIN.indexOf('const { first } = await startProject(LAUNCH_CWD, { launch: true });');
+  const start = MAIN.indexOf("const launched = await startProject(LAUNCH_CWD, { launch: true, show: 'setting' });");   // PR 3: read as `launched`
   assert.ok(start !== -1, 'main opens the launch window and reads what came back');
   const after = MAIN.slice(start, start + 1500);
   assert.match(after, /if \(launchWindow\.attachOnlyRefusal\)/);
@@ -247,7 +245,7 @@ test('there is NO application menu bar: it is nulled once, before the window, an
   const calls = MAIN.match(/Menu\.setApplicationMenu\([^)]*\)/g) || [];
   assert.deepStrictEqual(calls, ['Menu.setApplicationMenu(null)']);
   // the window is made by start() inside startProject (single-instance PR 2), and the bar is removed before the first one
-  assert.match(MAIN, /Menu\.setApplicationMenu\(null\);\s*registerIpc\(\);[\s\S]*?await startProject\(LAUNCH_CWD, \{ launch: true \}\)/,
+  assert.match(MAIN, /Menu\.setApplicationMenu\(null\);\s*registerIpc\(\);[\s\S]*?await startProject\(LAUNCH_CWD, \{ launch: true, show: 'setting' \}\)/,
     'the bar is removed before the window is created');
   assert.doesNotMatch(MAIN, /buildAppMenu|accelerator:/);
 });
@@ -397,7 +395,7 @@ test('Dexter L2 #3: the view\'s top comes from viewTop, with this window\'s fram
 });
 
 test('L2 #28: createWindow reads the frameless setting for THIS window and tells the strip', () => {
-  const body = MAIN.slice(MAIN.indexOf('function createWindow()'), MAIN.indexOf('registerShortcuts(win.webContents)'));
+  const body = MAIN.slice(MAIN.indexOf('function createWindow({ show } = {})'), MAIN.indexOf('registerShortcuts(win.webContents)'));
   assert.match(body, /readChromeSettings\(uiStore\)/);
   assert.match(body, /frame: !\w+\.framelessWindow/);
   assert.match(body, /loadFile\([^)]*tab-strip\.html'\),\s*\{\s*query:/);

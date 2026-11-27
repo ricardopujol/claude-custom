@@ -74,7 +74,7 @@ test('the listener sampler is started minimised-aware, stopped and its shell clo
   // single-instance PR 2: "unseen" is the window's own fact (isUnseen), shared by this sampler and main's Resources gate (seen-gate)
   assert.match(CODE, /return devServersHost\.unseen\(\{ visible: gone \? false : win\.isVisible\(\), minimized: gone \? true : win\.isMinimized\(\) \}\);/);
   assert.match(CODE, /devServers\.setMinimised\(isUnseen\(\)\);/);
-  assert.match(CODE, /createWindow\(\);\s*syncDevServersSampling\(\);/, 'the first read is AFTER the window exists (start() runs them in that order)');
+  assert.match(CODE, /createWindow\(\{ show \}\);\s*syncDevServersSampling\(\);/, 'the first read is AFTER the window exists (start() runs them in that order)');
   assert.doesNotMatch(CODE, /devServers\.setMinimised\(!!\(win/, 'no read before the window exists');
   // What the window shows decides it: minimise, restore AND hide/show (the tray), through the pure rule in host/dev-servers.js.
   assert.match(CODE, /function stopDevServers\(\) \{ if \(devServers\) devServers\.stop\(\); if \(devServersExec\) devServersExec\.close\(\); \}/);

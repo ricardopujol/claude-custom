@@ -47,22 +47,21 @@ function stopAllDetail(rows) {
 }
 
 /**
- * deps: select(key), focusWindow(), spawnWindow({ cwd, port }) -> { pid },
+ * deps: select(key), focusWindow(), openProject({ cwd, port }) -> Promise (main's one open: another project's session gets a window here),
  *       thisProject(row) -> bool, laneFor(row) -> key|null, reopenLane(row) -> Promise<key|null> (one window per project),
  *       confirmStop(row) -> bool, confirmStopAll(rows) -> bool, inform(text),
  *       stopHost(row) -> result, log(msg)
  */
 function createBackgroundActions(deps) {
-  // A tab here is selected; anything else gets a window of its own on that
-  // host's exact port, attach-only (host/launch-target.js attachEnv).
-  // Answers what it did: { selected } | { pid } | null.
+  // A tab here is selected; a host of this project is shown here; another project's host gets its project's window in this process.
+  // Answers what it did: { selected } | { reopening } | { opening } | null.
   function open(o) {
     if (!o) return null;
     if (o.kind === 'select-tab') { deps.select(o.key); deps.focusWindow(); return { selected: o.key }; }
     try {
       // One window per project: a host of THIS project is shown here, never in a window of its own. Its tab is selected; a lane that was
       // closed by hand is reopened (and selected) here; either way the window comes forward. thisProject / laneFor / reopenLane are main's
-      // (the project check, the tab lookup, tab-shell's reopenFolder). Another project's host keeps the attach-only spawn below.
+      // (the project check, the tab lookup, tab-shell's reopenFolder).
       if (typeof deps.thisProject === 'function' && deps.thisProject(o)) {
         const key = typeof deps.laneFor === 'function' ? deps.laneFor(o) : null;
         if (key) {
@@ -85,9 +84,13 @@ function createBackgroundActions(deps) {
         deps.log(`[main] Open (background): no lane for it in this window (port ${o.port}, ${o.cwd})`);
         return { selected: null, here: true };
       }
-      const r = deps.spawnWindow({ cwd: o.cwd, port: o.port });
-      deps.log(`[main] Open (background): a window on port ${o.port} for ${o.cwd} (pid ${r && r.pid})`);
-      return r || null;
+      // Another project's session: a window for it in THIS process (single-instance PR 3; DESIGN_TABS_SESSIONS.md 3.4, "never an
+      // attach-only window"), through main's one open, with the port so that session's tab is the one selected.
+      Promise.resolve(deps.openProject({ cwd: o.cwd, port: o.port })).then(
+        (r) => deps.log(`[main] Open (background): ${r && r.ok ? 'opened' : `not opened (${(r && r.error) || 'no answer'})`} for port ${o.port}, ${o.cwd}`),
+        (err) => deps.log(`[main] Open (background) failed: ${err && err.message}`),
+      ).catch(() => {});
+      return { opening: true };
     } catch (err) {
       deps.log(`[main] Open (background) failed: ${err && err.message}`);
       return null;

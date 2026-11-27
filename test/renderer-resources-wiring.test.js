@@ -102,7 +102,9 @@ test('the sampler always runs, and only a minimised window pauses it', () => {
   // single-instance PR 2: a window event only says "seen state changed"; main sets Resources minimised only when EVERY window is unseen (app/seen-gate.js)
   assert.match(MAIN, /win\.on\('minimize', \(\) => \{ focused = false; seenChanged\(\); \}\);/);
   assert.match(fs.readFileSync(path.join(__dirname, '..', 'app', 'seen-gate.js'), 'utf8'), /resources\.setMinimised\(registry\.list\(\)\.every\(\(pw\) => pw\.isUnseen\(\)\)\)/, 'one window minimising does not sleep the sampler under another in view');
-  assert.match(MAIN, /seenChanged: createSeenGate\(\{ registry, getResources: \(\) => resources \}\),/);
+  // single-instance PR 3: the gate is called from main's one windowsChanged() (the tray and the restore record listen there too)
+  assert.match(MAIN, /const seenGate = createSeenGate\(\{ registry, getResources: \(\) => resources \}\);/);
+  assert.match(MAIN, /seenChanged: \(\) => windowsChanged\(\),/);
 });
 
 test('the probe may read and click the Resources panel, by name only', () => {

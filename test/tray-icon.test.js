@@ -22,7 +22,7 @@ test('the image is SIZE x SIZE BGRA and is not blank', () => {
   assert.ok(count(img, [0, 0, 0, 0]) < SIZE * SIZE, 'something is drawn');
 });
 
-test('the corners are transparent: the icon is a rounded square, not a block', () => {
+test('the corners are transparent: the slats stand on nothing, never a block', () => {
   const img = renderTrayIcon('');
   assert.strictEqual(px(img, 0, 0)[3], 0);
   assert.strictEqual(px(img, SIZE - 1, 0)[3], 0);
@@ -53,4 +53,34 @@ test('property: the same text draws the same pixels; an unknown character draws 
     assert.ok(a.bgra.equals(b.bgra));
     assert.strictEqual(a.bgra.length, SIZE * SIZE * 4);
   }));
+});
+
+// ---- Q11, Ricardo's pick A "Bamboo slips" (PR #258): four slats on two cords, on a transparent background ---------------------------
+const bgraOf = (hex) => [parseInt(hex.slice(5, 7), 16), parseInt(hex.slice(3, 5), 16), parseInt(hex.slice(1, 3), 16), 255];
+
+test('Q11 A: no square behind: the corner (0,0) is fully transparent', () => {
+  assert.deepStrictEqual(px(renderTrayIcon(''), 0, 0), [0, 0, 0, 0]);
+});
+
+test('Q11 A: the middle of slat 0 (x 5, y 15) is #3fb882, opaque', () => {
+  assert.deepStrictEqual(px(renderTrayIcon(''), 5, 15), bgraOf('#3fb882'));
+});
+
+test('Q11 A: an odd slat is the darker green: slat 1 (x 12, y 15) is #2f9a6c', () => {
+  assert.deepStrictEqual(px(renderTrayIcon(''), 12, 15), bgraOf('#2f9a6c'));
+});
+
+test('Q11 A: a cord pixel (x 8, y 10) is #123527, drawn over the slats', () => {
+  assert.deepStrictEqual(px(renderTrayIcon(''), 8, 10), bgraOf('#123527'));
+  assert.deepStrictEqual(px(renderTrayIcon(''), 5, 22), bgraOf('#123527'), 'the lower cord over slat 0');
+});
+
+test('Q11 A: the gap between slat 0 and slat 1 (pixel 9, y 15) is transparent', () => {
+  assert.deepStrictEqual(px(renderTrayIcon(''), 9, 15), [0, 0, 0, 0]);
+});
+
+test('Q11 A: odd slats are shorter: slat 1 starts at y 3, so (12, 2) is empty and (12, 3) is drawn', () => {
+  const img = renderTrayIcon('');
+  assert.strictEqual(px(img, 12, 2)[3], 0);
+  assert.strictEqual(px(img, 12, 3)[3], 255);
 });

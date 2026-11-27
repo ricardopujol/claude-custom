@@ -2790,6 +2790,13 @@ async function handleProbeCommand(line, api, expectedToken) {
       // single-instance PR 2: the process's own commands (app/probe-driver.js answers them): the windows it holds, and opening one more.
       case 'windows': return { ok: true, ...(await api.windows()) };
       case 'webContents': return await api.webContents();
+      // single-instance PR 3 (verify/probe-single-instance.js): the app lock, the crash-restore record, and unsaved reader text with no edit
+      case 'appLock': return await api.appLock();
+      case 'openWindows': return await api.openWindows();
+      case 'reader-unsaved':
+        if (typeof cmd.key !== 'string' || !cmd.key || typeof cmd.path !== 'string' || !cmd.path) return { ok: false, error: 'reader-unsaved needs a key and a path' };
+        return await api.readerUnsaved(cmd.key, cmd.path);
+      case 'window-hide': return await api.hide();
       case 'openProject':
         if (typeof cmd.cwd !== 'string' || cmd.cwd === '') return { ok: false, error: 'openProject needs a cwd' };
         return await api.openProject(cmd.cwd);

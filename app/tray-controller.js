@@ -10,10 +10,13 @@
  *   popup()     right click: the menu, built at that moment from the live state (template() is the same, unshown).
  *   destroy()   the app is going away.
  *
- * deps: Tray, Menu, nativeImage, renderIcon(text) -> { width, height, bgra }, getSettings(), tabs() -> [{ key, status }],
- *       windowLabel(), isHidden(), background() -> Promise<the ▾ menu's model>, now(), log(...),
- *       actions { focusWindow, selectTab(key), openBackground(open), stopBackground(row), hideAll, showAll,
- *                 setStartMinimised(on), quit }
+ * ONE controller for the process (single-instance PR 3): it sums and lists every window. Cues are { root, key } pairs (a develop tab is in
+ * every project); a closed window is no longer listed, so its cues are forgotten at the next sync.
+ *
+ * deps: Tray, Menu, nativeImage, renderIcon(text) -> { width, height, bgra }, getSettings(),
+ *       windows() -> [{ root, label, tabs: [{ key, status }] }] (the open windows, in open order), lastUsed() -> root | null,
+ *       isHidden(), background() -> Promise<the ▾ menu's model, over every window>, now(), log(...),
+ *       actions { focusWindow(root, key|null), openBackground(open), stopBackground(row), hideAll, showAll, setStartMinimised(on), quit }
  *
  * Main-process only (required, never a page <script>).
  */
@@ -29,7 +32,8 @@ function createTrayController(deps) {
   let cues = new Map();
   let shown = { badge: null, tooltip: null };
   let shownImage = null;
-  let counts = { count: 0, sessions: 0 };
+  let counts = { count: 0, sessions: 0, windows: 0 };
+  let rows = [];                        // the windows as the menu shows them: { root, label, tabs, needs, waitingKey }
   const images = new Map();
 
   function imageFor(text) {
@@ -66,14 +70,22 @@ function createTrayController(deps) {
   }
 
   function update() {
-    const tabs = deps.tabs();
-    const keys = needsYouKeys(tabs);
-    cues = trackCues(cues, keys, deps.now());
-    counts = { count: keys.length, sessions: Array.isArray(tabs) ? tabs.length : 0 };
+    let wins = [];
+    try { wins = deps.windows(); } catch (err) { log(`[main] tray: could not list the windows: ${err && err.message}`); }
+    if (!Array.isArray(wins)) wins = [];
+    const ids = [];
+    for (const w of wins) for (const key of needsYouKeys(w.tabs)) ids.push({ root: w.root, key });
+    cues = trackCues(cues, ids, deps.now());
+    rows = wins.map((w) => {
+      let oldest = null;
+      for (const c of cues.values()) if (c.root === w.root && (oldest === null || c.since < oldest.since)) oldest = c;
+      return { root: w.root, label: w.label, tabs: Array.isArray(w.tabs) ? w.tabs.length : 0, needs: needsYouKeys(w.tabs).length, waitingKey: oldest ? oldest.key : null };
+    });
+    counts = { count: ids.length, sessions: rows.reduce((n, r) => n + r.tabs, 0), windows: rows.length };
     if (!tray) return;
     const badge = badgeText(counts.count);
     if (badge !== shown.badge) { shownImage = imageFor(badge); tray.setImage(shownImage); shown.badge = badge; }
-    const tip = tooltipText({ sessions: counts.sessions, needs: counts.count, label: deps.windowLabel() });
+    const tip = tooltipText({ windows: counts.windows, sessions: counts.sessions, needs: counts.count });
     if (tip !== shown.tooltip) { tray.setToolTip(tip); shown.tooltip = tip; }
   }
 
@@ -86,9 +98,9 @@ function createTrayController(deps) {
   }
 
   function click() {
-    const target = clickTarget(cues);
-    if (target.kind === 'tab') deps.actions.selectTab(target.key);
-    deps.actions.focusWindow();
+    const target = clickTarget(cues, deps.lastUsed());
+    if (target.kind === 'tab') deps.actions.focusWindow(target.root, target.key);
+    else if (target.root !== null) deps.actions.focusWindow(target.root, null);
   }
 
   // The menu's template, built from the live state. Separate from popup() so a probe can read and click it without a real menu.
@@ -100,7 +112,7 @@ function createTrayController(deps) {
     update();
     const settings = deps.getSettings() || {};
     return trayTemplate({
-      windowLabel: deps.windowLabel(), tabs: counts.sessions, needs: counts.count, hidden: deps.isHidden(),
+      windows: rows, hidden: deps.isHidden(),
       startMinimised: settings.startMinimised === true, windowless: windowlessItems(background),
     }, deps.actions);
   }
@@ -123,7 +135,7 @@ function createTrayController(deps) {
 
   function state() {
     return { exists: tray !== null, tooltip: shown.tooltip, badge: shown.badge, count: counts.count, sessions: counts.sessions,
-      cues: [...cues.keys()], image: imageInfo() };
+      windows: counts.windows, rows: rows.map((r) => ({ ...r })), cues: [...cues.values()].map(({ root, key }) => ({ root, key })), image: imageInfo() };
   }
 
   /** The nativeImage on the Tray now (a probe saves it as a PNG to look at), or null. */

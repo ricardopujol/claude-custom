@@ -367,7 +367,10 @@ test('#50 (PR #155 Dexter 2): closing the window asks about unsaved reader text,
   assert.match(body, /readerUnsaved\.all\(\)\.length === 0\) return;/, 'with nothing unsaved the close goes through untouched');
   assert.match(body, /e\.preventDefault\(\)/);
   assert.match(body, /guardWindowClose\(/);
-  assert.match(body, /webContents\.send\('reader-save'\)/, 'Save asks the pages to save');
+  // PR 3: Save goes through the window's saveReaders(), which the one quit question's Save all uses too
+  assert.match(body, /saveAll: \(\) => saveReaders\(\),/, 'Save asks the pages to save');
+  const save = main.slice(main.indexOf('function saveReaders()'), main.indexOf('function saveReaders()') + 300);
+  assert.match(save, /webContents\.send\('reader-save'\)/);
   assert.match(body, /closeGuarded = true; win\.close\(\)/, 'once answered the close goes through, not looping');
   assert.match(main, /buttons: \['Save and close', 'Discard and close', 'Cancel'\]/);
   const preload = fs.readFileSync(path.join(__dirname, '..', 'app', 'preload.js'), 'utf8');

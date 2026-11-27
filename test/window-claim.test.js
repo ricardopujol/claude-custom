@@ -233,3 +233,160 @@ test('real: close and reopen. The owner is quitting (before-quit): a launch insi
   assert.deepStrictEqual(acts, [], 'the quitting window was never asked to act');
   await l.stop();
 });
+
+// ---- single-instance PR 3 step 3: the message carries the root; message(), tag and ackMs are optional deps --------------------------
+
+test('PR 3: the message carries the root (the router picks the window by it), with the lane and port as before', async () => {
+  const { createWindowClaim } = load();
+  const { deps, calls } = fakes({ claim: async () => live, root: 'C:\p', launchCwd: 'C:\p\feat-x', explicitPort: 7702 });
+  assert.strictEqual(await createWindowClaim(deps).run(), 'exit');
+  assert.deepStrictEqual(calls.filter(c => c[0] === 'send'), [['send', 10, { root: 'C:\p', cwd: 'C:\p\feat-x', port: 7702 }]]);
+});
+
+test('PR 3: the entry handed to listen names this window: its root and hasPort', async () => {
+  const { createWindowClaim } = load();
+  let opts = null;
+  const hasPort = (p) => p === 7001;
+  const { deps } = fakes({ root: 'C:\p', hasPort, listen: async (o) => { opts = o; return { close: async () => {} }; } });
+  await createWindowClaim(deps).run();
+  assert.strictEqual(opts.root, 'C:\p');
+  assert.strictEqual(opts.hasPort, hasPort);
+  assert.strictEqual(typeof opts.accepting, 'function');
+  assert.strictEqual(typeof opts.whenReady, 'function');
+  assert.strictEqual(typeof opts.onFocus, 'function');
+});
+
+test('PR 3: message() replaces the message; ackMs is handed to send; the defaults are today\'s', async () => {
+  const { createWindowClaim } = load();
+  const sent = [];
+  const send = async (o) => { sent.push(o); return { ok: true }; };
+  const a = fakes({ claim: async () => live, send, message: () => ({ cwd: 'C:\q', install: 'I', probe: false }), ackMs: 10_000 });
+  await createWindowClaim(a.deps).run();
+  assert.deepStrictEqual(sent[0].msg, { cwd: 'C:\q', install: 'I', probe: false });
+  assert.strictEqual(sent[0].ackMs, 10_000);
+  sent.length = 0;
+  const b = fakes({ claim: async () => live, send });
+  await createWindowClaim(b.deps).run();
+  assert.strictEqual(sent[0].ackMs, undefined);
+});
+
+test('PR 3: tag names the claim in its log lines (default "one window")', async () => {
+  const { createWindowClaim } = load();
+  const lines = [];
+  const refuse = async () => ({ ok: false, error: 'no ack' });
+  const a = fakes({ claim: async () => live, send: refuse, tag: 'single instance', log: (l) => lines.push(l) });
+  await createWindowClaim(a.deps).run();
+  assert.ok(lines.some((l) => /single instance: owner pid 10 did not accept \(no ack\)/.test(l)), lines.join('\n'));
+  lines.length = 0;
+  const b = fakes({ claim: async () => live, send: refuse, log: (l) => lines.push(l) });
+  await createWindowClaim(b.deps).run();
+  assert.ok(lines.some((l) => /one window: owner pid 10 did not accept/.test(l)), lines.join('\n'));
+});
+
+test('PR 3, real files + a real router: two windows of one process each publish their own window.json with the same pid, and a launch of B reaches B', async () => {
+  const { createWindowClaim } = load();
+  const { owner, focus } = real();
+  const { createWindowRouter } = require('../host/window-router');
+  const { projectOf, samePath, isInside } = require('../host/project-layout');
+  const pid = uniquePid();
+  const router = createWindowRouter({ listen: focus.listen, pid, projectOf, samePath, isInside });
+  const rootA = tmpDir('cc-claim-a-');
+  const rootB = tmpDir('cc-claim-b-');
+  const acted = { a: [], b: [] };
+  const mk = (root, who, selfPid) => createWindowClaim({
+    enabled: true, stateRoot: root, pid: selfPid, ownStart: async () => `S${selfPid}`, startTimes: async (pids) => new Map(pids.map((p) => [p, `S${p}`])),
+    project: null, launchCwd: root, explicitPort: null, root,
+    listen: (entry) => router.register(entry), claim: owner.claim, send: focus.send, takeOver: owner.takeOver, release: owner.release,
+    forwardedCwd: owner.forwardedCwd, act: async (m) => { acted[who].push(m); }, onExit: () => {}, readyBoundMs: 5000, ackMs: 2000,
+  });
+  const a = mk(rootA, 'a', pid);
+  const b = mk(rootB, 'b', pid);
+  try {
+    assert.strictEqual(await a.run(), 'proceed');
+    assert.strictEqual(await b.run(), 'proceed');
+    a.markReady(); b.markReady();
+    const fileOf = (r) => JSON.parse(fs.readFileSync(path.join(r, '.claude-custom', 'window.json'), 'utf8'));
+    assert.strictEqual(fileOf(rootA).pid, pid);
+    assert.strictEqual(fileOf(rootB).pid, pid);
+    // a second launch of B, from "another process" (its own pid, no router of its own: it never gets to listen)
+    const launch = createWindowClaim({
+      enabled: true, stateRoot: rootB, pid: pid + 1, ownStart: async () => `S${pid + 1}`, startTimes: async (pids) => new Map(pids.map((p) => [p, `S${p}`])),
+      project: null, launchCwd: rootB, explicitPort: null, root: rootB,
+      listen: async () => ({ close: async () => {} }), claim: owner.claim, send: focus.send, takeOver: owner.takeOver, release: owner.release,
+      forwardedCwd: owner.forwardedCwd, act: async () => {}, onExit: () => {}, readyBoundMs: 5000, ackMs: 2000,
+    });
+    assert.strictEqual(await launch.run(), 'exit');
+    await until(() => acted.b.length === 1);
+    assert.strictEqual(acted.a.length, 0, 'A heard nothing of B\'s launch');
+    assert.ok(samePath(acted.b[0].root, rootB));
+  } finally { a.stop(); b.stop(); await router.stop(); }
+});
+
+// ---- PR #258 round 1, Dexter 1 / Miguel S2: a live but slow owner is not taken over on the ack timeout alone ---------------------------
+
+test('D1: "no ack" from an owner still proven live: one more send with no ack bound and the full wait; it says ok -> exit, no takeover', async () => {
+  const { createWindowClaim } = load();
+  const sent = [];
+  const lines = [];
+  const { deps, calls } = fakes({
+    claim: async () => live, ackMs: 10_000, log: (l) => lines.push(l),
+    prove: async () => 'live',
+    send: async (o) => { sent.push(o); return sent.length === 1 ? { ok: false, error: 'no ack' } : { ok: true }; },
+  });
+  assert.strictEqual(await createWindowClaim(deps).run(), 'exit');
+  assert.strictEqual(sent.length, 2);
+  assert.strictEqual(sent[0].ackMs, 10_000);
+  assert.strictEqual(sent[1].ackMs, undefined, 'the second send waits for the answer, not for an ack');
+  assert.strictEqual(sent[1].timeoutMs, 5000 + 10_000, 'readyBound + slack');
+  assert.ok(!calls.some((c) => c[0] === 'takeOver'));
+  assert.ok(lines.some((l) => /did not acknowledge within 10000 ms but is still alive/.test(l)), lines.join('\n'));
+});
+
+test('D1: an owner that cannot be proven either way is waited for too (never taken over on the timeout alone)', async () => {
+  const { createWindowClaim } = load();
+  const sent = [];
+  const { deps, calls } = fakes({ claim: async () => live, ackMs: 10_000, prove: async () => 'unknown',
+    send: async (o) => { sent.push(o); return sent.length === 1 ? { ok: false, error: 'no ack' } : { ok: true }; } });
+  assert.strictEqual(await createWindowClaim(deps).run(), 'exit');
+  assert.ok(!calls.some((c) => c[0] === 'takeOver'));
+});
+
+test('D1: the true-hang path stays: no answer to the second send either -> proceed and take the file over', async () => {
+  const { createWindowClaim } = load();
+  const sent = [];
+  const { deps, calls } = fakes({ claim: async () => live, ackMs: 10_000, prove: async () => 'live',
+    send: async (o) => { sent.push(o); return sent.length === 1 ? { ok: false, error: 'no ack' } : { ok: false, error: 'timed out after 15000ms' }; } });
+  assert.strictEqual(await createWindowClaim(deps).run(), 'proceed');
+  assert.ok(calls.some((c) => c[0] === 'takeOver'));
+  assert.strictEqual(sent.length, 2);
+});
+
+test('D1: "no ack" from an owner proven DEAD since: taken over at once, no second send', async () => {
+  const { createWindowClaim } = load();
+  const sent = [];
+  const { deps, calls } = fakes({ claim: async () => live, ackMs: 10_000, prove: async () => 'dead',
+    send: async (o) => { sent.push(o); return { ok: false, error: 'no ack' }; } });
+  assert.strictEqual(await createWindowClaim(deps).run(), 'proceed');
+  assert.strictEqual(sent.length, 1);
+  assert.ok(calls.some((c) => c[0] === 'takeOver'));
+});
+
+test('D1: the default prove is the owner-file proof over startTimes', async () => {
+  const { createWindowClaim } = load();
+  const sent = [];
+  const { deps } = fakes({ claim: async () => live, ackMs: 10_000, startTimes: async () => new Map([[10, 'S10']]),
+    send: async (o) => { sent.push(o); return sent.length === 1 ? { ok: false, error: 'no ack' } : { ok: true }; } });
+  assert.strictEqual(await createWindowClaim(deps).run(), 'exit', 'S10 is the start the owner file names: live, so it is waited for');
+});
+
+test('PR #258 Dexter 13: refuse() true (the quit question is up) -> not accepting, even when ready', async () => {
+  const { createWindowClaim } = load();
+  let refuse = false;
+  const { deps } = fakes({ refuse: () => refuse });
+  const c = createWindowClaim(deps);
+  await c.run();
+  c.markReady();
+  assert.strictEqual(c.accepting(), true);
+  refuse = true;
+  assert.strictEqual(c.accepting(), false);
+});

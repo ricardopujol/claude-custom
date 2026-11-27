@@ -21,8 +21,9 @@ function rig({ probePort = 51000, token = TOKEN } = {}) {
   const resolved = [];
   const windowApi = (root) => { resolved.push(root); const key = root === undefined ? 'A' : root; return apis[key] || null; };
   const opened = [];
-  const startProject = async (cwd) => { opened.push(cwd); return cwd.includes('BAD') ? { pw: null, error: 'start failed' } : { pw: { root: cwd }, existing: cwd.includes('OPEN'), first: null }; };
-  const appApi = createAppApi({ probePort, token, tempRoot: os.tmpdir(), registry, launchWindow: wins[0], startProject });
+  // PR 3: main's openProject (app/open-project.js) answers { ok, root, existing } | { ok: false, error }
+  const openProject = async ({ cwd }) => { opened.push(cwd); return cwd.includes('BAD') ? { ok: false, error: 'start failed' } : { ok: true, root: cwd, existing: cwd.includes('OPEN') }; };
+  const appApi = createAppApi({ probePort, token, tempRoot: os.tmpdir(), registry, launchWindow: wins[0], openProject });
   const route = (obj) => routeProbeLine(JSON.stringify(obj), { token, windowApi, appApi });
   return { route, calls, resolved, opened, appApi, wins };
 }
@@ -66,7 +67,7 @@ test('openProject is refused without BOTH the probe port and a real token', asyn
   const noPort = rig({ probePort: 0 });
   assert.match((await noPort.route({ cmd: 'openProject', token: TOKEN, cwd: path.join(os.tmpdir(), 'cc-x') })).error, /needs the probe driver/);
   assert.deepStrictEqual(noPort.opened, []);
-  const noToken = createAppApi({ probePort: 1, token: null, tempRoot: os.tmpdir(), registry: createProjectRegistry(), launchWindow: null, startProject: async () => { throw new Error('must not run'); } });
+  const noToken = createAppApi({ probePort: 1, token: null, tempRoot: os.tmpdir(), registry: createProjectRegistry(), launchWindow: null, openProject: async () => { throw new Error('must not run'); } });
   assert.match((await noToken.openProject(path.join(os.tmpdir(), 'x'))).error, /needs the probe driver/);
 });
 
@@ -104,7 +105,7 @@ test('isInside: the folder itself and anything under it, nothing beside or above
 
 test('webContents is the process\'s own command: it answers the count of pages the process holds, picking no window (PR #256 Miguel B1)', async () => {
   const t = rig();
-  const api = createAppApi({ probePort: 51000, token: TOKEN, tempRoot: os.tmpdir(), registry: createProjectRegistry(), launchWindow: null, startProject: async () => ({}), countWebContents: () => 7 });
+  const api = createAppApi({ probePort: 51000, token: TOKEN, tempRoot: os.tmpdir(), registry: createProjectRegistry(), launchWindow: null, openProject: async () => ({}), countWebContents: () => 7 });
   const r = await routeProbeLine(JSON.stringify({ cmd: 'webContents', token: TOKEN }), { token: TOKEN, windowApi: () => { throw new Error('must not pick a window'); }, appApi: api });
   assert.deepStrictEqual([r.ok, r.count, r.pid], [true, 7, process.pid]);
   assert.deepStrictEqual(await t.route({ cmd: 'webContents', token: 'wrong' }), { ok: false, error: 'bad token' });
@@ -129,11 +130,55 @@ test('isInside compares real paths: a junction inside the temp folder that point
 
 test('openProject is refused in a process that was launched with a port: its CLAUDE_CUSTOM_TOKEN is the launch window\'s alone (plan risk 6; PR #256 Miguel Y4)', async () => {
   const opened = [];
-  const api = createAppApi({ probePort: 51000, token: TOKEN, tempRoot: os.tmpdir(), registry: createProjectRegistry(), launchWindow: null, portNamed: true, startProject: async (c) => { opened.push(c); return { pw: { root: c } }; } });
+  const api = createAppApi({ probePort: 51000, token: TOKEN, tempRoot: os.tmpdir(), registry: createProjectRegistry(), launchWindow: null, portNamed: true, openProject: async (o) => { opened.push(o.cwd); return { ok: true, root: o.cwd }; } });
   const r = await api.openProject(path.join(os.tmpdir(), 'cc-probe-two', 'B'));
   assert.strictEqual(r.ok, false);
   assert.match(r.error, /port/);
   assert.deepStrictEqual(opened, [], 'no second window for a port-named launch');
-  const free = createAppApi({ probePort: 51000, token: TOKEN, tempRoot: os.tmpdir(), registry: createProjectRegistry(), launchWindow: null, portNamed: false, startProject: async (c) => { opened.push(c); return { pw: { root: c } }; } });
+  const free = createAppApi({ probePort: 51000, token: TOKEN, tempRoot: os.tmpdir(), registry: createProjectRegistry(), launchWindow: null, portNamed: false, openProject: async (o) => { opened.push(o.cwd); return { ok: true, root: o.cwd }; } });
   assert.strictEqual((await free.openProject(path.join(os.tmpdir(), 'cc-probe-two', 'B'))).ok, true);
+});
+
+// ---- single-instance PR 3 step 13 ---------------------------------------------------------------------------------------------------
+
+test('PR 3: openProject goes through main\'s openProject (the queue), with the cwd and show: shown', async () => {
+  const seen = [];
+  const api = createAppApi({ probePort: 51000, token: TOKEN, tempRoot: os.tmpdir(), registry: createProjectRegistry(), launchWindow: null,
+    openProject: async (o) => { seen.push(o); return { ok: true, root: 'R', existing: false }; } });
+  const r = await api.openProject(path.join(os.tmpdir(), 'cc-probe-si', 'A', 'dev'));
+  assert.deepStrictEqual(r, { ok: true, existing: false, root: 'R', pid: process.pid });
+  assert.deepStrictEqual(seen, [{ cwd: path.join(os.tmpdir(), 'cc-probe-si', 'A', 'dev'), show: 'shown' }]);
+  const failed = createAppApi({ probePort: 51000, token: TOKEN, tempRoot: os.tmpdir(), registry: createProjectRegistry(), launchWindow: null,
+    openProject: async () => ({ ok: false, error: 'the folder is gone' }) });
+  assert.deepStrictEqual(await failed.openProject(path.join(os.tmpdir(), 'x')), { ok: false, error: 'the folder is gone' });
+});
+
+test('PR 3: appLock and openWindows are the process\'s commands (token first, no window picked)', async () => {
+  const api = createAppApi({ probePort: 51000, token: TOKEN, tempRoot: os.tmpdir(), registry: createProjectRegistry(), launchWindow: null,
+    openProject: async () => ({ ok: true }),
+    appLock: () => ({ owns: true, file: 'C:\s\app.json', pid: 4242 }),
+    openWindows: () => ({ clean: false, windows: [] }) });
+  const resolved = [];
+  const route = (obj) => routeProbeLine(JSON.stringify(obj), { token: TOKEN, windowApi: (r) => { resolved.push(r); return null; }, appApi: api });
+  assert.deepStrictEqual(await route({ cmd: 'appLock', token: TOKEN }), { ok: true, owns: true, file: 'C:\s\app.json', pid: 4242 });
+  assert.deepStrictEqual(await route({ cmd: 'openWindows', token: TOKEN }), { ok: true, record: { clean: false, windows: [] } });
+  assert.deepStrictEqual(await route({ cmd: 'appLock', token: 'wrong' }), { ok: false, error: 'bad token' });
+  assert.deepStrictEqual(resolved, []);
+});
+
+test('PR 3: reader-unsaved is a window command: it reports unsaved text for a tab without a real edit (token-gated like the rest)', async () => {
+  const got = [];
+  const windowApi = () => ({ async readerUnsaved(key, p) { got.push([key, p]); return { ok: true }; } });
+  const route = (obj) => routeProbeLine(JSON.stringify(obj), { token: TOKEN, windowApi, appApi: {} });
+  assert.deepStrictEqual(await route({ cmd: 'reader-unsaved', token: TOKEN, key: 'develop', path: 'notes.md' }), { ok: true });
+  assert.deepStrictEqual(got, [['develop', 'notes.md']]);
+  assert.match((await route({ cmd: 'reader-unsaved', token: TOKEN, key: 'develop' })).error, /needs a key and a path/);
+  assert.deepStrictEqual(await route({ cmd: 'reader-unsaved', token: 'nope', key: 'k', path: 'p' }), { ok: false, error: 'bad token' });
+});
+
+test('PR 3: window-hide is a window command (a restore\'s hidden window, verify/probe-single-instance.js case 8)', async () => {
+  let hidden = 0;
+  const route = (obj) => routeProbeLine(JSON.stringify(obj), { token: TOKEN, windowApi: () => ({ async hide() { hidden++; return { ok: true, visible: false }; } }), appApi: {} });
+  assert.deepStrictEqual(await route({ cmd: 'window-hide', token: TOKEN, window: 'B' }), { ok: true, visible: false });
+  assert.strictEqual(hidden, 1);
 });

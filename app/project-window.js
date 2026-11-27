@@ -17,8 +17,9 @@
  *   config     per-process constants (EXPLICIT_PORT, STRIP_HEIGHT, POLL_MS, PROBE_PORT, ...); a window that is not the process's own
  *              launch window is handed EXPLICIT_PORT null (a port-named launch is its own process)
  *   services   app-wide effects the window calls (uiStore, forProbe, openInBrowser, the host helpers, isQuitting / setQuitting, and
- *              getResources / getTray / seenChanged / onWindowCreated / onClosed, which it reads live), plus `launch`: true for the
- *              process's own launch window, which alone holds the one-window claim (the claim pipe is named per pid)
+ *              getResources / getTray / seenChanged / onWindowCreated / onClosed, which it reads live). EVERY window holds its own
+ *              one-window claim (single-instance PR 3): `windowRouter` is the process's one window pipe (host/window-router.js), where the
+ *              claim registers this window's entry, and `onProcessExit(pw, fn)` is main's one process 'exit' hook
  *   attach()   this window's OWN lean unit and indexing overlay, handed over before start()
  *
  * Every handed value is required: a missing electron member, config value or service throws at construction, naming itself.
@@ -91,7 +92,7 @@ const { projectOf, stateRoot, samePath } = require('../host/project-layout');
 const { createPersistentExec } = require('../host/persistent-powershell');
 const { stopHost } = require('../host/stop-holder');
 const { hostStopDeps } = require('../host/stop-deps');
-const { attachEnv, attachOnlyDecision } = require('../host/launch-target');
+const { attachOnlyDecision } = require('../host/launch-target');
 const { menuModel } = require('./background-menu');
 const { menuTemplate, createBackgroundActions, popupUntilClosed, stopAllDetail } = require('./background-actions');
 const { hidesOnClose, startsHidden } = require('./tray-model');
@@ -106,7 +107,8 @@ const REQUIRED_ELECTRON = ['app', 'BrowserWindow', 'WebContentsView', 'Menu', 'd
 const REQUIRED_CONFIG = ['EXPLICIT_PORT', 'STRIP_HEIGHT', 'POLL_MS', 'PROBE_PORT', 'TRAY_ON', 'ONE_WINDOW_ON'];
 const REQUIRED_SERVICES = ['uiStore', 'readDim', 'usageCounters', 'forProbe', 'openInBrowser', 'probeConfirms', 'logShellError', 'canvasAsks',
   'nextCanvasAskId', 'previewProbeProxy', 'stopHostByPid', 'occupantAt', 'tokenFileFor', 'ownIdentities', 'ownStartTime', 'waitForHost',
-  'HARNESS_DIR', 'INSTALL_DIR', 'listBackground', 'capture', 'stripFileFor', 'isQuitting', 'setQuitting', 'onWindowCreated', 'onClosed', 'getResources', 'getTray', 'seenChanged'];
+  'HARNESS_DIR', 'INSTALL_DIR', 'listBackground', 'capture', 'stripFileFor', 'isQuitting', 'setQuitting', 'onWindowCreated', 'onClosed', 'getResources', 'getTray', 'seenChanged',
+  'windowRouter', 'onProcessExit', 'onFocused', 'openProject', 'quitCancelled', 'sessionEnded'];
 
 function requireAll(kind, bag, names) {
   for (const name of names) {
@@ -114,20 +116,32 @@ function requireAll(kind, bag, names) {
   }
 }
 
-function createProjectWindow({ launchCwd, electron, config, services, launch }) {
+/**
+ * Does a new window start hidden (single-instance PR 3, step 7)? `show` is the start's word:
+ *   'setting'  "Start minimised to tray" decides (the launch that starts Jiandu; also any unknown word: today's behaviour)
+ *   'shown'    always shown (a launch handed to the running Jiandu: §5 Q1)
+ *   'hidden'   hidden (a restored window that was hidden)
+ * Never hidden without a tray icon to bring it back.
+ */
+function startHiddenFor({ show, trayOn, settings } = {}) {
+  if (!trayOn) return false;
+  if (show === 'shown') return false;
+  if (show === 'hidden') return true;
+  return startsHidden(settings);
+}
+
+function createProjectWindow({ launchCwd, electron, config, services }) {
   if (typeof launchCwd !== 'string' || launchCwd === '') throw new Error('createProjectWindow: missing launchCwd');
   requireAll('electron member', electron, REQUIRED_ELECTRON);
   requireAll('config value', config, REQUIRED_CONFIG);
   requireAll('service', services, REQUIRED_SERVICES);
-  // No default: the launch window holds the one-window claim, and a window made for a project opened later (a probe's openProject, PR 3's
-  // second launch) must not, so a silent default would flip one of them.
-  if (typeof launch !== 'boolean') throw new Error('createProjectWindow: launch must be true (this process\'s own launch window) or false');
   const { app, BrowserWindow, WebContentsView, Menu, dialog, session } = electron;
   const { EXPLICIT_PORT, STRIP_HEIGHT, POLL_MS, PROBE_PORT, TRAY_ON, ONE_WINDOW_ON } = config;
   const {
     uiStore, readDim, usageCounters, forProbe, openInBrowser, probeConfirms, logShellError, canvasProbeResolve, canvasAsks,
     nextCanvasAskId, previewProbeProxy, stopHostByPid, occupantAt, tokenFileFor, ownIdentities, ownStartTime, waitForHost,
     HARNESS_DIR, INSTALL_DIR, listBackground, capture, stripFileFor, isQuitting, setQuitting, onWindowCreated, onClosed, getResources, getTray, seenChanged,
+    windowRouter, onProcessExit, onFocused, openProject, quitCancelled, sessionEnded,
   } = services;
 
   // --- what this window is ----------------------------------------------------------
@@ -421,15 +435,17 @@ function createProjectWindow({ launchCwd, electron, config, services, launch }) 
   // reload while the cue is up would clear it for good.
   let cueOn = false;
   let focused = false;
+  let quitAllowed = false;           // the one quit question already covered this window's unsaved text (allowClose)
 
-  function createWindow() {
+  function createWindow({ show } = {}) {
     // Layout pass L2 (#28): read once, for THIS window -- a frame can't change on
     // an open window, so a later toggle applies to the next one.
     ensureStatusDefault(uiStore);   // #67: write the default the relay reads, before anything asks
     const chrome = readChromeSettings(uiStore);
     windowFrameless = chrome.framelessWindow === true;
-    // "Start minimised to tray": the window is made but not shown; the tray icon brings it up. Never without the icon.
-    const startHidden = TRAY_ON && startsHidden(readTraySettings(uiStore));
+    // "Start minimised to tray": the window is made but not shown; the tray icon brings it up. Never without the icon. Which windows obey
+    // it is the start's word (startHiddenFor): the first launch does, a handed-off launch does not, a restore follows its record.
+    const startHidden = startHiddenFor({ show, trayOn: TRAY_ON, settings: readTraySettings(uiStore) });
     win = new BrowserWindow(forProbe({
       width: 1200,
       height: 800,
@@ -476,6 +492,7 @@ function createProjectWindow({ launchCwd, electron, config, services, launch }) 
     };
     win.on('focus', () => {
       focused = true;
+      onFocused(self);          // main's window used last (the tray's click with no cue, the quit and Stop questions' parent)
       sendFocus();
       win.flashFrame(false);
       setCue(false);            // looked at: the cue has done its job
@@ -492,7 +509,7 @@ function createProjectWindow({ launchCwd, electron, config, services, launch }) 
     // The Dev servers sampler follows what the window shows: minimise, restore, and hide/show (the tray) alike (#119 A4).
     for (const ev of ['minimize', 'restore', 'hide', 'show']) win.on(ev, timers.guard('dev-servers sampling', syncDevServersSampling));
     // Windows asks to end the session (log off, shut down): a hidden-to-tray window must not stand in its way.
-    win.on('session-end', () => { setQuitting(true); });
+    win.on('session-end', () => { setQuitting(true); sessionEnded(); });
     for (const ev of ['resize', 'maximize', 'unmaximize', 'enter-full-screen', 'leave-full-screen']) {
       win.on(ev, () => { forEachView(layoutView); if (indexing) indexing.relayout(); });
     }
@@ -526,7 +543,8 @@ function createProjectWindow({ launchCwd, electron, config, services, launch }) 
         win.hide();
         return;
       }
-      if (closeGuarded || readerUnsaved.all().length === 0) return;
+      // quitAllowed: the one quit question (app/quit-gate.js) already answered for this window's text
+      if (closeGuarded || quitAllowed || readerUnsaved.all().length === 0) return;
       e.preventDefault();
       if (closeAsking) return;
       closeAsking = true;
@@ -534,7 +552,7 @@ function createProjectWindow({ launchCwd, electron, config, services, launch }) 
         list: () => readerUnsaved.all(),
         ask: askWindowClose,
         notify: (detail) => { if (!PROBE_PORT && win && !win.isDestroyed()) dialog.showMessageBox(win, { type: 'info', message: 'The window was not closed', detail }); },
-        saveAll: () => { if (win && !win.isDestroyed()) win.webContents.send('reader-save'); forEachView((v) => v.webContents.send('reader-save')); },
+        saveAll: () => saveReaders(),
         waitCleared: async () => {
           for (let i = 0; i < 80; i++) { if (readerUnsaved.all().length === 0) return true; await new Promise(r => setTimeout(r, 100)); }
           return false;
@@ -543,11 +561,9 @@ function createProjectWindow({ launchCwd, electron, config, services, launch }) 
         if (ok && win && !win.isDestroyed()) { closeGuarded = true; win.close(); }
         // Cancel (or a save that didn't clear) also cancels a quit that started this close: Electron says nothing when a quit is
         // cancelled, so without this `quitting` stays true and close-to-tray is dead for the rest of the session.
-        else {
-          setQuitting(false);
-          // before-quit already stopped the one-window claim; the window stays, so it is the project's owner again (PR #247 Dexter M1).
-          if (win && !win.isDestroyed()) windowClaim.resume().catch(() => {});
-        }
+        // PR 3: main's quitCancelled() puts `quitting` back, resets the quit gate and resumes the app claim and EVERY open window's claim
+        // (before-quit stopped them all; the window stays, so it is the project's owner again: PR #247 Dexter M1).
+        else quitCancelled();
       }).catch(logShellError('window close guard')).finally(() => { closeAsking = false; });
     });
     // Closed: this window has no page left. Main decides what that means for the process (a closed window of several is disposed; the last
@@ -557,6 +573,15 @@ function createProjectWindow({ launchCwd, electron, config, services, launch }) 
     onWindowCreated(self);
     return win;
   }
+
+  // Ask every code reader of this window to save (the window's own close guard, and the one quit question's Save all).
+  function saveReaders() {
+    if (win && !win.isDestroyed()) win.webContents.send('reader-save');
+    forEachView((v) => v.webContents.send('reader-save'));
+  }
+
+  /** The one quit question answered for this window's unsaved text (true), or a quit that was cancelled after all (false). */
+  function allowClose(on = true) { quitAllowed = on === true; }
 
   // Give the selected tab's view the keyboard. Coming back to the window keeps a half-typed indexing note's keyboard (#66) unless
   // `evenWithField`: the indexing overlay's own leave / close-list say the person is done with the field.
@@ -933,7 +958,6 @@ function createProjectWindow({ launchCwd, electron, config, services, launch }) 
     select: key => tabShell.select(key),
     focusWindow,
     // A host of THIS project is shown in this window (one window per project): its tab is selected, a lane closed by hand is reopened.
-    // Another project's host keeps the attach-only spawn below until a window can open one on a project's behalf.
     thisProject: (o) => {
       const p = projectOf(o.cwd);
       return !!p && samePath(p.root, PROJECT_ROOT);
@@ -943,15 +967,8 @@ function createProjectWindow({ launchCwd, electron, config, services, launch }) 
       const r = await tabShell.reopenFolder(o.cwd);
       return r && r.ok ? r.key : null;
     },
-    // Attach-only: it attaches to that host or refuses (host/launch-target.js).
-    spawnWindow: ({ cwd, port }) => {
-      const child = spawn(process.execPath, [INSTALL_DIR], {
-        detached: true, stdio: 'ignore', env: attachEnv(process.env, { cwd, port }),
-      });
-      child.on('error', err => console.log('[main] Open (background) failed:', err.message));
-      child.unref();
-      return { pid: child.pid };
-    },
+    // Another project's session: its project's window in this process (single-instance PR 3), never an attach-only process.
+    openProject: ({ cwd, port }) => openProject({ cwd, port, show: 'shown' }),
     // The probe driver has nobody to click.
     confirmStop: async (row) => {
       if (PROBE_PORT || !win || win.isDestroyed()) return true;
@@ -1442,6 +1459,19 @@ function createProjectWindow({ launchCwd, electron, config, services, launch }) 
         setTimeout(() => (graceful === true ? app.quit() : app.exit(0)), 200);
         return { ok: true };
       },
+      // single-instance PR 3 (verify/probe-single-instance.js case 7): unsaved reader text on a tab, as the page would report it, with no edit
+      async readerUnsaved(key, file) {
+        if (!tabShell || !tabShell.snapshot().tabs.some((t) => t.key === key)) return { ok: false, error: `no tab ${key}` };
+        readerUnsaved.report(key, file);
+        return { ok: true, unsaved: readerUnsaved.all() };
+      },
+      // single-instance PR 3 (verify/probe-single-instance.js case 8): hide this window, as the tray's hide does, so a restore can be seen
+      // to bring it back hidden
+      async hide() {
+        if (!win || win.isDestroyed()) return { ok: false, error: 'no window' };
+        win.hide();
+        return { ok: true, visible: win.isVisible() };
+      },
       // BACKLOG #119 A8 (verify/probe-tray.js): the tray's own state, and its click and menu through the same functions the real
       // Tray events call. Only a window started with CLAUDE_CUSTOM_TRAY_PROBE=1 has a tray.
       async tray() {
@@ -1534,14 +1564,16 @@ function createProjectWindow({ launchCwd, electron, config, services, launch }) 
   }
 
   const windowClaim = createWindowClaim({
-    // The claim pipe is named per pid (host/window-focus.js), so a second window in this process would collide on it: only the launch window
-    // holds the claim. PR 3 routes a second launch to the right window of the process (DESIGN_SINGLE_INSTANCE.md, Q2).
-    enabled: ONE_WINDOW_ON && launch, stateRoot: STATE_ROOT, pid: process.pid, ownStart: () => ownStartTime(), startTimes,
-    project: PROJECT, launchCwd: LAUNCH_CWD, explicitPort: EXPLICIT_PORT,
-    listen: windowFocus.listen, claim: windowOwner.claim, send: windowFocus.send, takeOver: windowOwner.takeOver,
+    // EVERY window holds its claim (single-instance PR 3): the process has ONE window pipe (host/window-router.js, main's), and this
+    // window's claim registers its entry there instead of listening, so a launch is routed to the window whose root it names.
+    enabled: ONE_WINDOW_ON, stateRoot: STATE_ROOT, pid: process.pid, ownStart: () => ownStartTime(), startTimes,
+    project: PROJECT, launchCwd: LAUNCH_CWD, explicitPort: EXPLICIT_PORT, root: PROJECT_ROOT,
+    hasPort: (port) => !!tabShell && tabShell.snapshot().tabs.some((t) => t && t.port === port),
+    listen: (entry) => windowRouter.register(entry), claim: windowOwner.claim, send: windowFocus.send, takeOver: windowOwner.takeOver,
     release: windowOwner.release, forwardedCwd: windowOwner.forwardedCwd,
     act: onLaunchFocus,
-    onExit: (fn) => process.on('exit', fn),       // app.exit skips will-quit; a crash leaves a file the next launch proves dead
+    ackMs: 10_000,                                 // a hung owner is told from a slow one (host/window-focus.js, the ack)
+    onExit: (fn) => onProcessExit(self, fn),      // main's ONE process 'exit' hook (app.exit skips will-quit); emptied when this window closes
     log: (...a) => console.log(...a),
   });
 
@@ -1694,10 +1726,10 @@ function createProjectWindow({ launchCwd, electron, config, services, launch }) 
    * then the window (whose events call the shell), then the dev servers' sampling (read AFTER the window exists, and after a start hidden to
    * the tray), then the first open. Answers what tabShell.open() answers.
    */
-  async function start({ seams, openPrsReader }) {
+  async function start({ seams, openPrsReader, show }) {
     startServices({ seams, openPrsReader });
     startDevServers();
-    createWindow();
+    createWindow({ show });
     syncDevServersSampling();
     return open();
   }
@@ -1781,6 +1813,8 @@ function createProjectWindow({ launchCwd, electron, config, services, launch }) 
     showBackgroundMenu,
     focusWindow,
     showLane,
+    saveReaders,
+    allowClose,
     viewTop: currentViewTop,
     focusSelected,
     setIndexFieldFocused,
@@ -1798,4 +1832,4 @@ function createProjectWindow({ launchCwd, electron, config, services, launch }) 
   return self;
 }
 
-module.exports = { createProjectWindow };
+module.exports = { createProjectWindow, startHiddenFor };

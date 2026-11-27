@@ -36,7 +36,8 @@ test('main makes the one Tray through the controller, in startTray, called once 
 test('a probe window has no tray (a killed Electron leaves a ghost icon) unless it is the tray probe', () => {
   assert.match(MAIN, /const TRAY_ON = !PROBE_PORT \|\| process\.env\.CLAUDE_CUSTOM_TRAY_PROBE === '1';/);
   assert.match(bodyOf(/function startTray\(\)/), /if \(!TRAY_ON\) return;/);
-  assert.match(MAIN, /const startHidden = TRAY_ON && startsHidden\(readTraySettings\(uiStore\)\);/);
+  // PR 3 step 7: the start's word decides (startHiddenFor), and without TRAY_ON it is never hidden (test/project-window.test.js)
+  assert.match(MAIN, /const startHidden = startHiddenFor\(\{ show, trayOn: TRAY_ON, settings: readTraySettings\(uiStore\) \}\);/);
 });
 
 test('close hides to the tray only through hidesOnClose, ahead of the unsaved-text guard, and a quit closes', () => {
@@ -46,8 +47,10 @@ test('close hides to the tray only through hidesOnClose, ahead of the unsaved-te
   assert.ok(hide < close.indexOf('closeGuarded ||'), 'the hide decision comes first: hiding loses nothing, so no question');
   assert.match(close, /const tray = getTray\(\);\s*if \(hidesOnClose\(\{ settings: readTraySettings\(uiStore\), trayExists: !!tray && tray\.state\(\)\.exists, quitting: isQuitting\(\) \}\)\)/);
   assert.match(close, /e\.preventDefault\(\);\s*win\.hide\(\);/);
-  assert.match(MAIN, /app\.on\('before-quit', \(\) => \{ quitting = true; forEachProject\(\(p\) => p\.claim\.stop\(\)\); \}\);/);
-  assert.match(MAIN, /win\.on\('session-end', \(\) => \{ setQuitting\(true\); \}\);/);
+  // PR 3: one before-quit handler, the quit gate first (test/single-instance-wiring.test.js pins the whole body)
+  assert.match(MAIN, /if \(quitGate\.onBeforeQuit\(e\)\) return;[\s\S]{0,400}?markRecordClean\(\);\s*quitting = true;/);
+  // PR 3: a session end is also a clean quit for the crash-restore record (sessionEnded)
+  assert.match(MAIN, /win\.on\('session-end', \(\) => \{ setQuitting\(true\); sessionEnded\(\); \}\);/);
 });
 
 test('start minimised: the window is created without being shown, only when startsHidden says so', () => {
@@ -69,23 +72,35 @@ test('the tray follows the shell and goes with the app', () => {
 
 test('the menu actions: Stop is the ▾ menu\'s own (it asks), Quit is app.quit, Hide hides, Show is focusWindow', () => {
   const actions = bodyOf(/function startTray\(\)/);
-  // single-instance PR 2: the tray speaks for the first window (trayWindow()); hide / show act on every window. PR 3 sums and lists them all.
-  assert.match(actions, /stopBackground: \(row\) => \{ const w = trayWindow\(\); if \(!w\) return; w\.focusWindow\(\); w\.backgroundActions\.stop\(row\)/);
+  // single-instance PR 3: one tray for every window. Stop's question sits on the session's project window when open, else the window used last
+  assert.match(actions, /const w = \(p && registry\.get\(p\.root\)\) \|\| registry\.lastUsed\(\);\s*if \(!w\) return;\s*w\.focusWindow\(\);\s*w\.backgroundActions\.stop\(row\)/);
+  assert.doesNotMatch(actions, /trayWindow\(\)/, 'no window is "the" tray\'s any more');
+  assert.match(actions, /focusWindow: \(root, key\) => \{ const w = registry\.get\(root\); if \(!w\) return; if \(key && w\.tabShell\) w\.tabShell\.select\(key\); w\.focusWindow\(\); \}/);
+  assert.match(actions, /windows: \(\) => registry\.list\(\)\.map\(/);
+  assert.match(actions, /lastUsed: \(\) => \{ const w = registry\.lastUsed\(\);/);
+  assert.match(actions, /background: \(\) => appBackgroundModel\(\),/);
   assert.doesNotMatch(actions, /stopHost\(/);
-  assert.match(actions, /app\.quit\(\); \}/);
+  assert.match(actions, /quit: \(\) => app\.quit\(\),/);
   assert.match(actions, /hideAll: \(\) => registry\.forEach\(\(p\) => \{ const w = p\.win; if \(w && !w\.isDestroyed\(\)\) w\.hide\(\); \}\)/);
   assert.match(actions, /showAll: \(\) => registry\.forEach\(\(p\) => p\.focusWindow\(\)\)/);
-  assert.match(actions, /openBackground: o => \{ const w = trayWindow\(\); return w \? w\.backgroundActions\.open\(o\) : undefined; \}/);
+  // Open on a session with no window: a window in this process (DESIGN_TABS_SESSIONS.md 3.4), through main's one open
+  assert.match(actions, /openBackground: \(o\) => \(o && typeof o\.cwd === 'string' \? openProject\(\{ cwd: o\.cwd, port: o\.port, show: 'shown' \}\) : undefined\),/);
   assert.match(actions, /setStartMinimised: on => \{ writeTraySetting\(uiStore, 'startMinimised', on === true\); \}/);
 });
 
-test('Quit from the tray brings a hidden window up first when there is unsaved reader text (Miguel Y1)', () => {
-  assert.match(bodyOf(/function startTray\(\)/), /quit: \(\) => \{ const dirty = registry\.list\(\)\.find\(\(p\) => p\.readerUnsaved\.all\(\)\.length > 0\); if \(dirty\) dirty\.focusWindow\(\); app\.quit\(\); \}/);
+test('Quit from the tray: the one quit question brings a hidden dirty window up first (Miguel Y1, now the quit gate\'s)', () => {
+  // PR 3: the tray only asks to quit; the gate's question sits on the dirty window used last, focused (shown) first
+  assert.match(bodyOf(/function startTray\(\)/), /quit: \(\) => app\.quit\(\),/);
+  assert.match(MAIN, /const parent = dirtyParent\(\);\s*if \(parent\) parent\.focusWindow\(\);/);
 });
 
 test('a cancelled close puts quitting back, so close-to-tray keeps working (Miguel Y2)', () => {
   const close = MAIN.slice(MAIN.indexOf("win.on('close'"), MAIN.indexOf("win.on('closed'"));
-  assert.match(close, /closeGuarded = true; win\.close\(\); \}\s*else \{\s*setQuitting\(false\);/);
+  // PR 3: through main's quitCancelled(), which sets quitting = false (pinned in test/single-instance-wiring.test.js)
+  assert.match(close, /closeGuarded = true; win\.close\(\); \}[\s\S]{0,300}else quitCancelled\(\);/);
+  // quitCancelled is app/app-lifecycle.js's: setQuitting(false) first (behaviour-tested there), through main's setter
+  assert.match(MAIN, /const quitCancelled = \(\) => appLifecycle\.quitCancelled\(\);/);
+  assert.match(MAIN, /setQuitting: \(v\) => \{ quitting = v; \},/);
 });
 
 test('will-quit destroys the tray FIRST, so a throwing sampler stop cannot leave a ghost icon (Miguel S1)', () => {
@@ -104,4 +119,11 @@ test('the preload and the Style tab: the DESIRED state goes out, the saved answe
   assert.match(JS, /^refreshTraySettings\(\);/m);
   const refresh = JS.slice(JS.indexOf('function refreshTraySettings'), JS.indexOf('function settledChrome'));
   assert.match(refresh, /setTimeout\(refreshTraySettings/, 'a null answer asks again, never reads as OFF');
+});
+
+test('found by a probe run: main imports menuModel, which appBackgroundModel calls (the tray said "menuModel is not defined" and listed no windowless session)', () => {
+  const body = bodyOf(/async function appBackgroundModel\(\)/);
+  assert.match(body, /menuModel\(await listBackground\(\)/);
+  // main.js ALONE (this file's MAIN also holds app/project-window.js, which has its own import)
+  assert.match(require('./main-source').mainOnly(), /^const \{ menuModel \} = require\('\.\/background-menu'\);/m);
 });

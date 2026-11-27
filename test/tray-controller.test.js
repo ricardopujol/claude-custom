@@ -25,7 +25,7 @@ FakeTray.made = [];
 function setup(over = {}) {
   FakeTray.made = [];
   const log = [];
-  const state = { tabs: [], settings: { trayIcon: true, minimiseOnClose: false, startMinimised: false }, hidden: false, time: 1000, background: { items: [], footer: null } };
+  const state = { tabs: [], windows: null, lastUsed: 'A', settings: { trayIcon: true, minimiseOnClose: false, startMinimised: false }, hidden: false, time: 1000, background: { items: [], footer: null } };
   const rendered = [];
   const built = [];
   const deps = {
@@ -34,13 +34,14 @@ function setup(over = {}) {
     nativeImage: { createFromBitmap: (buf, o) => ({ buf, o }) },
     renderIcon: (text) => { rendered.push(text); return { width: 32, height: 32, bgra: Buffer.from(text || '-') }; },
     getSettings: () => state.settings,
-    tabs: () => state.tabs,
-    windowLabel: () => 'claude-custom',
+    // one window A unless a test lists its own (single-instance PR 3: the tray speaks for every window of the process)
+    windows: () => state.windows || [{ root: 'A', label: 'alpha', tabs: state.tabs }],
+    lastUsed: () => state.lastUsed,
     isHidden: () => state.hidden,
     background: async () => state.background,
     now: () => state.time,
     actions: {
-      focusWindow: () => log.push(['focus']), selectTab: k => log.push(['select', k]), openBackground: o => log.push(['open', o]),
+      focusWindow: (root, key) => log.push(['focus', root, key]), openBackground: o => log.push(['open', o]),
       stopBackground: r => log.push(['stop', r]), hideAll: () => log.push(['hide']), showAll: () => log.push(['show']),
       setStartMinimised: on => log.push(['start', on]), quit: () => log.push(['quit']),
     },
@@ -89,11 +90,11 @@ test('the tooltip and image follow the count; an unchanged count touches nothing
   state.tabs = [tab('a', null), tab('b', null), tab('c', null)];
   c.sync();
   const t = FakeTray.made[0];
-  assert.strictEqual(c.state().tooltip, 'claude-custom · 3 sessions');
+  assert.strictEqual(c.state().tooltip, 'Jiandu · 1 window · 3 sessions');
   assert.strictEqual(c.state().badge, '');
   state.tabs = [tab('a', null), tab('b', { needsInput: true }), tab('c', null)];
   c.sync();
-  assert.strictEqual(c.state().tooltip, 'claude-custom · 3 sessions · 1 needs you');
+  assert.strictEqual(c.state().tooltip, 'Jiandu · 1 window · 3 sessions · 1 needs you');
   assert.strictEqual(c.state().badge, '1');
   const images = t.images.length;
   const tips = t.tooltips.length;
@@ -106,13 +107,6 @@ test('the tooltip and image follow the count; an unchanged count touches nothing
   state.tabs = [tab('a', null), tab('b', null), tab('c', null)];
   c.sync();
   assert.strictEqual(c.state().badge, '', 'plain icon at 0');
-});
-
-test('the tooltip carries the window label, so two project windows are told apart', () => {
-  const { c, state } = setup({ windowLabel: () => 'alpha' });
-  state.tabs = [tab('a', null)];
-  c.sync();
-  assert.strictEqual(c.state().tooltip, 'claude-custom · alpha · 1 session');
 });
 
 test('the badge is 9+ beyond nine', () => {
@@ -146,11 +140,11 @@ test('left click: the tab that has waited longest, then the window; with no cue,
   state.tabs = [tab('a', null), tab('b', null)];
   c.sync();
   FakeTray.made[0].emit('click');
-  assert.deepStrictEqual(log.splice(0), [['focus']]);
+  assert.deepStrictEqual(log.splice(0), [['focus', 'A', null]], 'no cue: the window used last');
   state.time = 2000; state.tabs = [tab('a', null), tab('b', { finished: true })]; c.sync();
   state.time = 3000; state.tabs = [tab('a', { needsInput: true }), tab('b', { finished: true })]; c.sync();
   FakeTray.made[0].emit('click');
-  assert.deepStrictEqual(log.splice(0), [['select', 'b'], ['focus']], 'b was first');
+  assert.deepStrictEqual(log.splice(0), [['focus', 'A', 'b']], 'b was first');
 });
 
 test('a cue that cleared and came back is young again', () => {
@@ -159,7 +153,7 @@ test('a cue that cleared and came back is young again', () => {
   state.time = 2; state.tabs = [tab('b', { finished: true })]; c.sync();
   state.time = 3; state.tabs = [tab('a', { finished: true }), tab('b', { finished: true })]; c.sync();
   FakeTray.made[0].emit('click');
-  assert.deepStrictEqual(log.splice(0), [['select', 'b'], ['focus']]);
+  assert.deepStrictEqual(log.splice(0), [['focus', 'A', 'b']]);
 });
 
 test('right click: the menu is built at that moment from the live state, and popped up', async () => {
@@ -172,7 +166,7 @@ test('right click: the menu is built at that moment from the live state, and pop
   await new Promise(r => setImmediate(r));
   assert.strictEqual(built.length, 1);
   const labels = built[0].filter(x => x.type !== 'separator').map(x => x.label);
-  assert.deepStrictEqual(labels, ['claude-custom  ·  1 tab  ·  needs you', 'x', 'Show all windows', 'Start minimised to tray', 'Quit claude-custom']);
+  assert.deepStrictEqual(labels, ['alpha  ·  1 tab  ·  needs you', 'Sessions with no window', 'x', 'Show all windows', 'Start minimised to tray', 'Quit Jiandu']);
   assert.strictEqual(FakeTray.made[0].popups.length, 1);
 });
 
@@ -194,7 +188,7 @@ test('the menu rows reach the actions', async () => {
   const t = built[0];
   t.find(x => x.label === 'Hide all windows').click();
   t.find(x => x.label === 'Start minimised to tray').click({ checked: false });
-  t.find(x => x.label === 'Quit claude-custom').click();
+  t.find(x => x.label === 'Quit Jiandu').click();
   assert.deepStrictEqual(log, [['hide'], ['start', false], ['quit']]);
   assert.strictEqual(t.find(x => x.label === 'Start minimised to tray').checked, true, 'it shows what the file says');
 });
@@ -232,4 +226,56 @@ test('state().image is null where the image cannot be read, and with no Tray', (
   state.settings = { ...state.settings, trayIcon: false };
   c.sync();
   assert.strictEqual(c.image(), null);
+});
+
+// ---- single-instance PR 3 step 9: one tray controller for the process ------------------------------------------------------------
+
+test('PR 3: the tooltip and badge sum every window: windows, sessions (tabs) and who needs you', () => {
+  const { c, state } = setup();
+  state.windows = [
+    { root: 'A', label: 'alpha', tabs: [tab('develop', { needsInput: true }), tab('feat-a', null)] },
+    { root: 'B', label: 'beta', tabs: [tab('develop', { finished: true }), tab('x', null), tab('y', null)] },
+  ];
+  c.sync();
+  assert.strictEqual(c.state().tooltip, 'Jiandu · 2 windows · 5 sessions · 2 need you');
+  assert.strictEqual(c.state().badge, '2');
+  assert.strictEqual(c.state().windows, 2);
+});
+
+test('PR 3: a left click with cues in two windows goes to the oldest; with none, to the window used last', () => {
+  const { c, state, log } = setup();
+  state.windows = [{ root: 'A', label: 'a', tabs: [tab('develop', null)] }, { root: 'B', label: 'b', tabs: [tab('develop', null)] }];
+  state.lastUsed = 'B';
+  c.sync();
+  FakeTray.made[0].emit('click');
+  assert.deepStrictEqual(log.splice(0), [['focus', 'B', null]]);
+  state.time = 10; state.windows[1].tabs = [tab('develop', { finished: true })]; c.sync();
+  state.time = 20; state.windows[0].tabs = [tab('develop', { needsInput: true })]; c.sync();
+  FakeTray.made[0].emit('click');
+  assert.deepStrictEqual(log.splice(0), [['focus', 'B', 'develop']], 'B\'s develop waited longer than A\'s (a develop tab is in every project)');
+});
+
+test('PR 3: a row click calls focusWindow(root, waitingKey): that window, and the tab waiting in it', async () => {
+  const { c, state, built, log } = setup();
+  state.windows = [{ root: 'A', label: 'a', tabs: [tab('develop', null)] }, { root: 'B', label: 'b', tabs: [tab('k1', null), tab('k2', { finished: true })] }];
+  c.sync();
+  FakeTray.made[0].emit('right-click');
+  await new Promise(r => setImmediate(r));
+  const t = built[0];
+  t.find((x) => /^b  ·/.test(x.label)).click();
+  t.find((x) => /^a  ·/.test(x.label)).click();
+  assert.deepStrictEqual(log, [['focus', 'B', 'k2'], ['focus', 'A', null]]);
+});
+
+test('PR 3: a closed window\'s cues are forgotten (its oldest cue is never the click target)', () => {
+  const { c, state, log } = setup();
+  state.time = 1;
+  state.windows = [{ root: 'A', label: 'a', tabs: [tab('develop', { finished: true })] }, { root: 'B', label: 'b', tabs: [tab('develop', null)] }];
+  c.sync();
+  state.time = 2; state.windows[1].tabs = [tab('develop', { finished: true })]; c.sync();
+  state.windows = [state.windows[1]];                  // A closed
+  c.sync();
+  FakeTray.made[0].emit('click');
+  assert.deepStrictEqual(log.splice(0), [['focus', 'B', 'develop']]);
+  assert.deepStrictEqual(c.state().cues, [{ root: 'B', key: 'develop' }]);
 });

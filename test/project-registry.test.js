@@ -111,3 +111,24 @@ test('closing a window that is no longer registered does nothing', () => {
 });
 
 // (the "requires no Electron" source assertion lives in test/source-contracts.test.js: this file is in the mutation command)
+
+test('PR 3: touch(pw) / lastUsed(): the window used last (the tray\'s click with no cue, the parent of the quit and Stop questions)', () => {
+  const { createProjectRegistry } = require('../app/project-registry');
+  const r = createProjectRegistry();
+  const a = { root: 'C:\a', dispose() {} };
+  const b = { root: 'C:\b', dispose() {} };
+  assert.strictEqual(r.lastUsed(), null);
+  r.add(a);
+  assert.strictEqual(r.lastUsed(), a, 'before any touch: the first window');
+  r.add(b);
+  r.touch(b);
+  assert.strictEqual(r.lastUsed(), b);
+  r.touch(a);
+  assert.strictEqual(r.lastUsed(), a);
+  r.touch({ root: 'C:\stranger' });
+  assert.strictEqual(r.lastUsed(), a, 'a window that is not registered is not used');
+  r.closed(a);
+  assert.strictEqual(r.lastUsed(), b, 'a closed window is never the one used last');
+  r.remove(b);
+  assert.strictEqual(r.lastUsed(), null);
+});

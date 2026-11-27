@@ -11,7 +11,10 @@
  *   webContents           { count } how many pages the process holds (a closed window must give its pages back; PR #256 Miguel B1)
  *   openProject { cwd }   open `cwd` as a project window of THIS process (or focus the one it already has: existing: true). Refused unless
  *                         the probe driver's port AND token are set, and for any folder outside the machine's temp folder: a probe's own
- *                         scratch project, never a real one.
+ *                         scratch project, never a real one. Since single-instance PR 3 it goes through main's openProject (the queue).
+ *   appLock               { owns, file, pid } the app lock this process holds (single-instance PR 3)
+ *   openWindows           { record } the crash-restore record as parsed, or null
+ * A window command added by PR 3: reader-unsaved { key, path } reports unsaved reader text for a tab without a real edit.
  *
  * Pure but for `net`: the registry, the windows' apis and startProject are handed in, so the routing is tested under plain node.
  */
@@ -21,6 +24,8 @@ const fs = require('fs');
 const { handleProbeCommand, probeAuthError, probeLineReader } = require('./tab-shell');
 
 const TOKEN_MIN = 16;
+// The process's own commands; every other command names a window (or the launch window).
+const APP_COMMANDS = new Set(['windows', 'openProject', 'webContents', 'appLock', 'openWindows']);
 
 /**
  * The real path of `p`: junctions, symlinks and 8.3 short names resolved. A folder not made yet (ENOENT) is the real path of its nearest
@@ -60,7 +65,7 @@ async function routeProbeLine(line, { token, windowApi, appApi }) {
   if (denied !== null) return denied;
   if (typeof cmd.cmd !== 'string') return { ok: false, error: 'no cmd' };
   let api;
-  if (cmd.cmd === 'windows' || cmd.cmd === 'openProject' || cmd.cmd === 'webContents') {
+  if (APP_COMMANDS.has(cmd.cmd)) {
     api = appApi;
   } else {
     if (cmd.window !== undefined && typeof cmd.window !== 'string') return { ok: false, error: 'window must be a project root' };
@@ -71,8 +76,12 @@ async function routeProbeLine(line, { token, windowApi, appApi }) {
 }
 
 /** The process's own commands. */
-function createAppApi({ probePort, token, tempRoot, registry, launchWindow, startProject, countWebContents = () => null, portNamed = false }) {
+function createAppApi({ probePort, token, tempRoot, registry, launchWindow, openProject, countWebContents = () => null, portNamed = false,
+  appLock = () => null, openWindows = () => null }) {
   return {
+    // single-instance PR 3: the app lock this process holds ({ owns, file, pid }) and the crash-restore record (parsed, or null)
+    async appLock() { return { ok: true, ...(appLock() || { owns: false, file: null, pid: process.pid }) }; },
+    async openWindows() { return { ok: true, record: openWindows() }; },
     async webContents() {
       return { ok: true, count: countWebContents(), pid: process.pid };
     },
@@ -87,9 +96,10 @@ function createAppApi({ probePort, token, tempRoot, registry, launchWindow, star
       // A port-named launch is its own process with its own CLAUDE_CUSTOM_TOKEN (read by every window): a second window would reuse it (plan risk 6).
       if (portNamed) return { ok: false, error: 'openProject is refused in a process launched with a port (its token belongs to the launch window alone)' };
       if (!isInside(tempRoot, cwd)) return { ok: false, error: 'openProject is for a probe\'s own scratch folder, inside the temp folder' };
-      const r = await startProject(cwd, { launch: false });
-      if (!r.pw) return { ok: false, error: r.error || 'the project did not start' };
-      return { ok: true, existing: r.existing === true, root: r.pw.root, pid: process.pid };
+      // PR 3: through main's one open (app/open-project.js, behind the queue), as a handed-off launch would be
+      const r = await openProject({ cwd, show: 'shown' });
+      if (!r || r.ok !== true || r.elsewhere) return { ok: false, error: (r && r.error) || 'the project did not start' };
+      return { ok: true, existing: r.existing === true, root: r.root, pid: process.pid };
     },
   };
 }

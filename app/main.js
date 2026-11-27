@@ -2,14 +2,20 @@
 /**
  * claude-custom :: Electron main  -- the app-wide half of the tab shell
  *
- * One Electron process, any number of project windows (single-instance PR 2; one launch is still one process, the app lock is PR 3).
+ * One Electron process per install (single-instance PR 3), any number of project windows (PR 2). A launch first runs the APP LOCK
+ * (host/app-claim.js over `<state>\app.json` and the app pipe; on/off and where is host/app-lock-config.js, NOT Electron's
+ * requestSingleInstanceLock, which is per user-data folder and would hand a test build's launch to the daily app): a running Jiandu of this
+ * install gets the folder and this launch ends; else this process becomes it. Every open (that handoff, the tray, the ▾ menu, the probe
+ * driver, a crash restore) is openProject (app/open-project.js) behind one queue (app/open-queue.js). Every window holds its own one-window
+ * claim on the process's ONE routed window pipe (host/window-router.js). One tray speaks for every window; quit asks once for every
+ * window's unsaved text (app/quit-gate.js); the crash-restore record is host/open-windows.js.
  * Everything that belongs to ONE project's window (its BrowserWindow, tab shell, marks, occupancy, views, dev servers, focus and cue
  * state, the one-window claim, the launch folder's MODE) lives in app/project-window.js, made by createProjectWindow() and started by
  * its own start(); the tabs/single modes are described there. app/project-registry.js is the registry of the windows.
  *
  * This file keeps what is app-wide and what must be registered once per process: every ipcMain handler (each reaches a window
  * through stripOwner(e) / viewOwner(sender) / registry.panelOwner(sender), or a per-window unit or record found the same way, never by
- * naming "the" window), the UI store, the tray (it speaks for the first window), the Resources service and sampler (over every window),
+ * naming "the" window), the UI store, the tray (it sums and lists every window), the Resources service and sampler (over every window),
  * the per-project records (secrets, layout: app/project-records.js) and units (lean, indexing overlay), startProject (open a project in
  * this process), the launch order in whenReady and the quit handlers. The decisions themselves are pure and tested elsewhere
  * (host/tab-lifecycle.js, app/tab-model.js, app/tab-shell.js).
@@ -70,7 +76,21 @@ const { createRepoActions } = require('./repo-actions');
 // readlink come first, so a symlink to a share is refused before stat follows it.
 const fileFs = { lstat: (p) => fs.promises.lstat(p), readlink: (p) => fs.promises.readlink(p),
   stat: (p) => fs.promises.stat(p), realpath: (p) => fs.promises.realpath(p) };
-const { projectOf, samePath } = require('../host/project-layout');
+const { projectOf, samePath, isInside } = require('../host/project-layout');
+const windowFocus = require('../host/window-focus');
+const { createWindowRouter } = require('../host/window-router');
+// The app lock (single-instance PR 3): one Jiandu process per install, a second launch hands its folder here.
+const { appLockConfig } = require('../host/app-lock-config');
+const { createAppClaim, ENV_NAMES: LAUNCH_ENV_NAMES } = require('../host/app-claim');
+const { createOpenQueue } = require('./open-queue');
+const { createOpenProject } = require('./open-project');
+const { createQuitGate, questionText } = require('./quit-gate');
+const { createAppLifecycle } = require('./app-lifecycle');
+// The tray's one list of sessions with no window, over every window's tabs (appBackgroundModel).
+const { menuModel } = require('./background-menu');
+const { restoreDecision, createOpenWindowsWriter, readRecord } = require('../host/open-windows');
+const appOwner = require('../host/app-owner');
+const { proveOwner } = require('../host/owner-file');
 // The repo browser's two main-only actions (#45): Show in Explorer, and the drag-out. Both re-run the path
 // guard against the asking tab's own worktree, and neither ever opens or runs a file (app/repo-actions.js).
 // The drag icon is a small accent-coloured square: startDrag wants a non-empty image, and a real file icon
@@ -376,34 +396,46 @@ function listBackground() {
 }
 
 // --- the tray icon (BACKLOG #119 A8) ----------------------------------------------------------------------------------
-// One per window process (each project window is its own Electron main). The rules are app/tray-model.js, the pixels
-// app/tray-icon.js, the effects app/tray-controller.js; this hands them the real Electron and the shell.
-// The window the tray speaks for: the first one open (the launch window while it is). PR 3 sums and lists every window.
-const trayWindow = () => registry.first();
+// ONE tray for the process (single-instance PR 3, design §6 option A): it sums and lists every window. The rules are app/tray-model.js,
+// the pixels app/tray-icon.js, the effects app/tray-controller.js; this hands them the real Electron, the registry and the shell.
+// The sessions with no window: ONE list for the process, with the tab ports of every window (a tab of any window is not "windowless").
+async function appBackgroundModel() {
+  const tabsByPort = new Map();
+  registry.forEach((p) => { if (p.tabShell) for (const t of p.tabShell.snapshot().tabs) if (Number.isInteger(t.port)) tabsByPort.set(t.port, t.key); });
+  return menuModel(await listBackground(), { now: Date.now(), tabsByPort, projectRoot: null });
+}
 function startTray() {
   if (!TRAY_ON) return;
-  const anyWindow = () => trayWindow() || launchWindow;     // before the first window exists the tray still has a project to name
   trayController = createTrayController({
     Tray, Menu, nativeImage, renderIcon: renderTrayIcon,
     getSettings: () => readTraySettings(uiStore),
-    tabs: () => { const w = trayWindow(); return w && w.tabShell ? w.tabShell.snapshot().tabs : []; },
-    windowLabel: () => anyWindow().label,
+    windows: () => registry.list().map((p) => ({ root: p.root, label: p.label, tabs: p.tabShell ? p.tabShell.snapshot().tabs : [] })),
+    lastUsed: () => { const w = registry.lastUsed(); return w ? w.root : null; },
     // ANY window hidden: hideAll / showAll act on every window, so the menu must offer "Show all" while one of them is hidden (PR #256 Dexter 6)
     isHidden: () => anyWindowHidden(registry.list().map((p) => p.win)),
-    background: () => { const w = trayWindow(); return w ? w.backgroundModel() : Promise.resolve(null); },
+    background: () => appBackgroundModel(),
     now: () => Date.now(),
     log: (...a) => console.log(...a),
     actions: {
-      focusWindow: () => { const w = trayWindow(); if (w) w.focusWindow(); },
-      selectTab: key => { const w = trayWindow(); if (w && w.tabShell) w.tabShell.select(key); },
-      openBackground: o => { const w = trayWindow(); return w ? w.backgroundActions.open(o) : undefined; },
-      // The same Stop as the ▾ menu: it asks first, every time. Its question needs a visible window to sit on.
-      stopBackground: (row) => { const w = trayWindow(); if (!w) return; w.focusWindow(); w.backgroundActions.stop(row).catch(() => {}); },
+      // A row, or a left click: that window, and the tab waiting in it when there is one.
+      focusWindow: (root, key) => { const w = registry.get(root); if (!w) return; if (key && w.tabShell) w.tabShell.select(key); w.focusWindow(); },
+      // Open on a session with no window: a window here, in this process (DESIGN_TABS_SESSIONS.md 3.4; never an attach-only process).
+      openBackground: (o) => (o && typeof o.cwd === 'string' ? openProject({ cwd: o.cwd, port: o.port, show: 'shown' }) : undefined),
+      // The same Stop as the ▾ menu: it asks first, every time. Its question sits on the session's project window when that is open, else on
+      // the window used last, shown first.
+      stopBackground: (row) => {
+        const p = row && typeof row.cwd === 'string' ? projectOf(row.cwd) : null;
+        const w = (p && registry.get(p.root)) || registry.lastUsed();
+        if (!w) return;
+        w.focusWindow();
+        w.backgroundActions.stop(row).catch(() => {});
+      },
       hideAll: () => registry.forEach((p) => { const w = p.win; if (w && !w.isDestroyed()) w.hide(); }),
       showAll: () => registry.forEach((p) => p.focusWindow()),
       setStartMinimised: on => { writeTraySetting(uiStore, 'startMinimised', on === true); },
       // Unsaved reader text asks Save / Discard / Cancel on the window, so that window has to be visible to be answered.
-      quit: () => { const dirty = registry.list().find((p) => p.readerUnsaved.all().length > 0); if (dirty) dirty.focusWindow(); app.quit(); },
+      // The one quit question (app/quit-gate.js, before-quit) sits on a dirty window, shown first: the tray only asks to quit.
+      quit: () => app.quit(),
     },
   });
   trayController.sync();
@@ -950,7 +982,7 @@ function registerIpc() {
     const value = process.env.CLAUDE_CUSTOM_VAULT_PROBE;
     setTimeout(() => {
       // Read now, not at registration: registerIpc runs before startProject makes the launch window's record (PR #256 Miguel B2).
-      const secrets = projectRecords.secretsOf(launchWindow);     // the launch window's service
+      const secrets = projectRecords.secretsOf(launchWindow);     // the launch window's service (null before it exists)
       if (secrets === null) { console.log('[vault-probe] no secret service for the launch window'); return; }
       console.log('[vault-probe] available:', secrets.available());
       const added = secrets.add({ label: 'probe entry', secret: value });
@@ -1046,7 +1078,7 @@ function startIndexing(seams) {
   }, 3000);
   if (typeof timer.unref === 'function') timer.unref();
   // Warm the chip's list off-thread, so the first click doesn't wait for it.
-  setTimeout(() => { projects(launchWindow.root).catch(() => {}); }, 15_000).unref();
+  setTimeout(() => { const w = launchWindow || registry.first(); if (w) projects(w.root).catch(() => {}); }, 15_000).unref();
 }
 
 /** One window's overlay (its own project, toast, list and views) over the shared service. */
@@ -1231,6 +1263,115 @@ async function startResources(seams) {
   setInterval(sweepPaused, 60_000).unref();      // ...and a sibling window that died after this one started
 }
 
+// The process's ONE window pipe (single-instance PR 3, host/window-router.js): every window's claim registers its entry here, and a launch
+// of any project this process holds is routed to that project's window by the root it names.
+const windowRouter = createWindowRouter({ listen: windowFocus.listen, pid: process.pid, projectOf, samePath, isInside, log: (...a) => console.log(...a) });
+
+// --- the app lock (single-instance PR 3) -------------------------------------------------------------------------------------------
+// Whether it is on for this launch, and where app.json lives, is one pure table (host/app-lock-config.js): off for a named port,
+// attach-only, the screenshot path and every probe but the single-instance one (which then has its own state folder).
+const APP_LOCK = appLockConfig({ env: process.env, installDir: INSTALL_DIR, explicitPort: EXPLICIT_PORT, seams: readSeams(process.env) });
+// Every open of a project in this process goes through ONE queue (app/open-queue.js): one at a time, a stuck start frees its slot.
+const opener = createOpenProject({
+  startProject: (cwd, opts) => startProject(cwd, opts),
+  exists: (p) => fs.existsSync(p),
+  pickLane: (tabs, o) => require('../host/window-owner').pickLane(tabs, o),
+  envNames: LAUNCH_ENV_NAMES,
+  ownEnv: process.env,
+  closeWindow: (pw) => { const w = pw.win; if (w && !w.isDestroyed()) w.destroy(); },
+  log: (l) => console.log(l),
+});
+const openQueue = createOpenQueue({ open: (o) => opener.openProject(o), log: (l) => console.log(l) });
+function openProject(o) { return openQueue.push(o); }
+// The claim a launch runs first: hand the folder to the running Jiandu of this install ('exit'), or become it. Ready only once the first
+// window settled and this process decided to stay (whenReady); until then a launch is held, so an owner that ends never swallowed one.
+const appClaim = createAppClaim({
+  enabled: APP_LOCK.on,
+  dir: APP_LOCK.dir, pid: process.pid, ownStart: () => ownStartTime(), startTimes,
+  launchCwd: LAUNCH_CWD, installDir: INSTALL_DIR, probe: APP_LOCK.probe, env: process.env, samePath,
+  act: (msg) => openProject({ cwd: msg.cwd, env: msg.env, show: 'shown' }),
+  onExit: (fn) => onProcessExit('app', fn),        // main's one exit hook (below); its entry is never dropped
+  refuse: () => appLifecycle.refuseLaunches(),     // the quit question is up: a launch opens its own process (PR #258 Dexter 13)
+  log: (...a) => console.log(...a),
+});
+// A launch handed to the running Jiandu leaves with app.exit(0), which skips will-quit: its cache folder goes now (app/cache-dirs.js).
+function removeOwnCache() { require('./cache-dirs').removeOwn(); }
+
+// ONE process 'exit' hook for every window (a listener per window warns past ten): each window's claim releases its owner file here, since
+// app.exit skips will-quit. A window that closed while another stays has released its file in dispose(), so its entry goes (dropExit).
+const exitHooks = new Map();         // window -> [fn]
+process.on('exit', () => {
+  for (const fns of exitHooks.values()) for (const fn of fns) { try { fn(); } catch { /* the next launch proves a leftover dead */ } }
+});
+function onProcessExit(pw, fn) { const fns = exitHooks.get(pw) || []; fns.push(fn); exitHooks.set(pw, fns); }
+
+// The process-level decisions (app/app-lifecycle.js, behaviour-tested): the lock, the restore record, the quit. Main hands in the effects.
+const OPEN_WINDOWS_FILE = path.join(UI_STATE_DIR, 'open-windows.json');
+const appLifecycle = createAppLifecycle({
+  registry, openQueue, appClaim, lockOn: APP_LOCK.on, pid: process.pid,
+  ownStart: () => ownStartTime(),
+  readLockOwner: () => (APP_LOCK.on ? appOwner.read(APP_LOCK.dir) : null),
+  readRecord: () => readRecord(OPEN_WINDOWS_FILE),
+  proveOwner: (owner) => proveOwner(owner, { startTimes }),
+  decide: (record, proof, launchRoot) => restoreDecision({ record, proof, bootAt: Date.now() - os.uptime() * 1000, launchRoot,
+    exists: (p) => fs.existsSync(p), samePath }),
+  makeWriter: ({ owner, owns }) => createOpenWindowsWriter({ file: OPEN_WINDOWS_FILE, owner, owns }),
+  openProject: (o) => openProject(o),
+  quit: () => app.quit(),
+  getLaunchWindow: () => launchWindow,
+  quitGate: { reset: () => quitGate.reset(), asking: () => quitGate.asking() },
+  setQuitting: (v) => { quitting = v; },
+  isQuitting: () => quitting,
+  log: (l) => console.log(l),
+});
+const quitIfEmpty = () => appLifecycle.quitIfEmpty();
+const ownsAppLock = () => appLifecycle.ownsAppLock();
+const markRecordClean = () => appLifecycle.markRecordClean();
+const quitCancelled = () => appLifecycle.quitCancelled();
+const dirtyParent = () => appLifecycle.dirtyParent();
+// A displaced owner claims app.json again once its displacer let go of it (PR #258 Dexter 2): looked at every 30 s while running.
+setInterval(() => { appLifecycle.reclaimTick().catch(() => {}); }, 30_000).unref();
+
+// --- quit: one question for every window's unsaved reader text (single-instance PR 3, app/quit-gate.js) ----------------------------
+// The question sits on the dirty window used last (else the first dirty one), shown first if hidden. Asked in before-quit, before any
+// claim stops, so Cancel has nothing to undo. Under the probe driver nobody is asked: the answer is discard, and it is recorded.
+const quitGate = createQuitGate({
+  windows: () => appLifecycle.gateWindows(),       // only windows still there (PR #258 Dexter 6)
+  ask: async (dirty) => {
+    const parent = dirtyParent();
+    if (parent) parent.focusWindow();
+    const q = questionText(dirty);
+    const w = parent && parent.win && !parent.win.isDestroyed() ? parent.win : null;
+    const opts = { type: 'warning', buttons: q.buttons, defaultId: 2, cancelId: 2, message: q.message, detail: q.detail };
+    const r = await (w ? dialog.showMessageBox(w, opts) : dialog.showMessageBox(opts));
+    return ['save', 'discard', 'cancel'][r.response] || 'cancel';
+  },
+  notify: (detail) => { const p = dirtyParent(); if (!PROBE_PORT && p && p.win && !p.win.isDestroyed()) dialog.showMessageBox(p.win, { type: 'info', message: 'Jiandu did not quit', detail }); },
+  waitCleared: async (w) => {
+    for (let i = 0; i < 80; i++) { if (w.pw.readerUnsaved.all().length === 0) return true; await new Promise((r) => setTimeout(r, 100)); }
+    return false;
+  },
+  quit: () => app.quit(),
+  probe: !!PROBE_PORT,
+  // the probe reads this line after the process ended (verify/probe-single-instance.js case 7): window names and file names only
+  record: (entry) => {
+    probeConfirms.push(entry);
+    console.log(`[main] quit question (probe, answered discard): ${JSON.stringify(entry.unsaved)}`);
+    // every registered window as the gate saw it (a window left out of the question says why: no window, or no text)
+    console.log(`[main] quit question windows (probe): ${JSON.stringify(registry.list().map((p) => ({ window: p.label, live: !!p.win && !p.win.isDestroyed(), unsaved: p.readerUnsaved.all().length })))}`);
+  },
+  log: (l) => console.log(l),
+});
+
+// ONE place that hears "the set of windows, or what they show, changed" (single-instance PR 3): a window started (the lifecycle), closed,
+// or was minimised, restored, hidden or shown. The Resources sampler asks who is looking, and the tray syncs.
+const seenGate = createSeenGate({ registry, getResources: () => resources });
+function windowsChanged() {
+  seenGate();
+  if (trayController) trayController.sync();
+  appLifecycle.syncRecord();
+}
+
 // What every project window is handed (app/project-window.js). The Resources service, the tray and the lean/indexing units are read live.
 const windowServices = {
   uiStore, readDim, usageCounters, forProbe, openInBrowser, probeConfirms, logShellError, canvasProbeResolve, canvasAsks,
@@ -1243,34 +1384,40 @@ const windowServices = {
   onClosed: (pw) => lifecycle.projectClosed(pw),
   getResources: () => resources,
   getTray: () => trayController,
-  seenChanged: createSeenGate({ registry, getResources: () => resources }),
+  // a window was minimised, restored, hidden or shown: who is looking changed, and so did the tray's Show/Hide row
+  seenChanged: () => windowsChanged(),
+  windowRouter, onProcessExit,
+  onFocused: (pw) => registry.touch(pw),
+  openProject: (o) => openProject(o),
+  quitCancelled: () => quitCancelled(),
+  sessionEnded: () => markRecordClean(),          // Windows ends the session (log off, shut down): a shutdown is a clean quit, not a crash
 };
 
-// The project window (app/project-window.js): everything that is one project's. Made HERE, after every app-wide constant it is handed (a
-// const read before its line is a TDZ error). Construction has no side effects: the claim hooks `exit` inside run(), and the window itself
-// is made by start(). `launch` is this process's own launch window (the one-window claim and an explicit port are its alone, §3.1).
-function makeWindow(cwd, launch) {
+// The project window (app/project-window.js): everything that is one project's. Made by startProject, after every app-wide constant it is
+// handed (a const read before its line is a TDZ error). Construction has no side effects: the claim hooks `exit` inside run(), and the
+// window itself is made by start(). `launch` is this process's own launch window: an explicit port is its alone (§3.1).
+function makeWindow(cwd, { launch }) {
   return createProjectWindow({
     launchCwd: cwd,
-    launch,
     electron: { app, BrowserWindow, WebContentsView, Menu, dialog, session },
     config: { EXPLICIT_PORT: launch ? EXPLICIT_PORT : null, STRIP_HEIGHT, POLL_MS, PROBE_PORT, TRAY_ON, ONE_WINDOW_ON },
     services: windowServices,
   });
 }
-const launchWindow = makeWindow(LAUNCH_CWD, true);
-registry.add(launchWindow);
+// The process's own launch window, once whenReady's startProject made it (null before, and when its project's window is another process's).
+let launchWindow = null;
 
 // What a window's start() is handed: the probe's seams and the open-PR reader (set in whenReady).
 let appStart = null;
 
-// Opening a project in this process and closing one (app/project-lifecycle.js, pure and tested for behaviour): the window's record
-// (secrets, layout), its units (lean, indexing), then its own start(); a window that closed while another stays is disposed and everything
-// main holds for it goes. `launch` is the process's own launch window (made above).
+// Opening a project in this process and closing one (app/project-lifecycle.js, pure and tested for behaviour): the window's claim, then its
+// record (secrets, layout), its units (lean, indexing), then its own start(); a window that closed while another stays is disposed and
+// everything main holds for it goes.
 const lifecycle = createProjectLifecycle({
-  registry, launchWindow,
+  registry,
   rootOf: (cwd) => { const p = projectOf(cwd); return p ? p.root : cwd; },
-  makeWindow: (cwd) => makeWindow(cwd, false),
+  makeWindow: (cwd, opts) => makeWindow(cwd, opts),
+  dropExit: (pw) => exitHooks.delete(pw),
   makeRecord: (pw) => projectRecords.make(pw),
   stopRecord: (pw) => projectRecords.stop(pw),
   makeUnits: (pw) => makeWindowUnits(pw),
@@ -1283,20 +1430,25 @@ const lifecycle = createProjectLifecycle({
     if (trayController && !trayController.state().exists && w && !w.isDestroyed() && !w.isVisible()) pw.focusWindow();
   },
   // the count and the tooltip speak for the first window that is left, and the Resources sampler asks again who is looking
-  onChanged: () => { if (trayController) trayController.sync(); windowServices.seenChanged(); },
+  onChanged: () => windowsChanged(),
 });
 const startProject = lifecycle.startProject;
 
 app.whenReady().then(async () => {
-  console.log('[main] project       :', launchWindow.root, `(${launchWindow.mode})`);
   console.log('[main] launched on   :', LAUNCH_CWD);
 
   // Named and refused (see explicitPort): nothing sensible is left to do, and
   // opening a window anyway would show a terminal wired to nothing.
   if (EXPLICIT_PORT && EXPLICIT_PORT.bad !== undefined) { app.exit(1); return; }
 
-  // One window per project: before anything is made, ask whether this project's window already exists.
-  if (await launchWindow.claim.run() === 'exit') { app.exit(0); return; }
+  // One Jiandu process per install (single-instance PR 3): before any service or window, hand this launch to the running one. A handed-over
+  // launch removes its own cache folder (app.exit skips will-quit) and ends.
+  console.log(`[main] app lock      : ${APP_LOCK.on ? `on (${APP_LOCK.dir})` : `off (${APP_LOCK.reason})`}`);
+  if (await appClaim.run() === 'exit') {
+    removeOwnCache();
+    app.exit(0);
+    return;
+  }
 
   const seams = readSeams(process.env);
   const openPrsReader = seams.openPrsFixture
@@ -1312,11 +1464,21 @@ app.whenReady().then(async () => {
   registerIpc();
   startIndexing(seams);
   startTray();
+  // A crash of the last owner: which windows come back (host/open-windows.js). They open after the launch window, through the queue.
+  const restorePlan = await appLifecycle.decideRestore((projectOf(LAUNCH_CWD) || { root: LAUNCH_CWD }).root);   // decides, writes nothing (PR #258 Dexter 8)
 
-  const { first } = await startProject(LAUNCH_CWD, { launch: true });
-  launchWindow.claim.markReady();        // from here a second launch is handed to this window
+  // One window per project: the launch window's claim runs inside startProject, before the window is registered or made; a project whose
+  // window is another process's has had this launch handed there, and this process ends with no window.
+  // The first launch obeys "Start minimised to tray" ('setting'); a launch handed over later always shows its window (§5 Q1).
+  const launched = await startProject(LAUNCH_CWD, { launch: true, show: 'setting' });
+  // Its project's window is another process's (another install, or the app lock off): the launch was handed there.
+  if (launched.elsewhere) { quitIfEmpty(); return; }
+  launchWindow = launched.pw;            // startProject already ran its claim's markReady(): from here a second launch is handed to it
+  const { first } = launched;
+  console.log('[main] project       :', launchWindow.root, `(${launchWindow.mode})`);
   if (launchWindow.attachOnlyRefusal) {
     launchWindow.claim.stop();           // this process is about to end: it is no window to hand a launch to
+    appClaim.stop();                     // ...and no process to hand one to: a launch held on the app pipe hears no
     console.error('[main] Open refused:', launchWindow.attachOnlyRefusal.reason);
     if (!PROBE_PORT && launchWindow.win && !launchWindow.win.isDestroyed()) {
       await dialog.showMessageBox(launchWindow.win, { type: 'info', buttons: ['OK'], message: attachOnlyText(launchWindow.attachOnlyRefusal) });
@@ -1330,10 +1492,16 @@ app.whenReady().then(async () => {
     console.error('[main] could not start:', first.error);
     if (first.error === NO_PORT_ERROR || /resolvePort:/.test(String(first.error))) {
       launchWindow.claim.stop();         // markReady() already ran: a launch held on this window must hear no, not ok, before the exit (PR #248 Dexter 1)
+      appClaim.stop();
       app.exit(1);
       return;
     }
   }
+  // The first window settled and this process stays: from here a launch of ANY project of this install is handed here.
+  if (quitIfEmpty()) return;
+  appLifecycle.beginRecord();           // the record's first write, only now that this process stays (PR #258 Dexter 8 / Miguel I1)
+  appClaim.markReady();
+  appLifecycle.runRestores(restorePlan).catch(() => {});
   launchWindow.startPoll();
 
   // Headless verification path.
@@ -1342,24 +1510,33 @@ app.whenReady().then(async () => {
   if (PROBE_PORT) {
     startProbeServer({
       port: PROBE_PORT, token: PROBE_TOKEN, lineMax: PROBE_LINE_MAX,
-      appApi: createAppApi({ probePort: PROBE_PORT, token: PROBE_TOKEN, tempRoot: os.tmpdir(), registry, launchWindow, startProject, countWebContents: () => webContents.getAllWebContents().length, portNamed: !!EXPLICIT_PORT }),
+      appApi: createAppApi({ probePort: PROBE_PORT, token: PROBE_TOKEN, tempRoot: os.tmpdir(), registry, launchWindow, openProject, countWebContents: () => webContents.getAllWebContents().length, portNamed: !!EXPLICIT_PORT,
+        appLock: () => ({ owns: ownsAppLock(), file: APP_LOCK.on ? appOwner.fileOf(APP_LOCK.dir) : null, pid: process.pid }),
+        openWindows: () => readRecord(OPEN_WINDOWS_FILE) }),
       windowApi: (root) => { const pw = root === undefined ? registry.get(launchWindow.root) : registry.get(root); return pw ? pw.probeApi() : null; },
     });
   }
 }).catch((err) => {
   // A start that threw must not stay the project's owner: every later launch would be handed to a window that never comes up.
   console.error('[main] startup failed:', (err && err.stack) || err);
-  launchWindow.claim.stop();
-  const w = launchWindow.win;
-  if (!w || w.isDestroyed()) app.exit(1);
+  forEachProject((p) => p.claim.stop());
+  appClaim.stop();
+  // A window that already exists is left running (only the ownership is dropped); with none up, the process ends.
+  if (!registry.list().some((p) => p.win && !p.win.isDestroyed())) app.exit(1);
 });
 
 // Closing the window detaches; it does not end the session.
+// The last window closed: quit, unless a launch already told ok is being opened (app/app-lifecycle.js; PR #258 Dexter 7 / Miguel I2).
 app.on('window-all-closed', () => {
-  app.quit();
+  appLifecycle.onWindowAllClosed();
 });
 
 app.on('will-quit', () => { forEachProject((p) => p.stopDevServers()); });
+// A quit is not a crash: the record is written clean (synchronously: the process may end right after). A quit held below and asked again
+// writes it clean again, which changes nothing.
+app.on('will-quit', () => { markRecordClean(); });
+// The process's one window pipe closes with the quit (PR #258 Miguel S4): an old sender then gets a socket error, as before PR 3.
+app.on('will-quit', () => { windowRouter.stop().catch(() => {}); });
 // A quit with processes paused from the Resources panel wakes them first (#19): a frozen process with nobody left to resume it stays frozen.
 // The quit is held once, for as long as the resumes take, and then asked for again.
 let pausedWoken = false;
@@ -1369,7 +1546,15 @@ app.on('will-quit', (e) => {
   e.preventDefault();
   resources.resumeAll({ deadlineMs: 10000 }).catch(() => {}).finally(() => app.quit());
 });
-app.on('before-quit', () => { quitting = true; forEachProject((p) => p.claim.stop()); });   // a launch from here on opens its own window (close, then reopen)
+// ONE before-quit handler: the quit gate first (held for its one question, nothing stopped yet); only once it passes does the quit begin,
+// and a launch from here on opens its own process (close, then reopen).
+app.on('before-quit', (e) => {
+  if (quitGate.onBeforeQuit(e)) return;
+  // clean FIRST: stopping the app claim releases app.json, and the record is written only while this process owns it
+  // (verify/probe-single-instance.js case 7 found it the other way round: the will-quit write was refused)
+  markRecordClean();
+  quitting = true; forEachProject((p) => p.claim.stop()); appClaim.stop();
+});
 app.on('will-quit', () => { if (trayController) trayController.destroy(); if (resourceSampler) resourceSampler.stop(); forEachProject((p) => p.closeOccupancy()); });
 // A panel page that called window.print() leaves the browser unable to terminate; this ends the process if quitting stalls (app/quit-watchdog.js).
 armQuitWatchdog(app, QUIT_LOG_FILE ? { onFire: () => quitMark('quit watchdog fires') } : {});

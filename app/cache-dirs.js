@@ -9,7 +9,8 @@
  * for a window that has a live peer, the one whose cache the peer holds (PR #251 Miguel Y4): the first or only window keeps its
  * shader cache and its first-paint speed.
  * The folder is removed at will-quit when it can be (Chromium may still hold files then, and app.exit() skips will-quit), and
- * otherwise by the next start, which sweeps every folder whose pid is gone. */
+ * otherwise by the next start, which sweeps every folder whose pid is gone. A launch handed to the running Jiandu (single-instance PR 3)
+ * ends with app.exit(0), so it removes its own folder first (removeOwn): the owner may live for days, and nothing else would sweep it. */
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -70,4 +71,12 @@ function useOwnCaches(app, pid = process.pid, tmp = os.tmpdir(), env = process.e
   app.once('will-quit', () => { try { fs.rmSync(cacheDirFor(pid, tmp), { recursive: true, force: true }); } catch { /* the sweep gets it */ } });
 }
 
-module.exports = { cacheDirFor, cacheSwitches, sweepStale, livePeers, pidOfName, pidAlive, useOwnCaches, PREFIX };
+/**
+ * Remove this process's own folder now (single-instance PR 3): a launch handed to the running Jiandu ends with app.exit(0), which skips
+ * will-quit, so without this its folder would stay until the next full start while the owner lives for days. true unless the remove threw.
+ */
+function removeOwn(pid = process.pid, tmp = os.tmpdir()) {
+  try { fs.rmSync(cacheDirFor(pid, tmp), { recursive: true, force: true }); return true; } catch { return false; }
+}
+
+module.exports = { cacheDirFor, cacheSwitches, sweepStale, livePeers, pidOfName, pidAlive, useOwnCaches, removeOwn, PREFIX };
