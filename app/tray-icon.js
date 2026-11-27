@@ -6,16 +6,22 @@
  *   renderTrayIcon(badgeText) -> { width, height, bgra }
  *
  * `bgra` is premultiplied BGRA, the order Electron's nativeImage.createFromBitmap takes on Windows (app/main.js's drag icon
- * is built the same way). The base is an accent rounded square with a prompt (`>_`); a non-empty `badgeText` adds a red pill
- * at the bottom right with the text in white (app/tray-model.js badgeText: '1'..'9', '9+'). Edges are anti-aliased by 4x4
+ * is built the same way). The base is Ricardo's pick A "Bamboo slips" (Q11, PR #258) on a TRANSPARENT background: four vertical slats
+ * in two greens bound by two dark cords. A non-empty `badgeText` adds a red pill at the bottom right with the text in white (app/tray-model.js badgeText: '1'..'9', '9+'). Edges are anti-aliased by 4x4
  * sampling, so 32 px stays readable when Windows scales it to 16 at 100% DPI.
  *
  * Main-process only (required, never a page <script>).
  */
 
 const SIZE = 32;
-const ACCENT = [0xd9, 0x77, 0x57];          // RGB: the app's warm orange
-const GLYPH = [0x1b, 0x1b, 0x1f];
+const SLAT_EVEN = [0x3f, 0xb8, 0x82];       // RGB: slats 0 and 2
+const SLAT_ODD = [0x2f, 0x9a, 0x6c];        // slats 1 and 3, a shade darker
+const CORD = [0x12, 0x35, 0x27];            // the two cords, and the ring that keeps the badge apart from the slats
+const SLAT_X = [3, 10.5, 18, 25.5];
+const SLAT_W = 5.5;
+const SLAT_R = 1.6;
+const CORD_Y = [9, 21];
+const CORD_H = 2.6;
 const BADGE = [0xe5, 0x48, 0x4d];
 const WHITE = [0xff, 0xff, 0xff];
 const BADGE_BGRA = Object.freeze([BADGE[2], BADGE[1], BADGE[0], 255]);
@@ -41,16 +47,12 @@ const inRoundRect = (x, y, x0, y0, x1, y1, r) => {
   return (x - cx) ** 2 + (y - cy) ** 2 <= r * r;
 };
 
-function distToSegment(px, py, ax, ay, bx, by) {
-  const dx = bx - ax;
-  const dy = by - ay;
-  const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)));
-  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
-}
-
-const inPrompt = (x, y) =>
-  distToSegment(x, y, 8, 9, 15, 16) <= 1.7 || distToSegment(x, y, 15, 16, 8, 23) <= 1.7 ||
-  (x >= 17 && x <= 25 && y >= 21.5 && y <= 24.5);
+// Slat i: y0 = 2 + (i % 2), height = 28 - (i % 2) * 2 (odd slats sit one pixel in at both ends).
+const inSlat = (x, y, i) => {
+  const y0 = 2 + (i % 2);
+  return inRoundRect(x, y, SLAT_X[i], y0, SLAT_X[i] + SLAT_W, y0 + 28 - (i % 2) * 2, SLAT_R);
+};
+const inCord = (x, y) => x >= 1.5 && x <= 30.5 && CORD_Y.some((cy) => y >= cy && y <= cy + CORD_H);
 
 function pillBox(text) {
   const w = Math.min(30, 18 + 6 * (text.length - 1));
@@ -98,11 +100,11 @@ function renderTrayIcon(badgeText) {
         for (let sy = 0; sy < SUB; sy++) for (let sx = 0; sx < SUB; sx++) if (fn(x + (sx + 0.5) / SUB, y + (sy + 0.5) / SUB)) hit++;
         return hit / (SUB * SUB);
       };
-      over(ACCENT, cover((px, py) => inRoundRect(px, py, 0, 0, SIZE, SIZE, 7)));
-      over(GLYPH, cover((px, py) => inRoundRect(px, py, 0, 0, SIZE, SIZE, 7) && inPrompt(px, py)));
+      for (let s = 0; s < SLAT_X.length; s++) over(s % 2 === 0 ? SLAT_EVEN : SLAT_ODD, cover((px, py) => inSlat(px, py, s)));
+      over(CORD, cover(inCord));
       if (box) {
-        // A 1 px ring in the base colour keeps the pill apart from the square behind it.
-        over(ACCENT, cover((px, py) => inRoundRect(px, py, box.x0 - 1, box.y0 - 1, box.x1, box.y1, PILL_H / 2 + 1)));
+        // A 1 px ring in the cord colour keeps the pill apart from the slats behind it.
+        over(CORD, cover((px, py) => inRoundRect(px, py, box.x0 - 1, box.y0 - 1, box.x1, box.y1, PILL_H / 2 + 1)));
         over(BADGE, cover((px, py) => inRoundRect(px, py, box.x0, box.y0, box.x1, box.y1, PILL_H / 2)));
         if (digits.has(`${x},${y}`)) over(WHITE, 1);
       }
