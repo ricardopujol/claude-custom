@@ -52,9 +52,13 @@
  * elevation on Windows, and a junction named like a file defeats every check
  * here because the string is innocent and the target is not. The CALLER must
  * hand over real paths (`fs.realpathSync`); `handleDrop` in host/host.js does.
+ * The home and config-dir rules also judge the REAL folder of both sides
+ * (`keysOf`, PR #257 Dexter 7), so a junction spelling of home is refused even
+ * when a caller forgot to resolve, or when home itself is the junction spelling.
  */
 
 const path = require('path');
+const { realPathLoose } = require('./real-path');
 
 // One drag can carry a whole folder. Past a couple of dozen the prompt is
 // unusable anyway, and a thousand paths typed into a pty wedges the session.
@@ -156,38 +160,76 @@ function isRootish(dir) {
   return false;
 }
 
+// The keys a path is judged by: its own key and, for a path in this machine's
+// dialect, the key of the folder it REALLY names (junctions followed, through
+// host/real-path.js: cached, never on a network path). Both are judged and
+// either one refuses, so this can only refuse more. `C:\Users\ricar` is a
+// junction to the home `C:\Users\Ricardo Pujol`: as strings they never match,
+// so the home rule let the whole profile through (Dexter 7, PR #257). The one
+// disk read here; planDrop is otherwise pure.
+function keysOf(p) {
+  const own = normSlashes(p);
+  const c = canon(p);
+  if (!c || flavourFor(c) !== path) return own ? [own] : [];
+  const real = normSlashes(realPathLoose(c));
+  return [own, real].filter((k, i, a) => k && a.indexOf(k) === i);
+}
+
 // Why this directory may not be granted, or null if it may. Every comparison is
-// on the normalised key, never on the display path.
+// on the normalised keys, never on the display path.
 function refusalFor(dir, { home, configDir }) {
   if (!dir) return 'the path is not absolute, so there is nothing safe to grant';
-  const key = normSlashes(dir);
-  if (isRootish(key)) return 'a drive, share or filesystem root is never granted';
-
-  const homeKey = home ? normSlashes(home) : '';
-  if (homeKey) {
-    if (key === homeKey) return 'the home directory is never granted wholesale';
-    // ANCESTORS too: equality alone let `C:\Users` through, which contains home
-    // and every other profile on the machine.
-    if (isInside(homeKey, key)) return 'this directory contains the home directory';
+  const homeKeys = home ? keysOf(home) : [];
+  const cfgKeys = configDir ? keysOf(configDir) : [];
+  const keys = keysOf(dir);
+  // Rule by rule, each over every key, so the reason given is the same whichever spelling tripped it.
+  for (const rule of RULES) {
+    for (const key of keys) {
+      const why = rule(key, homeKeys, cfgKeys);
+      if (why) return why;
+    }
   }
+  return null;
+}
+
+const RULES = [
+  (key) => (isRootish(key) ? 'a drive, share or filesystem root is never granted' : null),
+
+  (key, homeKeys) => {
+    for (const homeKey of homeKeys) {
+      if (key === homeKey) return 'the home directory is never granted wholesale';
+      // ANCESTORS too: equality alone let `C:\Users` through, which contains home
+      // and every other profile on the machine.
+      if (isInside(homeKey, key)) return 'this directory contains the home directory';
+    }
+    return null;
+  },
 
   // The CLI's config dir holds its credentials, settings (hooks) and every transcript. Under CLAUDE_CONFIG_DIR it
   // isn't a folder NAMED `.claude`, so the segment check below can't see it: judge the resolved path itself, in
   // both directions (it, anything inside it, and any folder that contains it).
-  const cfgKey = configDir ? normSlashes(configDir) : '';
-  if (cfgKey) {
-    if (isInside(key, cfgKey)) return 'the Claude config directory holds credentials and is never granted';
-    if (isInside(cfgKey, key)) return 'this directory contains the Claude config directory, which holds credentials';
-  }
+  (key, homeKeys, cfgKeys) => {
+    for (const cfgKey of cfgKeys) {
+      if (isInside(key, cfgKey)) return 'the Claude config directory holds credentials and is never granted';
+      if (isInside(cfgKey, key)) return 'this directory contains the Claude config directory, which holds credentials';
+    }
+    return null;
+  },
 
-  for (const seg of key.split('/')) {
-    if (SENSITIVE_SEGMENTS.includes(seg)) return '"' + seg + '" holds credentials and is never granted';
-  }
-  for (const root of SENSITIVE_ROOTS) {
-    if (key === root || key.startsWith(root + '/')) return 'a system directory is never granted';
-  }
-  return null;
-}
+  (key) => {
+    for (const seg of key.split('/')) {
+      if (SENSITIVE_SEGMENTS.includes(seg)) return '"' + seg + '" holds credentials and is never granted';
+    }
+    return null;
+  },
+
+  (key) => {
+    for (const root of SENSITIVE_ROOTS) {
+      if (key === root || key.startsWith(root + '/')) return 'a system directory is never granted';
+    }
+    return null;
+  },
+];
 
 // Quoted only when it needs to be -- the prompt is read by a person, and
 // unnecessary quotes are noise they have to delete. Control characters are
@@ -196,7 +238,8 @@ function refusalFor(dir, { home, configDir }) {
 const quote = p => (/[\s"]/.test(p) ? '"' + p.replace(/"/g, BACKSLASH + '"') + '"' : p);
 
 /**
- * Decide what a drop should do. PURE: the caller supplies everything.
+ * Decide what a drop should do. PURE but for one cached realpath per judged
+ * folder (keysOf): the caller supplies everything else.
  *
  * Returns:
  *   text        what to type (trailing space, so the next thing typed is not
