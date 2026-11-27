@@ -23,7 +23,7 @@ const stubs = (config = {}) => ({
     ownIdentities: noop, ownStartTime: noop, waitForHost: noop, HARNESS_DIR: 'h', INSTALL_DIR: 'i', listBackground: noop, capture: noop,
     stripFileFor: noop, isQuitting: () => false, setQuitting: noop, onWindowCreated: noop, onClosed: noop,
     getResources: () => null, getTray: () => null, seenChanged: noop,
-    windowRouter: { register: async () => ({ close: async () => {} }) }, onProcessExit: noop, onFocused: noop, openProject: noop, quitCancelled: noop,
+    windowRouter: { register: async () => ({ close: async () => {} }) }, onProcessExit: noop, onFocused: noop, openProject: noop, quitCancelled: noop, sessionEnded: noop,
   },
 });
 const make = (launchCwd, config) => createProjectWindow({ launchCwd, ...stubs(config) });

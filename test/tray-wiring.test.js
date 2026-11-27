@@ -49,7 +49,8 @@ test('close hides to the tray only through hidesOnClose, ahead of the unsaved-te
   assert.match(close, /e\.preventDefault\(\);\s*win\.hide\(\);/);
   // PR 3: one before-quit handler, the quit gate first (test/single-instance-wiring.test.js pins the whole body)
   assert.match(MAIN, /if \(quitGate\.onBeforeQuit\(e\)\) return;\s*quitting = true;/);
-  assert.match(MAIN, /win\.on\('session-end', \(\) => \{ setQuitting\(true\); \}\);/);
+  // PR 3: a session end is also a clean quit for the crash-restore record (sessionEnded)
+  assert.match(MAIN, /win\.on\('session-end', \(\) => \{ setQuitting\(true\); sessionEnded\(\); \}\);/);
 });
 
 test('start minimised: the window is created without being shown, only when startsHidden says so', () => {

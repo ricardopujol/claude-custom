@@ -94,3 +94,23 @@ test('step 11: the question sits on the dirty window used last, shown first; the
   assert.match(ask, /probe: !!PROBE_PORT,\s*record: \(entry\) => probeConfirms\.push\(entry\),/);
   assert.match(MAIN, /return dirty\.includes\(last\) \? last : \(dirty\[0\] \|\| null\);/);
 });
+
+test('step 12: the restore decision after the tray and before the launch window; the restores after markReady; the record follows windowsChanged and is clean on will-quit and session-end', () => {
+  inOrder(readyBody, ['startTray()', 'const restorePlan = await decideRestore();', "await startProject(LAUNCH_CWD, { launch: true, show: 'setting' })",
+    'appClaim.markReady();', 'runRestores(restorePlan);']);
+  const decide = MAIN.slice(MAIN.indexOf('async function decideRestore('));
+  const body = decide.slice(0, decide.indexOf('\n}\n'));
+  inOrder(body, ['if (!APP_LOCK.on) return [];', 'if (!ownsAppLock()) return [];', 'readRecord(OPEN_WINDOWS_FILE)', 'restoreDecision({',
+    'createOpenWindowsWriter({', 'owns: ownsAppLock', 'openRecord.writer.begin({ restoring: d.restore.length > 0']);
+  assert.match(MAIN, /function windowsChanged\(\) \{[\s\S]{0,200}if \(openRecord\.writer\) openRecord\.writer\.sync\(currentWindows\(\)\);/);
+  assert.match(MAIN, /app\.on\('will-quit', \(\) => \{ markRecordClean\(\); \}\);/);
+  assert.match(MAIN, /sessionEnded: \(\) => markRecordClean\(\),/);
+  const restores = MAIN.slice(MAIN.indexOf('function runRestores('));
+  assert.match(restores.slice(0, 700), /openProject\(\{ cwd: w\.cwd, show: w\.hidden \? 'hidden' : 'shown' \}\)/);
+  assert.match(restores.slice(0, 700), /openRecord\.writer\.endRestore\(currentWindows\(\)\)/);
+});
+
+test('step 12: the record is written only through its writer (no other write of open-windows.json)', () => {
+  assert.strictEqual((MAIN.match(/OPEN_WINDOWS_FILE/g) || []).length, 3, 'declared, read once, handed to the writer');
+  assert.doesNotMatch(MAIN, /writeFileAtomic\(OPEN_WINDOWS_FILE|writeFileSync\(OPEN_WINDOWS_FILE/);
+});

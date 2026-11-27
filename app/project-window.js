@@ -108,7 +108,7 @@ const REQUIRED_CONFIG = ['EXPLICIT_PORT', 'STRIP_HEIGHT', 'POLL_MS', 'PROBE_PORT
 const REQUIRED_SERVICES = ['uiStore', 'readDim', 'usageCounters', 'forProbe', 'openInBrowser', 'probeConfirms', 'logShellError', 'canvasAsks',
   'nextCanvasAskId', 'previewProbeProxy', 'stopHostByPid', 'occupantAt', 'tokenFileFor', 'ownIdentities', 'ownStartTime', 'waitForHost',
   'HARNESS_DIR', 'INSTALL_DIR', 'listBackground', 'capture', 'stripFileFor', 'isQuitting', 'setQuitting', 'onWindowCreated', 'onClosed', 'getResources', 'getTray', 'seenChanged',
-  'windowRouter', 'onProcessExit', 'onFocused', 'openProject', 'quitCancelled'];
+  'windowRouter', 'onProcessExit', 'onFocused', 'openProject', 'quitCancelled', 'sessionEnded'];
 
 function requireAll(kind, bag, names) {
   for (const name of names) {
@@ -141,7 +141,7 @@ function createProjectWindow({ launchCwd, electron, config, services }) {
     uiStore, readDim, usageCounters, forProbe, openInBrowser, probeConfirms, logShellError, canvasProbeResolve, canvasAsks,
     nextCanvasAskId, previewProbeProxy, stopHostByPid, occupantAt, tokenFileFor, ownIdentities, ownStartTime, waitForHost,
     HARNESS_DIR, INSTALL_DIR, listBackground, capture, stripFileFor, isQuitting, setQuitting, onWindowCreated, onClosed, getResources, getTray, seenChanged,
-    windowRouter, onProcessExit, onFocused, openProject, quitCancelled,
+    windowRouter, onProcessExit, onFocused, openProject, quitCancelled, sessionEnded,
   } = services;
 
   // --- what this window is ----------------------------------------------------------
@@ -509,7 +509,7 @@ function createProjectWindow({ launchCwd, electron, config, services }) {
     // The Dev servers sampler follows what the window shows: minimise, restore, and hide/show (the tray) alike (#119 A4).
     for (const ev of ['minimize', 'restore', 'hide', 'show']) win.on(ev, timers.guard('dev-servers sampling', syncDevServersSampling));
     // Windows asks to end the session (log off, shut down): a hidden-to-tray window must not stand in its way.
-    win.on('session-end', () => { setQuitting(true); });
+    win.on('session-end', () => { setQuitting(true); sessionEnded(); });
     for (const ev of ['resize', 'maximize', 'unmaximize', 'enter-full-screen', 'leave-full-screen']) {
       win.on(ev, () => { forEachView(layoutView); if (indexing) indexing.relayout(); });
     }

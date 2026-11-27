@@ -79,6 +79,9 @@ const { createAppClaim, ENV_NAMES: LAUNCH_ENV_NAMES } = require('../host/app-cla
 const { createOpenQueue } = require('./open-queue');
 const { createOpenProject } = require('./open-project');
 const { createQuitGate, questionText } = require('./quit-gate');
+const { restoreDecision, createOpenWindowsWriter, readRecord, cleanWindows } = require('../host/open-windows');
+const appOwner = require('../host/app-owner');
+const { proveOwner } = require('../host/owner-file');
 // The repo browser's two main-only actions (#45): Show in Explorer, and the drag-out. Both re-run the path
 // guard against the asking tab's own worktree, and neither ever opens or runs a file (app/repo-actions.js).
 // The drag icon is a small accent-coloured square: startDrag wants a non-empty image, and a real file icon
@@ -1343,12 +1346,56 @@ function quitCancelled() {
   forEachProject((p) => { p.allowClose(false); if (p.win && !p.win.isDestroyed()) p.claim.resume().catch(() => {}); });
 }
 
+// --- the crash-restore record (single-instance PR 3, host/open-windows.js) ----------------------------------------------------------
+// `<UI state dir>\open-windows.json`: the windows open now, written on change, ONLY by the process app.json names (a displaced one writes
+// nothing). A quit writes it clean; a crash leaves it not clean, and the next start of this install reopens those windows.
+const OPEN_WINDOWS_FILE = path.join(UI_STATE_DIR, 'open-windows.json');
+const openRecord = { writer: null, start: null };
+function ownsAppLock() {
+  if (!APP_LOCK.on || typeof openRecord.start !== 'string') return false;
+  const o = appOwner.read(APP_LOCK.dir);
+  return !!o && o.pid === process.pid && o.start === openRecord.start;
+}
+const currentWindows = () => registry.list().map((p) => ({ root: p.root, cwd: p.launchCwd, hidden: !!p.win && !p.win.isDestroyed() && !p.win.isVisible() }));
+// After the lock, before the launch window: which windows come back. [] unless this process owns the lock and the last owner crashed.
+async function decideRestore() {
+  if (!APP_LOCK.on) return [];
+  const start = await ownStartTime().catch(() => null);
+  if (typeof start !== 'string') return [];
+  openRecord.start = start;
+  if (!ownsAppLock()) return [];
+  const record = readRecord(OPEN_WINDOWS_FILE);
+  const owner = record && typeof record === 'object' ? record.owner : null;
+  const proof = owner && Number.isInteger(owner.pid) && owner.pid > 0 && typeof owner.start === 'string'
+    ? await proveOwner({ pid: owner.pid, start: owner.start }, { startTimes }) : null;
+  const launchProject = projectOf(LAUNCH_CWD);
+  const d = restoreDecision({ record, proof, bootAt: Date.now() - os.uptime() * 1000, launchRoot: launchProject ? launchProject.root : LAUNCH_CWD,
+    exists: (p) => fs.existsSync(p), samePath });
+  console.log(`[main] restore       : ${d.reason}${d.restore.length ? ` (${d.restore.length} window${d.restore.length === 1 ? '' : 's'})` : ''}`);
+  for (const s of d.skipped) console.log(`[main] restore skipped ${JSON.stringify(s.root)}: ${s.reason}`);
+  openRecord.writer = createOpenWindowsWriter({ file: OPEN_WINDOWS_FILE, owner: { pid: process.pid, start }, owns: ownsAppLock });
+  // `restoring: true` is written BEFORE the first restored window: a restore that crashes is not run again (plan risk 7)
+  openRecord.writer.begin({ restoring: d.restore.length > 0, keep: d.restore.length ? cleanWindows(record.windows) : [] });
+  return d.restore;
+}
+// The restores, through the open queue, after the launch window; then the record follows the windows. The launched project keeps the focus.
+function runRestores(list) {
+  const done = () => {
+    if (openRecord.writer) openRecord.writer.endRestore(currentWindows());
+    const w = launchWindow && launchWindow.win;
+    if (list.length && w && !w.isDestroyed() && w.isVisible()) launchWindow.focusWindow();
+  };
+  Promise.all(list.map((w) => openProject({ cwd: w.cwd, show: w.hidden ? 'hidden' : 'shown' }))).catch(() => {}).finally(done);
+}
+const markRecordClean = () => { if (openRecord.writer) openRecord.writer.markClean(); };
+
 // ONE place that hears "the set of windows, or what they show, changed" (single-instance PR 3): a window started (the lifecycle), closed,
 // or was minimised, restored, hidden or shown. The Resources sampler asks who is looking, and the tray syncs.
 const seenGate = createSeenGate({ registry, getResources: () => resources });
 function windowsChanged() {
   seenGate();
   if (trayController) trayController.sync();
+  if (openRecord.writer) openRecord.writer.sync(currentWindows());
 }
 
 // What every project window is handed (app/project-window.js). The Resources service, the tray and the lean/indexing units are read live.
@@ -1369,6 +1416,7 @@ const windowServices = {
   onFocused: (pw) => registry.touch(pw),
   openProject: (o) => openProject(o),
   quitCancelled: () => quitCancelled(),
+  sessionEnded: () => markRecordClean(),          // Windows ends the session (log off, shut down): a shutdown is a clean quit, not a crash
 };
 
 // The project window (app/project-window.js): everything that is one project's. Made by startProject, after every app-wide constant it is
@@ -1442,6 +1490,8 @@ app.whenReady().then(async () => {
   registerIpc();
   startIndexing(seams);
   startTray();
+  // A crash of the last owner: which windows come back (host/open-windows.js). They open after the launch window, through the queue.
+  const restorePlan = await decideRestore();
 
   // One window per project: the launch window's claim runs inside startProject, before the window is registered or made; a project whose
   // window is another process's has had this launch handed there, and this process ends with no window.
@@ -1476,6 +1526,7 @@ app.whenReady().then(async () => {
   // The first window settled and this process stays: from here a launch of ANY project of this install is handed here.
   if (quitIfEmpty()) return;
   appClaim.markReady();
+  runRestores(restorePlan);
   launchWindow.startPoll();
 
   // Headless verification path.
@@ -1503,6 +1554,9 @@ app.on('window-all-closed', () => {
 });
 
 app.on('will-quit', () => { forEachProject((p) => p.stopDevServers()); });
+// A quit is not a crash: the record is written clean (synchronously: the process may end right after). A quit held below and asked again
+// writes it clean again, which changes nothing.
+app.on('will-quit', () => { markRecordClean(); });
 // A quit with processes paused from the Resources panel wakes them first (#19): a frozen process with nobody left to resume it stays frozen.
 // The quit is held once, for as long as the resumes take, and then asked for again.
 let pausedWoken = false;
