@@ -111,6 +111,10 @@ test('step 12: the restore decision after the tray and before the launch window;
 });
 
 test('step 12: the record is written only through its writer (no other write of open-windows.json)', () => {
-  assert.strictEqual((MAIN.match(/OPEN_WINDOWS_FILE/g) || []).length, 3, 'declared, read once, handed to the writer');
+  // declared, read by the restore decision and by the probe's openWindows, handed to the writer: nothing else
+  const uses = [...MAIN.matchAll(/OPEN_WINDOWS_FILE/g)].map((m) => MAIN.slice(m.index - 30, m.index + 40));
+  assert.strictEqual(uses.length, 4, uses.join('\n'));
+  assert.strictEqual(uses.filter((u) => /readRecord\(OPEN_WINDOWS_FILE\)/.test(u)).length, 2);
+  assert.strictEqual(uses.filter((u) => /file: OPEN_WINDOWS_FILE/.test(u)).length, 1);
   assert.doesNotMatch(MAIN, /writeFileAtomic\(OPEN_WINDOWS_FILE|writeFileSync\(OPEN_WINDOWS_FILE/);
 });

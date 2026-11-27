@@ -1461,6 +1461,12 @@ function createProjectWindow({ launchCwd, electron, config, services }) {
       },
       // BACKLOG #119 A8 (verify/probe-tray.js): the tray's own state, and its click and menu through the same functions the real
       // Tray events call. Only a window started with CLAUDE_CUSTOM_TRAY_PROBE=1 has a tray.
+      // single-instance PR 3 (verify/probe-single-instance.js case 7): unsaved reader text on a tab, as the page would report it, with no edit
+      async readerUnsaved(key, file) {
+        if (!tabShell || !tabShell.snapshot().tabs.some((t) => t.key === key)) return { ok: false, error: `no tab ${key}` };
+        readerUnsaved.report(key, file);
+        return { ok: true, unsaved: readerUnsaved.all() };
+      },
       async tray() {
         const trayController = getTray();
         if (!trayController) return { ok: false, error: 'no tray in this window' };
