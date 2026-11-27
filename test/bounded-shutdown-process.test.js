@@ -29,7 +29,7 @@ function runBlocked(dir, body) {
   `;
   const t0 = Date.now();
   const child = spawn(process.execPath, ['-e', script], { stdio: 'ignore', windowsHide: true });
-  reaper.trackParent(child.pid);   // its watchdog is armed inside it, so it is found as this child's child
+  reaper.trackParent(child);   // its watchdog is armed inside it: found as a child created while this one lived
   return new Promise((resolve) => {
     const guard = setTimeout(() => { try { child.kill(); } catch { /* gone */ } resolve({ code: 'HUNG', ms: Date.now() - t0 }); }, 15000);   // kill-ok(held-handle): the child this test spawned
     child.on('exit', (c) => { clearTimeout(guard); resolve({ code: c === null ? 'killed' : c, ms: Date.now() - t0 }); });
@@ -76,7 +76,7 @@ test('a disarmed watchdog ends at once and leaves the process it guarded alone, 
   const guarded = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 12000)'], { stdio: 'ignore', windowsHide: true });
   try {
     const disarm = armWatchdog({ boundMs: 4000, logFile, pid: guarded.pid });
-    reaper.track(disarm.pid);
+    reaper.track(disarm);
     assert.ok(Number.isInteger(disarm.pid), 'the disarm handle names the watchdog');
     disarm();
     // The watchdog must be GONE (not merely quiet): poll for its exit, well past startup under load.
@@ -97,7 +97,7 @@ test('disarm kills the watchdog\'s whole tree by its pid, so a killProven alread
   try {
     const killed = [];
     const disarm = armWatchdog({ boundMs: 60000, pid: guarded.pid, killTree: (p) => killed.push(p) });
-    reaper.track(disarm.pid);
+    reaper.track(disarm);
     assert.ok(Number.isInteger(disarm.pid));
     disarm();
     assert.deepStrictEqual(killed, [disarm.pid]);
@@ -109,7 +109,7 @@ test('disarm after the watchdog has already exited makes NO tree kill: its pid i
   await new Promise((r) => gone.on('exit', r));   // the host it watches is already dead, so the watchdog leaves on its first tick
   const killed = [];
   const disarm = armWatchdog({ boundMs: 60000, pid: gone.pid, killTree: (p) => killed.push(p) });
-  reaper.track(disarm.pid);
+  reaper.track(disarm);
   const until = Date.now() + 8000;
   while (disarm.running() && Date.now() < until) await new Promise((r) => setTimeout(r, 50));
   assert.strictEqual(disarm.running(), false, 'the watchdog ended by itself');
