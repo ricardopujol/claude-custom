@@ -70,7 +70,9 @@ const { createRepoActions } = require('./repo-actions');
 // readlink come first, so a symlink to a share is refused before stat follows it.
 const fileFs = { lstat: (p) => fs.promises.lstat(p), readlink: (p) => fs.promises.readlink(p),
   stat: (p) => fs.promises.stat(p), realpath: (p) => fs.promises.realpath(p) };
-const { projectOf, samePath } = require('../host/project-layout');
+const { projectOf, samePath, isInside } = require('../host/project-layout');
+const windowFocus = require('../host/window-focus');
+const { createWindowRouter } = require('../host/window-router');
 // The repo browser's two main-only actions (#45): Show in Explorer, and the drag-out. Both re-run the path
 // guard against the asking tab's own worktree, and neither ever opens or runs a file (app/repo-actions.js).
 // The drag icon is a small accent-coloured square: startDrag wants a non-empty image, and a real file icon
@@ -382,7 +384,8 @@ function listBackground() {
 const trayWindow = () => registry.first();
 function startTray() {
   if (!TRAY_ON) return;
-  const anyWindow = () => trayWindow() || launchWindow;     // before the first window exists the tray still has a project to name
+  // before the first window exists the tray still has a project to name: the launch folder's
+  const anyWindow = () => trayWindow() || launchWindow || { label: projectLabel((projectOf(LAUNCH_CWD) || { root: LAUNCH_CWD }).root) };
   trayController = createTrayController({
     Tray, Menu, nativeImage, renderIcon: renderTrayIcon,
     getSettings: () => readTraySettings(uiStore),
@@ -950,7 +953,7 @@ function registerIpc() {
     const value = process.env.CLAUDE_CUSTOM_VAULT_PROBE;
     setTimeout(() => {
       // Read now, not at registration: registerIpc runs before startProject makes the launch window's record (PR #256 Miguel B2).
-      const secrets = projectRecords.secretsOf(launchWindow);     // the launch window's service
+      const secrets = projectRecords.secretsOf(launchWindow);     // the launch window's service (null before it exists)
       if (secrets === null) { console.log('[vault-probe] no secret service for the launch window'); return; }
       console.log('[vault-probe] available:', secrets.available());
       const added = secrets.add({ label: 'probe entry', secret: value });
@@ -1046,7 +1049,7 @@ function startIndexing(seams) {
   }, 3000);
   if (typeof timer.unref === 'function') timer.unref();
   // Warm the chip's list off-thread, so the first click doesn't wait for it.
-  setTimeout(() => { projects(launchWindow.root).catch(() => {}); }, 15_000).unref();
+  setTimeout(() => { const w = launchWindow || registry.first(); if (w) projects(w.root).catch(() => {}); }, 15_000).unref();
 }
 
 /** One window's overlay (its own project, toast, list and views) over the shared service. */
@@ -1231,6 +1234,18 @@ async function startResources(seams) {
   setInterval(sweepPaused, 60_000).unref();      // ...and a sibling window that died after this one started
 }
 
+// The process's ONE window pipe (single-instance PR 3, host/window-router.js): every window's claim registers its entry here, and a launch
+// of any project this process holds is routed to that project's window by the root it names.
+const windowRouter = createWindowRouter({ listen: windowFocus.listen, pid: process.pid, projectOf, samePath, isInside, log: (...a) => console.log(...a) });
+
+// ONE process 'exit' hook for every window (a listener per window warns past ten): each window's claim releases its owner file here, since
+// app.exit skips will-quit. A window that closed while another stays has released its file in dispose(), so its entry goes (dropExit).
+const exitHooks = new Map();         // window -> [fn]
+process.on('exit', () => {
+  for (const fns of exitHooks.values()) for (const fn of fns) { try { fn(); } catch { /* the next launch proves a leftover dead */ } }
+});
+function onProcessExit(pw, fn) { const fns = exitHooks.get(pw) || []; fns.push(fn); exitHooks.set(pw, fns); }
+
 // What every project window is handed (app/project-window.js). The Resources service, the tray and the lean/indexing units are read live.
 const windowServices = {
   uiStore, readDim, usageCounters, forProbe, openInBrowser, probeConfirms, logShellError, canvasProbeResolve, canvasAsks,
@@ -1244,33 +1259,34 @@ const windowServices = {
   getResources: () => resources,
   getTray: () => trayController,
   seenChanged: createSeenGate({ registry, getResources: () => resources }),
+  windowRouter, onProcessExit,
 };
 
-// The project window (app/project-window.js): everything that is one project's. Made HERE, after every app-wide constant it is handed (a
-// const read before its line is a TDZ error). Construction has no side effects: the claim hooks `exit` inside run(), and the window itself
-// is made by start(). `launch` is this process's own launch window (the one-window claim and an explicit port are its alone, §3.1).
-function makeWindow(cwd, launch) {
+// The project window (app/project-window.js): everything that is one project's. Made by startProject, after every app-wide constant it is
+// handed (a const read before its line is a TDZ error). Construction has no side effects: the claim hooks `exit` inside run(), and the
+// window itself is made by start(). `launch` is this process's own launch window: an explicit port is its alone (§3.1).
+function makeWindow(cwd, { launch }) {
   return createProjectWindow({
     launchCwd: cwd,
-    launch,
     electron: { app, BrowserWindow, WebContentsView, Menu, dialog, session },
     config: { EXPLICIT_PORT: launch ? EXPLICIT_PORT : null, STRIP_HEIGHT, POLL_MS, PROBE_PORT, TRAY_ON, ONE_WINDOW_ON },
     services: windowServices,
   });
 }
-const launchWindow = makeWindow(LAUNCH_CWD, true);
-registry.add(launchWindow);
+// The process's own launch window, once whenReady's startProject made it (null before, and when its project's window is another process's).
+let launchWindow = null;
 
 // What a window's start() is handed: the probe's seams and the open-PR reader (set in whenReady).
 let appStart = null;
 
-// Opening a project in this process and closing one (app/project-lifecycle.js, pure and tested for behaviour): the window's record
-// (secrets, layout), its units (lean, indexing), then its own start(); a window that closed while another stays is disposed and everything
-// main holds for it goes. `launch` is the process's own launch window (made above).
+// Opening a project in this process and closing one (app/project-lifecycle.js, pure and tested for behaviour): the window's claim, then its
+// record (secrets, layout), its units (lean, indexing), then its own start(); a window that closed while another stays is disposed and
+// everything main holds for it goes.
 const lifecycle = createProjectLifecycle({
-  registry, launchWindow,
+  registry,
   rootOf: (cwd) => { const p = projectOf(cwd); return p ? p.root : cwd; },
-  makeWindow: (cwd) => makeWindow(cwd, false),
+  makeWindow: (cwd, opts) => makeWindow(cwd, opts),
+  dropExit: (pw) => exitHooks.delete(pw),
   makeRecord: (pw) => projectRecords.make(pw),
   stopRecord: (pw) => projectRecords.stop(pw),
   makeUnits: (pw) => makeWindowUnits(pw),
@@ -1288,15 +1304,11 @@ const lifecycle = createProjectLifecycle({
 const startProject = lifecycle.startProject;
 
 app.whenReady().then(async () => {
-  console.log('[main] project       :', launchWindow.root, `(${launchWindow.mode})`);
   console.log('[main] launched on   :', LAUNCH_CWD);
 
   // Named and refused (see explicitPort): nothing sensible is left to do, and
   // opening a window anyway would show a terminal wired to nothing.
   if (EXPLICIT_PORT && EXPLICIT_PORT.bad !== undefined) { app.exit(1); return; }
-
-  // One window per project: before anything is made, ask whether this project's window already exists.
-  if (await launchWindow.claim.run() === 'exit') { app.exit(0); return; }
 
   const seams = readSeams(process.env);
   const openPrsReader = seams.openPrsFixture
@@ -1313,8 +1325,13 @@ app.whenReady().then(async () => {
   startIndexing(seams);
   startTray();
 
-  const { first } = await startProject(LAUNCH_CWD, { launch: true });
-  launchWindow.claim.markReady();        // from here a second launch is handed to this window
+  // One window per project: the launch window's claim runs inside startProject, before the window is registered or made; a project whose
+  // window is another process's has had this launch handed there, and this process ends with no window.
+  const launched = await startProject(LAUNCH_CWD, { launch: true });
+  if (launched.elsewhere) { app.exit(0); return; }
+  launchWindow = launched.pw;            // startProject already ran its claim's markReady(): from here a second launch is handed to it
+  const { first } = launched;
+  console.log('[main] project       :', launchWindow.root, `(${launchWindow.mode})`);
   if (launchWindow.attachOnlyRefusal) {
     launchWindow.claim.stop();           // this process is about to end: it is no window to hand a launch to
     console.error('[main] Open refused:', launchWindow.attachOnlyRefusal.reason);
@@ -1349,9 +1366,9 @@ app.whenReady().then(async () => {
 }).catch((err) => {
   // A start that threw must not stay the project's owner: every later launch would be handed to a window that never comes up.
   console.error('[main] startup failed:', (err && err.stack) || err);
-  launchWindow.claim.stop();
-  const w = launchWindow.win;
-  if (!w || w.isDestroyed()) app.exit(1);
+  forEachProject((p) => p.claim.stop());
+  // A window that already exists is left running (only the ownership is dropped); with none up, the process ends.
+  if (!registry.list().some((p) => p.win && !p.win.isDestroyed())) app.exit(1);
 });
 
 // Closing the window detaches; it does not end the session.

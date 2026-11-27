@@ -30,6 +30,9 @@
  *       listen, claim, send, takeOver, release, forwardedCwd (host/window-owner.js, host/window-focus.js),
  *       act(msg) (what the window does with a launch: focus, select the lane), onExit(fn) (run fn when the process exits),
  *       now, readyBoundMs, log.
+ * Optional (single-instance PR 3): root (this window's project root: sent as msg.root, and handed to listen with hasPort(port), so
+ *       listen may be host/window-router.js register), message() (the message to send, replacing the root/lane/port one: the app claim's
+ *       open), tag (the log lines' name, default 'one window'), ackMs (ask the owner for the ack: 'no ack' within it is a refusal).
  */
 
 const DEFAULT_READY_BOUND_MS = 180_000;
@@ -40,7 +43,9 @@ function createWindowClaim(deps) {
   const {
     enabled, stateRoot, pid, ownStart, startTimes, project, launchCwd, explicitPort,
     listen, claim, send, takeOver, release, forwardedCwd, act, onExit,
+    root, hasPort, message, ackMs,
   } = deps;
+  const tag = typeof deps.tag === 'string' && deps.tag ? deps.tag : 'one window';
   const now = deps.now || Date.now;
   const log = deps.log || (() => {});
   const readyBoundMs = Number.isFinite(deps.readyBoundMs) ? deps.readyBoundMs : DEFAULT_READY_BOUND_MS;
@@ -100,7 +105,17 @@ function createWindowClaim(deps) {
     await act(msg);
   }
 
-  const listenOpts = () => ({ pid, onFocus: onLaunch, accepting, whenReady, log });
+  const listenOpts = () => ({ pid, root, hasPort, onFocus: onLaunch, accepting, whenReady, log });
+
+  function launchMessage() {
+    if (typeof message === 'function') return message();
+    const msg = {};
+    if (typeof root === 'string' && root) msg.root = root;
+    const cwd = forwardedCwd(launchCwd, project);
+    if (cwd) msg.cwd = cwd;
+    if (Number.isInteger(explicitPort)) msg.port = explicitPort;
+    return msg;
+  }
   let exitHooked = false;
   const hookExit = () => { if (exitHooked) return; exitHooked = true; onExit(releaseFile); };   // gone with the process, however it ends (app.exit skips will-quit)
 
@@ -108,7 +123,7 @@ function createWindowClaim(deps) {
     if (!enabled) return 'proceed';
     try {
       pipe = await listen(listenOpts()).catch((err) => {
-        log(`[main] one window: no launch pipe (${err && err.message})`);
+        log(`[main] ${tag}: no launch pipe (${err && err.message})`);
         return null;
       });
       self = { pid, start: await ownStart() };
@@ -117,14 +132,13 @@ function createWindowClaim(deps) {
       // A refused launch takes the file over only with the bytes it judged; when another launch took over first, the takeover fails and
       // the claim is made again, which finds that window and hands this launch to it (PR #247 Dexter M3). Bounded: never a loop.
       for (let attempt = 0; r.action === 'focus'; attempt++) {
-        const msg = {};
-        const cwd = forwardedCwd(launchCwd, project);
-        if (cwd) msg.cwd = cwd;
-        if (Number.isInteger(explicitPort)) msg.port = explicitPort;
-        // Waits as long as the owner may take to be ready, then the owner has said ok (and will act) or no.
-        const told = await send({ pid: r.owner.pid, msg, timeoutMs: readyBoundMs + SEND_SLACK_MS });
+        const msg = launchMessage();
+        // Waits as long as the owner may take to be ready, then the owner has said ok (and will act) or no. With ackMs, an owner that does
+        // not even acknowledge (hung) is a refusal within ackMs.
+        const told = await send({ pid: r.owner.pid, msg, timeoutMs: readyBoundMs + SEND_SLACK_MS, ackMs });
         if (told && told.ok === true) {
-          log(`[main] one window: this project's window (pid ${r.owner.pid}) has it; this launch ends`);
+          // verify/probe-one-window.js check 2 reads the window claim's wording
+          log(`[main] ${tag}: ${tag === 'one window' ? "this project's window" : 'the owner'} (pid ${r.owner.pid}) has it; this launch ends`);
           const p = pipe;
           pipe = null;
           if (p) await Promise.resolve().then(() => p.close()).catch(() => {});
@@ -132,7 +146,7 @@ function createWindowClaim(deps) {
         }
         // A proven owner that won't take it (closing, or a build from before the pipe): a window of its own, which then owns the file.
         const why = told && typeof told.error === 'string' ? told.error : 'no usable answer';
-        log(`[main] one window: owner pid ${r.owner.pid} did not accept (${why}); opening a window and taking the owner file over`);
+        log(`[main] ${tag}: owner pid ${r.owner.pid} did not accept (${why}); going on here and taking the owner file over`);
         if (takeOver({ stateRoot, self, judgedText: r.text }) === true) { published = true; break; }
         published = false;
         if (attempt + 1 >= MAX_TAKEOVER_TRIES) break;
@@ -143,7 +157,7 @@ function createWindowClaim(deps) {
       else if (published) hookExit();
       return 'proceed';
     } catch (err) {
-      log(`[main] one window: the check failed, opening a window: ${err && err.message}`);
+      log(`[main] ${tag}: the check failed, going on here: ${err && err.message}`);
       return 'proceed';
     }
   }
@@ -158,7 +172,7 @@ function createWindowClaim(deps) {
     try {
       await closing;
       if (stopped) return;
-      const p = await listen(listenOpts()).catch((err) => { log(`[main] one window: no launch pipe on resume (${err && err.message})`); return null; });
+      const p = await listen(listenOpts()).catch((err) => { log(`[main] ${tag}: no launch pipe on resume (${err && err.message})`); return null; });
       if (stopped) { if (p) await p.close().catch(() => {}); return; }       // stopped again while listening: quitting for real
       pipe = p;
       const r = await claim({ stateRoot, self, startTimes });
@@ -171,7 +185,7 @@ function createWindowClaim(deps) {
       else if (r.published === true) releaseFile();
       else if (pipe) { const q = pipe; pipe = null; await q.close().catch(() => {}); }
     } catch (err) {
-      log(`[main] one window: resume failed: ${err && err.message}`);
+      log(`[main] ${tag}: resume failed: ${err && err.message}`);
     }
   }
 

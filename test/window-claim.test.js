@@ -233,3 +233,91 @@ test('real: close and reopen. The owner is quitting (before-quit): a launch insi
   assert.deepStrictEqual(acts, [], 'the quitting window was never asked to act');
   await l.stop();
 });
+
+// ---- single-instance PR 3 step 3: the message carries the root; message(), tag and ackMs are optional deps --------------------------
+
+test('PR 3: the message carries the root (the router picks the window by it), with the lane and port as before', async () => {
+  const { createWindowClaim } = load();
+  const { deps, calls } = fakes({ claim: async () => live, root: 'C:\p', launchCwd: 'C:\p\feat-x', explicitPort: 7702 });
+  assert.strictEqual(await createWindowClaim(deps).run(), 'exit');
+  assert.deepStrictEqual(calls.filter(c => c[0] === 'send'), [['send', 10, { root: 'C:\p', cwd: 'C:\p\feat-x', port: 7702 }]]);
+});
+
+test('PR 3: the entry handed to listen names this window: its root and hasPort', async () => {
+  const { createWindowClaim } = load();
+  let opts = null;
+  const hasPort = (p) => p === 7001;
+  const { deps } = fakes({ root: 'C:\p', hasPort, listen: async (o) => { opts = o; return { close: async () => {} }; } });
+  await createWindowClaim(deps).run();
+  assert.strictEqual(opts.root, 'C:\p');
+  assert.strictEqual(opts.hasPort, hasPort);
+  assert.strictEqual(typeof opts.accepting, 'function');
+  assert.strictEqual(typeof opts.whenReady, 'function');
+  assert.strictEqual(typeof opts.onFocus, 'function');
+});
+
+test('PR 3: message() replaces the message; ackMs is handed to send; the defaults are today\'s', async () => {
+  const { createWindowClaim } = load();
+  const sent = [];
+  const send = async (o) => { sent.push(o); return { ok: true }; };
+  const a = fakes({ claim: async () => live, send, message: () => ({ cwd: 'C:\q', install: 'I', probe: false }), ackMs: 10_000 });
+  await createWindowClaim(a.deps).run();
+  assert.deepStrictEqual(sent[0].msg, { cwd: 'C:\q', install: 'I', probe: false });
+  assert.strictEqual(sent[0].ackMs, 10_000);
+  sent.length = 0;
+  const b = fakes({ claim: async () => live, send });
+  await createWindowClaim(b.deps).run();
+  assert.strictEqual(sent[0].ackMs, undefined);
+});
+
+test('PR 3: tag names the claim in its log lines (default "one window")', async () => {
+  const { createWindowClaim } = load();
+  const lines = [];
+  const refuse = async () => ({ ok: false, error: 'no ack' });
+  const a = fakes({ claim: async () => live, send: refuse, tag: 'single instance', log: (l) => lines.push(l) });
+  await createWindowClaim(a.deps).run();
+  assert.ok(lines.some((l) => /single instance: owner pid 10 did not accept \(no ack\)/.test(l)), lines.join('\n'));
+  lines.length = 0;
+  const b = fakes({ claim: async () => live, send: refuse, log: (l) => lines.push(l) });
+  await createWindowClaim(b.deps).run();
+  assert.ok(lines.some((l) => /one window: owner pid 10 did not accept/.test(l)), lines.join('\n'));
+});
+
+test('PR 3, real files + a real router: two windows of one process each publish their own window.json with the same pid, and a launch of B reaches B', async () => {
+  const { createWindowClaim } = load();
+  const { owner, focus } = real();
+  const { createWindowRouter } = require('../host/window-router');
+  const { projectOf, samePath, isInside } = require('../host/project-layout');
+  const pid = uniquePid();
+  const router = createWindowRouter({ listen: focus.listen, pid, projectOf, samePath, isInside });
+  const rootA = tmpDir('cc-claim-a-');
+  const rootB = tmpDir('cc-claim-b-');
+  const acted = { a: [], b: [] };
+  const mk = (root, who, selfPid) => createWindowClaim({
+    enabled: true, stateRoot: root, pid: selfPid, ownStart: async () => `S${selfPid}`, startTimes: async (pids) => new Map(pids.map((p) => [p, `S${p}`])),
+    project: null, launchCwd: root, explicitPort: null, root,
+    listen: (entry) => router.register(entry), claim: owner.claim, send: focus.send, takeOver: owner.takeOver, release: owner.release,
+    forwardedCwd: owner.forwardedCwd, act: async (m) => { acted[who].push(m); }, onExit: () => {}, readyBoundMs: 5000, ackMs: 2000,
+  });
+  const a = mk(rootA, 'a', pid);
+  const b = mk(rootB, 'b', pid);
+  try {
+    assert.strictEqual(await a.run(), 'proceed');
+    assert.strictEqual(await b.run(), 'proceed');
+    a.markReady(); b.markReady();
+    const fileOf = (r) => JSON.parse(fs.readFileSync(path.join(r, '.claude-custom', 'window.json'), 'utf8'));
+    assert.strictEqual(fileOf(rootA).pid, pid);
+    assert.strictEqual(fileOf(rootB).pid, pid);
+    // a second launch of B, from "another process" (its own pid, no router of its own: it never gets to listen)
+    const launch = createWindowClaim({
+      enabled: true, stateRoot: rootB, pid: pid + 1, ownStart: async () => `S${pid + 1}`, startTimes: async (pids) => new Map(pids.map((p) => [p, `S${p}`])),
+      project: null, launchCwd: rootB, explicitPort: null, root: rootB,
+      listen: async () => ({ close: async () => {} }), claim: owner.claim, send: focus.send, takeOver: owner.takeOver, release: owner.release,
+      forwardedCwd: owner.forwardedCwd, act: async () => {}, onExit: () => {}, readyBoundMs: 5000, ackMs: 2000,
+    });
+    assert.strictEqual(await launch.run(), 'exit');
+    await until(() => acted.b.length === 1);
+    assert.strictEqual(acted.a.length, 0, 'A heard nothing of B\'s launch');
+    assert.ok(samePath(acted.b[0].root, rootB));
+  } finally { a.stop(); b.stop(); await router.stop(); }
+});

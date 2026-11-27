@@ -17,8 +17,9 @@
  *   config     per-process constants (EXPLICIT_PORT, STRIP_HEIGHT, POLL_MS, PROBE_PORT, ...); a window that is not the process's own
  *              launch window is handed EXPLICIT_PORT null (a port-named launch is its own process)
  *   services   app-wide effects the window calls (uiStore, forProbe, openInBrowser, the host helpers, isQuitting / setQuitting, and
- *              getResources / getTray / seenChanged / onWindowCreated / onClosed, which it reads live), plus `launch`: true for the
- *              process's own launch window, which alone holds the one-window claim (the claim pipe is named per pid)
+ *              getResources / getTray / seenChanged / onWindowCreated / onClosed, which it reads live). EVERY window holds its own
+ *              one-window claim (single-instance PR 3): `windowRouter` is the process's one window pipe (host/window-router.js), where the
+ *              claim registers this window's entry, and `onProcessExit(pw, fn)` is main's one process 'exit' hook
  *   attach()   this window's OWN lean unit and indexing overlay, handed over before start()
  *
  * Every handed value is required: a missing electron member, config value or service throws at construction, naming itself.
@@ -106,7 +107,8 @@ const REQUIRED_ELECTRON = ['app', 'BrowserWindow', 'WebContentsView', 'Menu', 'd
 const REQUIRED_CONFIG = ['EXPLICIT_PORT', 'STRIP_HEIGHT', 'POLL_MS', 'PROBE_PORT', 'TRAY_ON', 'ONE_WINDOW_ON'];
 const REQUIRED_SERVICES = ['uiStore', 'readDim', 'usageCounters', 'forProbe', 'openInBrowser', 'probeConfirms', 'logShellError', 'canvasAsks',
   'nextCanvasAskId', 'previewProbeProxy', 'stopHostByPid', 'occupantAt', 'tokenFileFor', 'ownIdentities', 'ownStartTime', 'waitForHost',
-  'HARNESS_DIR', 'INSTALL_DIR', 'listBackground', 'capture', 'stripFileFor', 'isQuitting', 'setQuitting', 'onWindowCreated', 'onClosed', 'getResources', 'getTray', 'seenChanged'];
+  'HARNESS_DIR', 'INSTALL_DIR', 'listBackground', 'capture', 'stripFileFor', 'isQuitting', 'setQuitting', 'onWindowCreated', 'onClosed', 'getResources', 'getTray', 'seenChanged',
+  'windowRouter', 'onProcessExit'];
 
 function requireAll(kind, bag, names) {
   for (const name of names) {
@@ -114,20 +116,18 @@ function requireAll(kind, bag, names) {
   }
 }
 
-function createProjectWindow({ launchCwd, electron, config, services, launch }) {
+function createProjectWindow({ launchCwd, electron, config, services }) {
   if (typeof launchCwd !== 'string' || launchCwd === '') throw new Error('createProjectWindow: missing launchCwd');
   requireAll('electron member', electron, REQUIRED_ELECTRON);
   requireAll('config value', config, REQUIRED_CONFIG);
   requireAll('service', services, REQUIRED_SERVICES);
-  // No default: the launch window holds the one-window claim, and a window made for a project opened later (a probe's openProject, PR 3's
-  // second launch) must not, so a silent default would flip one of them.
-  if (typeof launch !== 'boolean') throw new Error('createProjectWindow: launch must be true (this process\'s own launch window) or false');
   const { app, BrowserWindow, WebContentsView, Menu, dialog, session } = electron;
   const { EXPLICIT_PORT, STRIP_HEIGHT, POLL_MS, PROBE_PORT, TRAY_ON, ONE_WINDOW_ON } = config;
   const {
     uiStore, readDim, usageCounters, forProbe, openInBrowser, probeConfirms, logShellError, canvasProbeResolve, canvasAsks,
     nextCanvasAskId, previewProbeProxy, stopHostByPid, occupantAt, tokenFileFor, ownIdentities, ownStartTime, waitForHost,
     HARNESS_DIR, INSTALL_DIR, listBackground, capture, stripFileFor, isQuitting, setQuitting, onWindowCreated, onClosed, getResources, getTray, seenChanged,
+    windowRouter, onProcessExit,
   } = services;
 
   // --- what this window is ----------------------------------------------------------
@@ -1534,14 +1534,16 @@ function createProjectWindow({ launchCwd, electron, config, services, launch }) 
   }
 
   const windowClaim = createWindowClaim({
-    // The claim pipe is named per pid (host/window-focus.js), so a second window in this process would collide on it: only the launch window
-    // holds the claim. PR 3 routes a second launch to the right window of the process (DESIGN_SINGLE_INSTANCE.md, Q2).
-    enabled: ONE_WINDOW_ON && launch, stateRoot: STATE_ROOT, pid: process.pid, ownStart: () => ownStartTime(), startTimes,
-    project: PROJECT, launchCwd: LAUNCH_CWD, explicitPort: EXPLICIT_PORT,
-    listen: windowFocus.listen, claim: windowOwner.claim, send: windowFocus.send, takeOver: windowOwner.takeOver,
+    // EVERY window holds its claim (single-instance PR 3): the process has ONE window pipe (host/window-router.js, main's), and this
+    // window's claim registers its entry there instead of listening, so a launch is routed to the window whose root it names.
+    enabled: ONE_WINDOW_ON, stateRoot: STATE_ROOT, pid: process.pid, ownStart: () => ownStartTime(), startTimes,
+    project: PROJECT, launchCwd: LAUNCH_CWD, explicitPort: EXPLICIT_PORT, root: PROJECT_ROOT,
+    hasPort: (port) => !!tabShell && tabShell.snapshot().tabs.some((t) => t && t.port === port),
+    listen: (entry) => windowRouter.register(entry), claim: windowOwner.claim, send: windowFocus.send, takeOver: windowOwner.takeOver,
     release: windowOwner.release, forwardedCwd: windowOwner.forwardedCwd,
     act: onLaunchFocus,
-    onExit: (fn) => process.on('exit', fn),       // app.exit skips will-quit; a crash leaves a file the next launch proves dead
+    ackMs: 10_000,                                 // a hung owner is told from a slow one (host/window-focus.js, the ack)
+    onExit: (fn) => onProcessExit(self, fn),      // main's ONE process 'exit' hook (app.exit skips will-quit); emptied when this window closes
     log: (...a) => console.log(...a),
   });
 
