@@ -1528,6 +1528,8 @@ app.on('will-quit', () => { forEachProject((p) => p.stopDevServers()); });
 // A quit is not a crash: the record is written clean (synchronously: the process may end right after). A quit held below and asked again
 // writes it clean again, which changes nothing.
 app.on('will-quit', () => { markRecordClean(); });
+// The process's one window pipe closes with the quit (PR #258 Miguel S4): an old sender then gets a socket error, as before PR 3.
+app.on('will-quit', () => { windowRouter.stop().catch(() => {}); });
 // A quit with processes paused from the Resources panel wakes them first (#19): a frozen process with nobody left to resume it stays frozen.
 // The quit is held once, for as long as the resumes take, and then asked for again.
 let pausedWoken = false;

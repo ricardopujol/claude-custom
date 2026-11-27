@@ -6,8 +6,7 @@
  * It is host/window-claim.js reused, not written a second time, with:
  *   the owner   host/app-owner.js (`<dir>\app.json`, the owner-file proof)
  *   the pipe    `\\.\pipe\claude-custom-app-<pid>` (host/window-focus.js appPipeNameFor), a second name beside the window pipe, so the window
- *               pipe keeps "opens nothing" and its one-line protocol for old senders. Only a launcher that read this install's app.json
- *               knows it.
+ *               pipe keeps "opens nothing" and its one-line protocol for old senders. The name is not a secret (see below).
  *   the message { cwd, install, probe, env }, type 'open'. No port (a port-named launch is its own process). `env` carries only
  *               CLAUDE_CUSTOM_BIN / CONPTY / SHELL, so the owner can log which differ (design 3.1: the open runs on the owner's env).
  *   the ack     10 s: an owner that does not acknowledge is proven again; unless it is now gone, it gets one more send with the full wait
@@ -18,6 +17,11 @@
  *
  * What an owner accepts (cleanOpenFor): an absolute cwd of at most 1024 characters, THIS install (one folder in two spellings is one), and a
  * probe flag equal to its own. Anything else is refused whole.
+ *
+ * WHAT IS NOT A BOUNDARY (PR #258 Miguel S3): the pipe name is `claude-custom-app-<pid>` and pids can be listed; `install` and `probe` are
+ * not secrets. They keep a probe and another install apart; they authenticate nothing. The boundary is the pipe's default DACL: only the
+ * same user (and SYSTEM / administrators) can write to it, so any process of that user can ask Jiandu to open an absolute folder, which is
+ * what that user's own launch can do (the claude CLI keeps its own folder-trust question).
  */
 
 const path = require('path');

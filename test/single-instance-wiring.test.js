@@ -151,3 +151,7 @@ test('the new single-instance modules require no Electron (they load under plain
     assert.doesNotMatch(src, /require\(\s*['"]electron['"]\s*\)/, f);
   }
 });
+
+test('PR #258 Miguel S4: the process\'s window pipe is closed at will-quit (windowRouter.stop is called, not dead API)', () => {
+  assert.match(MAIN, /app\.on\('will-quit', \(\) => \{ windowRouter\.stop\(\)\.catch\(\(\) => \{\}\); \}\);/);
+});
