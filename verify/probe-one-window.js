@@ -226,8 +226,11 @@ async function main() {
   // Chromium's shutdown is slow under load (BACKLOG #74 A): the file goes first, the process much later. So step 5's DEAD owner is a
   // short-lived process of this probe's own, proven by pid and start time while it ran, written down after it ended.
   const shortLived = require('child_process').spawn(process.execPath, ['-e', 'setTimeout(() => {}, 1500)'], { stdio: 'ignore', windowsHide: true });   // lock-ok: a 1.5 s node that ends by itself, awaited below
+  // The exit is listened for BEFORE the start-time query: under load that PowerShell query outlasts the 1.5 s, and a listener added after
+  // the exit waited for ever (found by the single-instance PR 3 run, 2026-11-27).
+  const shortExited = new Promise((resolve) => shortLived.on('exit', resolve));
   const shortStart = (await startTimes([shortLived.pid])).get(shortLived.pid);
-  await new Promise((resolve) => shortLived.on('exit', resolve));
+  await shortExited;
   check('5: setup: a process of ours that has ended, with the pid and start time it had', typeof shortStart === 'string' && !isRunning(shortLived.pid));
 
   // 5 ---------------------------------------------------------------------------------
