@@ -73,6 +73,11 @@ const fileFs = { lstat: (p) => fs.promises.lstat(p), readlink: (p) => fs.promise
 const { projectOf, samePath, isInside } = require('../host/project-layout');
 const windowFocus = require('../host/window-focus');
 const { createWindowRouter } = require('../host/window-router');
+// The app lock (single-instance PR 3): one Jiandu process per install, a second launch hands its folder here.
+const { appLockConfig } = require('../host/app-lock-config');
+const { createAppClaim, ENV_NAMES: LAUNCH_ENV_NAMES } = require('../host/app-claim');
+const { createOpenQueue } = require('./open-queue');
+const { createOpenProject } = require('./open-project');
 // The repo browser's two main-only actions (#45): Show in Explorer, and the drag-out. Both re-run the path
 // guard against the asking tab's own worktree, and neither ever opens or runs a file (app/repo-actions.js).
 // The drag icon is a small accent-coloured square: startDrag wants a non-empty image, and a real file icon
@@ -1238,6 +1243,42 @@ async function startResources(seams) {
 // of any project this process holds is routed to that project's window by the root it names.
 const windowRouter = createWindowRouter({ listen: windowFocus.listen, pid: process.pid, projectOf, samePath, isInside, log: (...a) => console.log(...a) });
 
+// --- the app lock (single-instance PR 3) -------------------------------------------------------------------------------------------
+// Whether it is on for this launch, and where app.json lives, is one pure table (host/app-lock-config.js): off for a named port,
+// attach-only, the screenshot path and every probe but the single-instance one (which then has its own state folder).
+const APP_LOCK = appLockConfig({ env: process.env, installDir: INSTALL_DIR, explicitPort: EXPLICIT_PORT, seams: readSeams(process.env) });
+// Every open of a project in this process goes through ONE queue (app/open-queue.js): one at a time, a stuck start frees its slot.
+const opener = createOpenProject({
+  startProject: (cwd, opts) => startProject(cwd, opts),
+  exists: (p) => fs.existsSync(p),
+  pickLane: (tabs, o) => require('../host/window-owner').pickLane(tabs, o),
+  envNames: LAUNCH_ENV_NAMES,
+  ownEnv: process.env,
+  closeWindow: (pw) => { const w = pw.win; if (w && !w.isDestroyed()) w.destroy(); },
+  log: (l) => console.log(l),
+});
+const openQueue = createOpenQueue({ open: (o) => opener.openProject(o), log: (l) => console.log(l) });
+function openProject(o) { return openQueue.push(o); }
+// The claim a launch runs first: hand the folder to the running Jiandu of this install ('exit'), or become it. Ready only once the first
+// window settled and this process decided to stay (whenReady); until then a launch is held, so an owner that ends never swallowed one.
+const appClaim = createAppClaim({
+  enabled: APP_LOCK.on,
+  dir: APP_LOCK.dir, pid: process.pid, ownStart: () => ownStartTime(), startTimes,
+  launchCwd: LAUNCH_CWD, installDir: INSTALL_DIR, probe: APP_LOCK.probe, env: process.env, samePath,
+  act: (msg) => openProject({ cwd: msg.cwd, env: msg.env, show: 'shown' }),
+  onExit: (fn) => onProcessExit('app', fn),        // main's one exit hook (below); its entry is never dropped
+  log: (...a) => console.log(...a),
+});
+// No window and nothing opening: this process has nothing to be. The claim stops first, so a launch held on it hears no and opens its own.
+function quitIfEmpty() {
+  if (registry.size() > 0 || openQueue.busy()) return false;
+  appClaim.stop();
+  app.quit();
+  return true;
+}
+// A launch handed to the running Jiandu leaves with app.exit(0), which skips will-quit: its cache folder goes now (app/cache-dirs.js).
+function removeOwnCache() { require('./cache-dirs').removeOwn(); }
+
 // ONE process 'exit' hook for every window (a listener per window warns past ten): each window's claim releases its owner file here, since
 // app.exit skips will-quit. A window that closed while another stays has released its file in dispose(), so its entry goes (dropExit).
 const exitHooks = new Map();         // window -> [fn]
@@ -1310,6 +1351,15 @@ app.whenReady().then(async () => {
   // opening a window anyway would show a terminal wired to nothing.
   if (EXPLICIT_PORT && EXPLICIT_PORT.bad !== undefined) { app.exit(1); return; }
 
+  // One Jiandu process per install (single-instance PR 3): before any service or window, hand this launch to the running one. A handed-over
+  // launch removes its own cache folder (app.exit skips will-quit) and ends.
+  console.log(`[main] app lock      : ${APP_LOCK.on ? `on (${APP_LOCK.dir})` : `off (${APP_LOCK.reason})`}`);
+  if (await appClaim.run() === 'exit') {
+    removeOwnCache();
+    app.exit(0);
+    return;
+  }
+
   const seams = readSeams(process.env);
   const openPrsReader = seams.openPrsFixture
     ? fixtureReader(seams.openPrsFixture, { parse: parseOpenPrs, log: (line) => console.log(line) })
@@ -1327,13 +1377,16 @@ app.whenReady().then(async () => {
 
   // One window per project: the launch window's claim runs inside startProject, before the window is registered or made; a project whose
   // window is another process's has had this launch handed there, and this process ends with no window.
-  const launched = await startProject(LAUNCH_CWD, { launch: true });
-  if (launched.elsewhere) { app.exit(0); return; }
+  // The first launch obeys "Start minimised to tray" ('setting'); a launch handed over later always shows its window (§5 Q1).
+  const launched = await startProject(LAUNCH_CWD, { launch: true, show: 'setting' });
+  // Its project's window is another process's (another install, or the app lock off): the launch was handed there.
+  if (launched.elsewhere) { quitIfEmpty(); return; }
   launchWindow = launched.pw;            // startProject already ran its claim's markReady(): from here a second launch is handed to it
   const { first } = launched;
   console.log('[main] project       :', launchWindow.root, `(${launchWindow.mode})`);
   if (launchWindow.attachOnlyRefusal) {
     launchWindow.claim.stop();           // this process is about to end: it is no window to hand a launch to
+    appClaim.stop();                     // ...and no process to hand one to: a launch held on the app pipe hears no
     console.error('[main] Open refused:', launchWindow.attachOnlyRefusal.reason);
     if (!PROBE_PORT && launchWindow.win && !launchWindow.win.isDestroyed()) {
       await dialog.showMessageBox(launchWindow.win, { type: 'info', buttons: ['OK'], message: attachOnlyText(launchWindow.attachOnlyRefusal) });
@@ -1347,10 +1400,14 @@ app.whenReady().then(async () => {
     console.error('[main] could not start:', first.error);
     if (first.error === NO_PORT_ERROR || /resolvePort:/.test(String(first.error))) {
       launchWindow.claim.stop();         // markReady() already ran: a launch held on this window must hear no, not ok, before the exit (PR #248 Dexter 1)
+      appClaim.stop();
       app.exit(1);
       return;
     }
   }
+  // The first window settled and this process stays: from here a launch of ANY project of this install is handed here.
+  if (quitIfEmpty()) return;
+  appClaim.markReady();
   launchWindow.startPoll();
 
   // Headless verification path.
@@ -1367,6 +1424,7 @@ app.whenReady().then(async () => {
   // A start that threw must not stay the project's owner: every later launch would be handed to a window that never comes up.
   console.error('[main] startup failed:', (err && err.stack) || err);
   forEachProject((p) => p.claim.stop());
+  appClaim.stop();
   // A window that already exists is left running (only the ownership is dropped); with none up, the process ends.
   if (!registry.list().some((p) => p.win && !p.win.isDestroyed())) app.exit(1);
 });
@@ -1386,7 +1444,7 @@ app.on('will-quit', (e) => {
   e.preventDefault();
   resources.resumeAll({ deadlineMs: 10000 }).catch(() => {}).finally(() => app.quit());
 });
-app.on('before-quit', () => { quitting = true; forEachProject((p) => p.claim.stop()); });   // a launch from here on opens its own window (close, then reopen)
+app.on('before-quit', () => { quitting = true; forEachProject((p) => p.claim.stop()); appClaim.stop(); });   // a launch from here on opens its own window (close, then reopen)
 app.on('will-quit', () => { if (trayController) trayController.destroy(); if (resourceSampler) resourceSampler.stop(); forEachProject((p) => p.closeOccupancy()); });
 // A panel page that called window.print() leaves the browser unable to terminate; this ends the process if quitting stalls (app/quit-watchdog.js).
 armQuitWatchdog(app, QUIT_LOG_FILE ? { onFire: () => quitMark('quit watchdog fires') } : {});

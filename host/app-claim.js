@@ -53,7 +53,8 @@ function cleanOpenFor({ install, probe, samePath }) {
 
 /**
  * deps: dir (the lock's folder, host/app-lock-config.js), pid, ownStart, startTimes, launchCwd, installDir, probe, env (this launch's),
- * samePath, act(msg) (the owner opens msg.cwd: main's openProject), onExit(fn), log; optional readyBoundMs, ackMs, listen, send, now, mono.
+ * samePath, act(msg) (the owner opens msg.cwd: main's openProject), onExit(fn), log; optional enabled (default true), readyBoundMs, ackMs,
+ * listen, send, now, mono.
  */
 function createAppClaim(deps) {
   const { dir, pid, ownStart, startTimes, launchCwd, installDir, probe, env, samePath, act, onExit, log } = deps;
@@ -61,7 +62,8 @@ function createAppClaim(deps) {
   const send = deps.send || focus.send;
   const clean = cleanOpenFor({ install: installDir, probe, samePath });
   return createWindowClaim({
-    enabled: true, stateRoot: dir, pid, ownStart, startTimes, project: null, launchCwd, explicitPort: null,
+    // off (host/app-lock-config.js): run() proceeds and touches nothing
+    enabled: deps.enabled !== false, stateRoot: dir, pid, ownStart, startTimes, project: null, launchCwd, explicitPort: null,
     listen: (entry) => listen({ ...entry, name: focus.appPipeNameFor(pid), clean }),
     claim: appOwner.claim,
     send: (o) => send({ ...o, name: focus.appPipeNameFor(o.pid), type: 'open' }),

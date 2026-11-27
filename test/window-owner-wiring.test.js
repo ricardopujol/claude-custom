@@ -24,7 +24,8 @@ test('PR 3: no window exists at module load; the launch window\'s claim runs ins
   assert.doesNotMatch(src, /^registry\.add\(/m, 'registry.add is not at module load');
   assert.doesNotMatch(src, /^const launchWindow = makeWindow\(/m, 'the launch window is not made at module load');
   assert.ok(ready.indexOf('startProject(LAUNCH_CWD') > ready.indexOf('EXPLICIT_PORT.bad'), 'after the bad-port refusal');
-  assert.match(ready, /const launched = await startProject\(LAUNCH_CWD, \{ launch: true \}\);\s*\n\s*if \(launched\.elsewhere\) \{ app\.exit\(0\); return; \}/);
+  // the launch's project window is another process's: this process holds no window, and quitIfEmpty ends it (step 6: the app claim stops first)
+  assert.match(ready, /const launched = await startProject\(LAUNCH_CWD, \{ launch: true, show: 'setting' \}\);[\s\S]{0,200}if \(launched\.elsewhere\) \{ quitIfEmpty\(\); return; \}/);
   // the order inside startProject (claim before registry.add) is behaviour: test/project-lifecycle.test.js
 });
 

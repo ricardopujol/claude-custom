@@ -139,7 +139,7 @@ test('registry is the one registry of project windows (app/project-registry.js);
 test('whenReady runs the launch in this order (single-instance PR 2: the window\'s own phases are its start())', () => {
   const ready = MAIN.slice(MAIN.indexOf('app.whenReady().then('));
   const order = ['await startResources(seams)', 'Menu.setApplicationMenu(null)', 'registerIpc()', 'startIndexing(seams)', 'startTray()',
-    'await startProject(LAUNCH_CWD, { launch: true })', 'if (launched.elsewhere)', 'launchWindow = launched.pw;', 'launchWindow.attachOnlyRefusal',
+    "await startProject(LAUNCH_CWD, { launch: true, show: 'setting' })", 'if (launched.elsewhere)', 'launchWindow = launched.pw;', 'launchWindow.attachOnlyRefusal',
     'launchWindow.startPoll()', 'launchWindow.runScreenshotPath()', 'startProbeServer({'];
   let from = -1;
   for (const step of order) {
@@ -258,7 +258,7 @@ test('dispose() stops what a window runs on its own, and the poll and the issue 
 test('the crash guard: a non-launch project that fails to start costs its own window only; the launch window\'s failure is whenReady\'s', () => {
   // the failure path (nothing left behind, the playback watch included) is behaviour: test/project-lifecycle.test.js (PR #256 Miguel Y2)
   assert.match(MAIN, /dropWatch: \(pw\) => \{ const unwatch = playbackWatched\.get\(pw\); if \(unwatch\) \{ playbackWatched\.delete\(pw\); unwatch\(\); \} \},/, 'the lifecycle can drop a window\'s playback watch');
-  assert.match(MAIN, /await startProject\(LAUNCH_CWD, \{ launch: true \}\)/, 'the launch window\'s failure reaches whenReady, which exits');
+  assert.match(MAIN, /await startProject\(LAUNCH_CWD, \{ launch: true, show: 'setting' \}\)/, 'the launch window\'s failure reaches whenReady, which exits');
 });
 
 test('the project window is made after every app-wide constant it is handed (a const read before its line is a TDZ error)', () => {

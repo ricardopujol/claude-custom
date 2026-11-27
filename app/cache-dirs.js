@@ -70,4 +70,12 @@ function useOwnCaches(app, pid = process.pid, tmp = os.tmpdir(), env = process.e
   app.once('will-quit', () => { try { fs.rmSync(cacheDirFor(pid, tmp), { recursive: true, force: true }); } catch { /* the sweep gets it */ } });
 }
 
-module.exports = { cacheDirFor, cacheSwitches, sweepStale, livePeers, pidOfName, pidAlive, useOwnCaches, PREFIX };
+/**
+ * Remove this process's own folder now (single-instance PR 3): a launch handed to the running Jiandu ends with app.exit(0), which skips
+ * will-quit, so without this its folder would stay until the next full start while the owner lives for days. true unless the remove threw.
+ */
+function removeOwn(pid = process.pid, tmp = os.tmpdir()) {
+  try { fs.rmSync(cacheDirFor(pid, tmp), { recursive: true, force: true }); return true; } catch { return false; }
+}
+
+module.exports = { cacheDirFor, cacheSwitches, sweepStale, livePeers, pidOfName, pidAlive, useOwnCaches, removeOwn, PREFIX };

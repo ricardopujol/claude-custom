@@ -91,3 +91,15 @@ test("main.js calls useOwnCaches at the top level, before app.whenReady, and not
   assert.ok(ready > at, 'app.whenReady comes after it');
   assert.ok(!lines.slice(0, ready).some(l => /^app\.on\('ready'/.test(l)), 'no earlier ready handler');
 });
+
+test('removeOwn (single-instance PR 3 step 6): a handed-off launch removes its own cache folder before app.exit(0), which skips will-quit', () => {
+  const fs = require('fs');
+  const { removeOwn, cacheDirFor } = require('../app/cache-dirs');
+  const tmp = require('./tmp-dir').tmpDir('cc-cache-own-');
+  fs.mkdirSync(path.join(cacheDirFor(4242, tmp), 'Cache'), { recursive: true });
+  fs.mkdirSync(cacheDirFor(4343, tmp), { recursive: true });
+  assert.strictEqual(removeOwn(4242, tmp), true);
+  assert.ok(!fs.existsSync(cacheDirFor(4242, tmp)));
+  assert.ok(fs.existsSync(cacheDirFor(4343, tmp)), 'another process\'s folder stays');
+  assert.strictEqual(removeOwn(4242, tmp), true, 'already gone is fine (force)');
+});

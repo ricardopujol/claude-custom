@@ -6,7 +6,7 @@
  * close drops), so it lives apart from main.js, where only a regex could pin it, and the regex had already missed a leaked playback watch.
  * No Electron: main hands in the registry and the effects.
  *
- *   startProject(cwd, { launch })  -> { pw, existing, first } | { pw: null, existing: false, first: null, elsewhere: true }
+ *   startProject(cwd, { launch, show })  ->   (show: how a NEW window starts, 'setting' | 'shown' | 'hidden', app/project-window.js start) { pw, existing, first } | { pw: null, existing: false, first: null, elsewhere: true }
  *                                     | { pw: null, existing: false, first: null, error }
  *       The project's open window is brought forward and shows the cwd's lane (`existing: true`; NO window is built for it). Otherwise a window
  *       is made (`launch`: the process's own launch window, the only one an explicit port goes to) and its ONE-WINDOW CLAIM runs BEFORE it is
@@ -46,7 +46,7 @@ function createProjectLifecycle({
     dropExit(pw);
   }
 
-  async function openNew(cwd, launch) {
+  async function openNew(cwd, launch, show) {
     const pw = makeWindow(cwd, { launch });
     // The claim is asked before anything is made for the window: a project another process owns gets its launch handed there.
     if (await pw.claim.run() === 'exit') {
@@ -58,7 +58,7 @@ function createProjectLifecycle({
     makeUnits(pw);
     let first;
     try {
-      first = await pw.start(getAppStart());
+      first = await pw.start({ ...getAppStart(), show });
     } catch (err) {
       // The crash guard (DESIGN_SINGLE_INSTANCE.md 3.2): a project that fails to start costs ITS window, never the process or the others.
       if (launch) throw err;
@@ -79,7 +79,7 @@ function createProjectLifecycle({
     return { pw, existing: false, first };
   }
 
-  async function startProject(cwd, { launch = false } = {}) {
+  async function startProject(cwd, { launch = false, show = 'setting' } = {}) {
     // Checked BEFORE a window is built: the project may already have one, and building a window to throw it away costs a whole object graph.
     const root = rootOf(cwd);
     const open = registry.get(root);
@@ -90,7 +90,7 @@ function createProjectLifecycle({
       const r = await pending;
       return r.pw ? bringForward(r.pw, cwd) : r;
     }
-    const p = openNew(cwd, launch);
+    const p = openNew(cwd, launch, show);
     inFlight.set(key, p);
     try { return await p; } finally { if (inFlight.get(key) === p) inFlight.delete(key); }
   }
