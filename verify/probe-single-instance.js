@@ -302,6 +302,24 @@ async function cases6and7() {
   const ua = await command(app, { cmd: 'reader-unsaved', window: A.container, key: keyA, path: 'notes-a.md' });
   const ub = await command(app, { cmd: 'reader-unsaved', window: B.container, key: keyB, path: 'notes-b.md' });
   check('7: unsaved text reported in A and B', ua.ok === true && ub.ok === true, JSON.stringify([ua, ub]));
+  // PR #258 Dexter r2: the one earlier miss was B's entry cleared before the quit (a page navigation, or a null tab:readerDirty from the
+  // page). So the quit waits until BOTH windows hold their text on two reads in a row; an entry that was cleared is reported again. Bounded.
+  const want = [[A.container, keyA, 'notes-a.md'], [B.container, keyB, 'notes-b.md']];
+  const holds = async () => { const r = []; for (const [w, k, p] of want) { const s = await command(app, { cmd: 'state', window: w }); r.push(!!s && s.selectedKey === k && s.readerUnsaved === p); } return r; };
+  let steady = false; let last = [false, false]; let reported = 0;
+  const end7 = Date.now() + 60000;
+  while (Date.now() < end7) {
+    const first = await holds();
+    await sleep(1000);
+    last = await holds();
+    if (first.every(Boolean) && last.every(Boolean)) { steady = true; break; }
+    for (let i = 0; i < want.length; i++) {
+      if (!last[i]) { const [w, k, p] = want[i]; await command(app, { cmd: 'reader-unsaved', window: w, key: k, path: p }); reported++; }
+    }
+  }
+  check('7: both windows hold their unsaved text (two reads in a row) before the quit', steady,
+    `A=${last[0]} B=${last[1]}; reported again ${reported} time(s)${steady ? '' : '; after 60 s a window still had no unsaved text for its selected develop tab'}`);
+  if (reported) console.log(`      (7: an unsaved entry was gone and reported again ${reported} time(s) before the quit)`);
   await command(app, { cmd: 'quit', graceful: true });
   const gone = await waitFor(() => (app.exited ? true : null), 300000, 1000);
   const asked = app.out.split('\n').filter((l) => /quit question \(probe, answered discard\)/.test(l));
