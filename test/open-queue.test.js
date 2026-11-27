@@ -80,3 +80,20 @@ test('P-Q1: opens never overlap inside the bound, run in arrival order, and ever
       if (hangs() === 0) assert.strictEqual(overlap, false, 'no overlap unless a stuck open was let go by the bound');
     }), { numRuns: 40 });
 });
+
+test('PR #258 Dexter 7: onIdle(fn) runs fn once the last open settled (at once, on the next tick, when nothing is opening)', async () => {
+  let release;
+  const q = load().createOpenQueue({ open: () => new Promise((r) => { release = r; }) });
+  const seen = [];
+  const p = q.push('a');
+  q.onIdle(() => seen.push('idle-1'));
+  await new Promise((r) => setImmediate(r));
+  assert.deepStrictEqual(seen, [], 'still opening');
+  release('a');
+  await p;
+  await new Promise((r) => setImmediate(r));
+  assert.deepStrictEqual(seen, ['idle-1']);
+  q.onIdle(() => seen.push('idle-2'));
+  await new Promise((r) => setImmediate(r));
+  assert.deepStrictEqual(seen, ['idle-1', 'idle-2']);
+});

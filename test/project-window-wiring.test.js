@@ -92,7 +92,7 @@ test('a window\'s own lean unit and indexing overlay are made per window and att
   assert.match(body, /windowUnits\.set\(pw, \{ lean, overlay \}\);\s*pw\.attach\(\{ leanBridge: lean, indexing: overlay \}\);/, 'the window sees both the moment main has them');
   const ready = MAIN.slice(MAIN.indexOf('app.whenReady().then('));
   // PR 3: the restore decision sits between the tray and the launch window; it makes no window
-  assert.match(ready, /startIndexing\(seams\);\s*startTray\(\);\s*const restorePlan = await decideRestore\(\);\s*const launched = await startProject\(LAUNCH_CWD/, 'the service exists before the first window (and so its overlay)');
+  assert.match(ready, /startIndexing\(seams\);\s*startTray\(\);\s*const restorePlan = await appLifecycle\.decideRestore\([^\n]*\n\s*const launched = await startProject\(LAUNCH_CWD/, 'the service exists before the first window (and so its overlay)');
   // the order (record, then units, then start) is app/project-lifecycle.js's, pinned by behaviour in test/project-lifecycle.test.js
   assert.match(MAIN, /makeUnits: \(pw\) => makeWindowUnits\(pw\),/, 'the lifecycle makes the units before it starts the window');
   assert.match(MAIN, /onWindowCreated: \(pw\) => windowCreated\(pw\),/);
@@ -192,8 +192,8 @@ test('startProject: the launch window is the process\'s own; any other project i
 test('seam guard: `launchWindow` is named only where the launch itself is the point (an allow-list of constructs)', () => {
   // The construct that encloses each mention: the last top-level `function name(` / `async function name(` / `app.whenReady` / `const launchWindow` before it.
   const owners = new Map();
-  const marks = [...MAIN.matchAll(/^(?:async )?function (\w+)\(|^(app\.whenReady)\(|^(let launchWindow) =|^(const windowServices) =/gm)]
-    .map((m) => ({ at: m.index, name: m[1] || m[2] || m[3] || m[4] }));
+  const marks = [...MAIN.matchAll(/^(?:async )?function (\w+)\(|^(app\.whenReady)\(|^(let launchWindow) =|^(const windowServices) =|^(const appLifecycle) =/gm)]
+    .map((m) => ({ at: m.index, name: m[1] || m[2] || m[3] || m[4] || m[5] }));
   for (const m of MAIN.matchAll(/\blaunchWindow\b/g)) {
     let owner = '(top level)';
     for (const mk of marks) if (mk.at < m.index) owner = mk.name;
@@ -203,7 +203,7 @@ test('seam guard: `launchWindow` is named only where the launch itself is the po
     'let launchWindow': 'its declaration (null until whenReady\'s startProject made it)',
     'app.whenReady': 'the launch order: claim, markReady, the refusals, the poll, the screenshot and the probe driver',
     startIndexing: 'warming the chip\'s list for the launch project',
-    runRestores: 'after a crash restore the launched project keeps the focus (PR 3, plan §6 call 12)',
+    'const appLifecycle': 'getLaunchWindow: after a crash restore the launched project keeps the focus (PR 3, plan §6 call 12)',
     registerIpc: 'the vault probe, which uses the launch window\'s service',
   };
   const names = [...owners.keys()].filter((k) => k !== '(top level)').sort();
@@ -243,7 +243,8 @@ test('close vs quit (P3 at the wiring level): a closed window tells main; main d
   assert.match(MAIN, /function windowsChanged\(\) \{\s*seenGate\(\);\s*if \(trayController\) trayController\.sync\(\);/, 'the tray and the Resources sampler are told');
   assert.doesNotMatch(MAIN, /projectClosed[^;\n]*quitting/, 'a quit cancelled by one window\'s prompt has already closed another: it must not stay registered with no window');
   // the quit path is the last window\'s and is unchanged: window-all-closed quits, the quit handlers stop each window
-  assert.match(MAIN, /app\.on\('window-all-closed', \(\) => \{\s*app\.quit\(\);\s*\}\);/);
+  // PR #258 Dexter 7: through the app lifecycle, which waits for an open in flight before it quits (test/app-lifecycle.test.js)
+  assert.match(MAIN, /app\.on\('window-all-closed', \(\) => \{\s*appLifecycle\.onWindowAllClosed\(\);\s*\}\);/);
 });
 
 test('dispose() stops what a window runs on its own, and the poll and the issue warm-up are guarded timers', () => {

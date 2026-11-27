@@ -70,7 +70,9 @@ function createWindowClaim(deps) {
   let readyResolve;
   const readyPromise = new Promise((resolve) => { readyResolve = resolve; });
 
-  const accepting = () => !stopped && (ready || now() - t0 < readyBoundMs);
+  // refuse(): optional; true while this process must take no launch (the quit question is up: PR #258 Dexter 13)
+  const refusing = () => { try { return typeof deps.refuse === 'function' && deps.refuse() === true; } catch { return false; } };
+  const accepting = () => !stopped && !refusing() && (ready || now() - t0 < readyBoundMs);
 
   function releaseFile() {
     if (released) return;

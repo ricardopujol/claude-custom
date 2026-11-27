@@ -98,7 +98,9 @@ test('a cancelled close puts quitting back, so close-to-tray keeps working (Migu
   const close = MAIN.slice(MAIN.indexOf("win.on('close'"), MAIN.indexOf("win.on('closed'"));
   // PR 3: through main's quitCancelled(), which sets quitting = false (pinned in test/single-instance-wiring.test.js)
   assert.match(close, /closeGuarded = true; win\.close\(\); \}[\s\S]{0,300}else quitCancelled\(\);/);
-  assert.match(MAIN, /function quitCancelled\(\) \{\s*quitting = false;/);
+  // quitCancelled is app/app-lifecycle.js's: setQuitting(false) first (behaviour-tested there), through main's setter
+  assert.match(MAIN, /const quitCancelled = \(\) => appLifecycle\.quitCancelled\(\);/);
+  assert.match(MAIN, /setQuitting: \(v\) => \{ quitting = v; \},/);
 });
 
 test('will-quit destroys the tray FIRST, so a throwing sampler stop cannot leave a ghost icon (Miguel S1)', () => {

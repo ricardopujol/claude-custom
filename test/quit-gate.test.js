@@ -160,3 +160,17 @@ test('P-G1: for any sequence of quit requests and answers, at most one question 
       assert.strictEqual(cancelAllowed, false);
     }), { numRuns: 100 });
 });
+
+test('PR #258 Dexter 13: asking() is true exactly while the question is up', async () => {
+  let release;
+  const { wins } = rig();
+  const gate = load().createQuitGate({ windows: () => wins, ask: () => new Promise((r) => { release = r; }), notify() {}, waitCleared: async () => true,
+    quit() {}, probe: false, record() {}, log() {} });
+  assert.strictEqual(gate.asking(), false);
+  gate.onBeforeQuit({ preventDefault() {} });
+  await settle();
+  assert.strictEqual(gate.asking(), true);
+  release('cancel');
+  await settle(); await settle();
+  assert.strictEqual(gate.asking(), false);
+});

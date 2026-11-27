@@ -84,7 +84,8 @@ function createQuitGate({ windows, ask, notify, waitCleared, quit, probe = false
 
   function reset() { approved = false; }
 
-  return { onBeforeQuit, reset };
+  // the question is up: launches are refused meanwhile, so none is quit with this process (PR #258 Dexter 13)
+  return { onBeforeQuit, reset, asking: () => asking };
 }
 
 module.exports = { createQuitGate, questionText };

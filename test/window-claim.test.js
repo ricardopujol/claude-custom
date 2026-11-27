@@ -378,3 +378,15 @@ test('D1: the default prove is the owner-file proof over startTimes', async () =
     send: async (o) => { sent.push(o); return sent.length === 1 ? { ok: false, error: 'no ack' } : { ok: true }; } });
   assert.strictEqual(await createWindowClaim(deps).run(), 'exit', 'S10 is the start the owner file names: live, so it is waited for');
 });
+
+test('PR #258 Dexter 13: refuse() true (the quit question is up) -> not accepting, even when ready', async () => {
+  const { createWindowClaim } = load();
+  let refuse = false;
+  const { deps } = fakes({ refuse: () => refuse });
+  const c = createWindowClaim(deps);
+  await c.run();
+  c.markReady();
+  assert.strictEqual(c.accepting(), true);
+  refuse = true;
+  assert.strictEqual(c.accepting(), false);
+});

@@ -63,7 +63,10 @@ test('the owner stops being one at before-quit, before a dialog that ends the pr
 test('a cancelled quit (the unsaved-text prompt answered Cancel) puts the window back as the project\'s owner (M1)', () => {
   // PR 3: through main's quitCancelled(), which resumes every open window's claim and the app claim
   assert.match(src, /else quitCancelled\(\);/);
-  assert.match(src, /function quitCancelled\(\) \{[\s\S]{0,300}p\.claim\.resume\(\)/);
+  // the resumes are app/app-lifecycle.js quitCancelled's (behaviour: test/app-lifecycle.test.js, PR #258 Miguel I4)
+  assert.match(src, /const quitCancelled = \(\) => appLifecycle\.quitCancelled\(\);/);
+  const lc = fs.readFileSync(path.join(__dirname, '..', 'app', 'app-lifecycle.js'), 'utf8');
+  assert.match(lc, /p\.claim\.resume\(\)/);
 });
 
 test('every app.exit after markReady() in whenReady is preceded by windowClaim.stop(): a held launch must hear no, not ok (PR #248 Dexter 1)', () => {

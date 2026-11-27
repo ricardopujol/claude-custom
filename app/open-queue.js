@@ -29,14 +29,23 @@ function createOpenQueue({ open, boundMs = 60_000, log = () => {} } = {}) {
     });
   }
 
+  let idle = [];
+  const flushIdle = () => { if (pending > 0) return; const fns = idle; idle = []; for (const fn of fns) { try { fn(); } catch (err) { log(`[main] open queue idle: ${err && err.message}`); } } };
+
   function push(job) {
     pending++;
     const r = tail.then(() => runOne(job));
     tail = r.then(() => {}, () => {});
-    return r.finally(() => { pending--; });
+    return r.finally(() => { pending--; if (pending === 0) setImmediate(flushIdle); });
   }
 
-  return { push, busy: () => pending > 0 };
+  /** Run fn once nothing is opening (on the next tick when nothing is): main's quit after the last window closed (PR #258 Dexter 7). */
+  function onIdle(fn) {
+    idle.push(fn);
+    if (pending === 0) setImmediate(flushIdle);
+  }
+
+  return { push, busy: () => pending > 0, onIdle };
 }
 
 module.exports = { createOpenQueue };

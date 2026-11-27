@@ -73,7 +73,7 @@ function createAppClaim(deps) {
     message: () => ({ cwd: launchCwd, install: installDir, probe, env: envOf(env) }),
     tag: 'single instance',
     ackMs: Number.isFinite(deps.ackMs) ? deps.ackMs : APP_ACK_MS,
-    act, onExit, log,
+    act, onExit, log, refuse: deps.refuse,
     readyBoundMs: deps.readyBoundMs, now: deps.now, mono: deps.mono,
   });
 }

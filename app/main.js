@@ -85,7 +85,8 @@ const { createAppClaim, ENV_NAMES: LAUNCH_ENV_NAMES } = require('../host/app-cla
 const { createOpenQueue } = require('./open-queue');
 const { createOpenProject } = require('./open-project');
 const { createQuitGate, questionText } = require('./quit-gate');
-const { restoreDecision, createOpenWindowsWriter, readRecord, cleanWindows } = require('../host/open-windows');
+const { createAppLifecycle } = require('./app-lifecycle');
+const { restoreDecision, createOpenWindowsWriter, readRecord } = require('../host/open-windows');
 const appOwner = require('../host/app-owner');
 const { proveOwner } = require('../host/owner-file');
 // The repo browser's two main-only actions (#45): Show in Explorer, and the drag-out. Both re-run the path
@@ -1288,15 +1289,9 @@ const appClaim = createAppClaim({
   launchCwd: LAUNCH_CWD, installDir: INSTALL_DIR, probe: APP_LOCK.probe, env: process.env, samePath,
   act: (msg) => openProject({ cwd: msg.cwd, env: msg.env, show: 'shown' }),
   onExit: (fn) => onProcessExit('app', fn),        // main's one exit hook (below); its entry is never dropped
+  refuse: () => appLifecycle.refuseLaunches(),     // the quit question is up: a launch opens its own process (PR #258 Dexter 13)
   log: (...a) => console.log(...a),
 });
-// No window and nothing opening: this process has nothing to be. The claim stops first, so a launch held on it hears no and opens its own.
-function quitIfEmpty() {
-  if (registry.size() > 0 || openQueue.busy()) return false;
-  appClaim.stop();
-  app.quit();
-  return true;
-}
 // A launch handed to the running Jiandu leaves with app.exit(0), which skips will-quit: its cache folder goes now (app/cache-dirs.js).
 function removeOwnCache() { require('./cache-dirs').removeOwn(); }
 
@@ -1308,22 +1303,38 @@ process.on('exit', () => {
 });
 function onProcessExit(pw, fn) { const fns = exitHooks.get(pw) || []; fns.push(fn); exitHooks.set(pw, fns); }
 
+// The process-level decisions (app/app-lifecycle.js, behaviour-tested): the lock, the restore record, the quit. Main hands in the effects.
+const OPEN_WINDOWS_FILE = path.join(UI_STATE_DIR, 'open-windows.json');
+const appLifecycle = createAppLifecycle({
+  registry, openQueue, appClaim, lockOn: APP_LOCK.on, pid: process.pid,
+  ownStart: () => ownStartTime(),
+  readLockOwner: () => (APP_LOCK.on ? appOwner.read(APP_LOCK.dir) : null),
+  readRecord: () => readRecord(OPEN_WINDOWS_FILE),
+  proveOwner: (owner) => proveOwner(owner, { startTimes }),
+  decide: (record, proof, launchRoot) => restoreDecision({ record, proof, bootAt: Date.now() - os.uptime() * 1000, launchRoot,
+    exists: (p) => fs.existsSync(p), samePath }),
+  makeWriter: ({ owner, owns }) => createOpenWindowsWriter({ file: OPEN_WINDOWS_FILE, owner, owns }),
+  openProject: (o) => openProject(o),
+  quit: () => app.quit(),
+  getLaunchWindow: () => launchWindow,
+  quitGate: { reset: () => quitGate.reset(), asking: () => quitGate.asking() },
+  setQuitting: (v) => { quitting = v; },
+  isQuitting: () => quitting,
+  log: (l) => console.log(l),
+});
+const quitIfEmpty = () => appLifecycle.quitIfEmpty();
+const ownsAppLock = () => appLifecycle.ownsAppLock();
+const markRecordClean = () => appLifecycle.markRecordClean();
+const quitCancelled = () => appLifecycle.quitCancelled();
+const dirtyParent = () => appLifecycle.dirtyParent();
+// A displaced owner claims app.json again once its displacer let go of it (PR #258 Dexter 2): looked at every 30 s while running.
+setInterval(() => { appLifecycle.reclaimTick().catch(() => {}); }, 30_000).unref();
+
 // --- quit: one question for every window's unsaved reader text (single-instance PR 3, app/quit-gate.js) ----------------------------
 // The question sits on the dirty window used last (else the first dirty one), shown first if hidden. Asked in before-quit, before any
 // claim stops, so Cancel has nothing to undo. Under the probe driver nobody is asked: the answer is discard, and it is recorded.
-function dirtyParent() {
-  const dirty = registry.list().filter((p) => p.readerUnsaved.all().length > 0);
-  const last = registry.lastUsed();
-  return dirty.includes(last) ? last : (dirty[0] || null);
-}
 const quitGate = createQuitGate({
-  windows: () => registry.list().map((p) => ({
-    label: p.label,
-    unsaved: () => p.readerUnsaved.all().map((u) => u.path),
-    saveAll: () => p.saveReaders(),
-    allowClose: () => p.allowClose(true),
-    pw: p,
-  })),
+  windows: () => appLifecycle.gateWindows(),       // only windows still there (PR #258 Dexter 6)
   ask: async (dirty) => {
     const parent = dirtyParent();
     if (parent) parent.focusWindow();
@@ -1344,57 +1355,6 @@ const quitGate = createQuitGate({
   record: (entry) => { probeConfirms.push(entry); console.log(`[main] quit question (probe, answered discard): ${JSON.stringify(entry.unsaved)}`); },
   log: (l) => console.log(l),
 });
-// A quit cancelled after before-quit ran (a window's own unsaved-text prompt answered Cancel): this process stays, so it is the install's
-// owner and every open window its project's owner again; the next quit asks again.
-function quitCancelled() {
-  quitting = false;
-  quitGate.reset();
-  appClaim.resume().catch(() => {});
-  forEachProject((p) => { p.allowClose(false); if (p.win && !p.win.isDestroyed()) p.claim.resume().catch(() => {}); });
-}
-
-// --- the crash-restore record (single-instance PR 3, host/open-windows.js) ----------------------------------------------------------
-// `<UI state dir>\open-windows.json`: the windows open now, written on change, ONLY by the process app.json names (a displaced one writes
-// nothing). A quit writes it clean; a crash leaves it not clean, and the next start of this install reopens those windows.
-const OPEN_WINDOWS_FILE = path.join(UI_STATE_DIR, 'open-windows.json');
-const openRecord = { writer: null, start: null };
-function ownsAppLock() {
-  if (!APP_LOCK.on || typeof openRecord.start !== 'string') return false;
-  const o = appOwner.read(APP_LOCK.dir);
-  return !!o && o.pid === process.pid && o.start === openRecord.start;
-}
-const currentWindows = () => registry.list().map((p) => ({ root: p.root, cwd: p.launchCwd, hidden: !!p.win && !p.win.isDestroyed() && !p.win.isVisible() }));
-// After the lock, before the launch window: which windows come back. [] unless this process owns the lock and the last owner crashed.
-async function decideRestore() {
-  if (!APP_LOCK.on) return [];
-  const start = await ownStartTime().catch(() => null);
-  if (typeof start !== 'string') return [];
-  openRecord.start = start;
-  if (!ownsAppLock()) return [];
-  const record = readRecord(OPEN_WINDOWS_FILE);
-  const owner = record && typeof record === 'object' ? record.owner : null;
-  const proof = owner && Number.isInteger(owner.pid) && owner.pid > 0 && typeof owner.start === 'string'
-    ? await proveOwner({ pid: owner.pid, start: owner.start }, { startTimes }) : null;
-  const launchProject = projectOf(LAUNCH_CWD);
-  const d = restoreDecision({ record, proof, bootAt: Date.now() - os.uptime() * 1000, launchRoot: launchProject ? launchProject.root : LAUNCH_CWD,
-    exists: (p) => fs.existsSync(p), samePath });
-  console.log(`[main] restore       : ${d.reason}${d.restore.length ? ` (${d.restore.length} window${d.restore.length === 1 ? '' : 's'})` : ''}`);
-  for (const s of d.skipped) console.log(`[main] restore skipped ${JSON.stringify(s.root)}: ${s.reason}`);
-  openRecord.writer = createOpenWindowsWriter({ file: OPEN_WINDOWS_FILE, owner: { pid: process.pid, start }, owns: ownsAppLock });
-  // `restoring: true` is written BEFORE the first restored window: a restore that crashes is not run again (plan risk 7)
-  openRecord.writer.begin({ restoring: d.restore.length > 0, keep: d.restore.length ? cleanWindows(record.windows) : [] });
-  return d.restore;
-}
-// The restores, through the open queue, after the launch window; then the record follows the windows. The launched project keeps the focus.
-function runRestores(list) {
-  const done = () => {
-    if (openRecord.writer) openRecord.writer.endRestore(currentWindows());
-    const w = launchWindow && launchWindow.win;
-    if (list.length && w && !w.isDestroyed() && w.isVisible()) launchWindow.focusWindow();
-  };
-  Promise.all(list.map((w) => openProject({ cwd: w.cwd, show: w.hidden ? 'hidden' : 'shown' }))).catch(() => {}).finally(done);
-}
-const markRecordClean = () => { if (openRecord.writer) openRecord.writer.markClean(); };
 
 // ONE place that hears "the set of windows, or what they show, changed" (single-instance PR 3): a window started (the lifecycle), closed,
 // or was minimised, restored, hidden or shown. The Resources sampler asks who is looking, and the tray syncs.
@@ -1402,7 +1362,7 @@ const seenGate = createSeenGate({ registry, getResources: () => resources });
 function windowsChanged() {
   seenGate();
   if (trayController) trayController.sync();
-  if (openRecord.writer) openRecord.writer.sync(currentWindows());
+  appLifecycle.syncRecord();
 }
 
 // What every project window is handed (app/project-window.js). The Resources service, the tray and the lean/indexing units are read live.
@@ -1498,7 +1458,7 @@ app.whenReady().then(async () => {
   startIndexing(seams);
   startTray();
   // A crash of the last owner: which windows come back (host/open-windows.js). They open after the launch window, through the queue.
-  const restorePlan = await decideRestore();
+  const restorePlan = await appLifecycle.decideRestore((projectOf(LAUNCH_CWD) || { root: LAUNCH_CWD }).root);   // decides, writes nothing (PR #258 Dexter 8)
 
   // One window per project: the launch window's claim runs inside startProject, before the window is registered or made; a project whose
   // window is another process's has had this launch handed there, and this process ends with no window.
@@ -1532,8 +1492,9 @@ app.whenReady().then(async () => {
   }
   // The first window settled and this process stays: from here a launch of ANY project of this install is handed here.
   if (quitIfEmpty()) return;
+  appLifecycle.beginRecord();           // the record's first write, only now that this process stays (PR #258 Dexter 8 / Miguel I1)
   appClaim.markReady();
-  runRestores(restorePlan);
+  appLifecycle.runRestores(restorePlan).catch(() => {});
   launchWindow.startPoll();
 
   // Headless verification path.
@@ -1558,8 +1519,9 @@ app.whenReady().then(async () => {
 });
 
 // Closing the window detaches; it does not end the session.
+// The last window closed: quit, unless a launch already told ok is being opened (app/app-lifecycle.js; PR #258 Dexter 7 / Miguel I2).
 app.on('window-all-closed', () => {
-  app.quit();
+  appLifecycle.onWindowAllClosed();
 });
 
 app.on('will-quit', () => { forEachProject((p) => p.stopDevServers()); });

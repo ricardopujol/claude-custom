@@ -37,9 +37,9 @@ test('whenReady: services, menu, IPC, indexing, tray, then the launch window, it
 
 test('a launch whose project is another process\'s window, or whose start ended with no window, goes through quitIfEmpty (never a swallowed launch)', () => {
   assert.match(readyBody, /if \(launched\.elsewhere\) \{ quitIfEmpty\(\); return; \}/);
-  const body = bodyAt(MAIN, MAIN.indexOf('function quitIfEmpty('));
-  assert.match(body, /registry\.size\(\) > 0 \|\| openQueue\.busy\(\)/);
-  assert.match(body, /appClaim\.stop\(\);\s*app\.quit\(\);/, 'the claim stops first: launches held on it hear no');
+  // PR #258 Miguel I4: the decision is app/app-lifecycle.js's (test/app-lifecycle.test.js: a window or an open in flight keeps the process,
+  // the app claim stops before the quit); main only wires it
+  assert.match(MAIN, /const quitIfEmpty = \(\) => appLifecycle\.quitIfEmpty\(\);/);
 });
 
 test('every app.exit in whenReady after the app claim ran stops the app claim first (a held launch hears no)', () => {
@@ -68,15 +68,18 @@ test('cache-dirs exports removeOwn and main calls it only on the handed-over exi
   assert.ok(readyBody.indexOf('removeOwnCache();') > readyBody.indexOf("appClaim.run() === 'exit'"));
 });
 
-test('step 11: ONE before-quit handler, the gate first; only when it passes, quitting = true and the app claim and every window claim stop', () => {
+// (one test for this handler: PR #258 Miguel S6 merged the probe-found duplicate here. The record is written clean BEFORE the app claim
+// stops, because stop releases app.json and the writer writes only while this process owns it: verify/probe-single-instance.js case 7.)
+test('step 11: ONE before-quit handler, the gate first; only when it passes, the record clean, quitting = true and the app claim and every window claim stop', () => {
   assert.strictEqual((MAIN.match(/app\.on\('before-quit'/g) || []).length, 1);
   const body = (MAIN.match(/app\.on\('before-quit', \(e\) => \{[\s\S]*?\n\}\);/) || [''])[0];
   assert.match(body, /if \(quitGate\.onBeforeQuit\(e\)\) return;\s*markRecordClean\(\);\s*quitting = true; forEachProject\(\(p\) => p\.claim\.stop\(\)\); appClaim\.stop\(\);/);
 });
 
 test('step 11: quitCancelled puts quitting back, resets the gate, resumes the app claim and every open window\'s claim; the tray\'s quit is app.quit alone', () => {
-  const body = bodyAt(MAIN, MAIN.indexOf('function quitCancelled('));
-  for (const piece of ['quitting = false;', 'quitGate.reset();', 'appClaim.resume()', 'p.claim.resume()', 'p.allowClose(false)']) assert.ok(body.includes(piece), piece);
+  // the pieces (quitting back, the gate reset, every claim resumed, the record reopened) are app/app-lifecycle.js's, behaviour-tested
+  assert.match(MAIN, /const quitCancelled = \(\) => appLifecycle\.quitCancelled\(\);/);
+  assert.match(MAIN, /setQuitting: \(v\) => \{ quitting = v; \},\s*isQuitting: \(\) => quitting,/);
   assert.match(MAIN, /quitCancelled: \(\) => quitCancelled\(\),/);
   assert.match(MAIN, /quit: \(\) => app\.quit\(\),/);
   const win = require('fs').readFileSync(require('path').join(__dirname, '..', 'app', 'project-window.js'), 'utf8');
@@ -89,21 +92,28 @@ test('step 11: the question sits on the dirty window used last, shown first; the
   const ask = MAIN.slice(MAIN.indexOf('const quitGate = createQuitGate({'));
   assert.match(ask, /const parent = dirtyParent\(\);\s*if \(parent\) parent\.focusWindow\(\);/);
   assert.match(ask, /probe: !!PROBE_PORT,[\s\S]{0,200}record: \(entry\) => \{ probeConfirms\.push\(entry\); console\.log\(/);
-  assert.match(MAIN, /return dirty\.includes\(last\) \? last : \(dirty\[0\] \|\| null\);/);
+  // which windows are asked about, and which one the question sits on: app/app-lifecycle.js (gateWindows, dirtyParent; PR #258 Dexter 6)
+  assert.match(ask, /windows: \(\) => appLifecycle\.gateWindows\(\),/);
+  assert.match(MAIN, /const dirtyParent = \(\) => appLifecycle\.dirtyParent\(\);/);
 });
 
 test('step 12: the restore decision after the tray and before the launch window; the restores after markReady; the record follows windowsChanged and is clean on will-quit and session-end', () => {
-  inOrder(readyBody, ['startTray()', 'const restorePlan = await decideRestore();', "await startProject(LAUNCH_CWD, { launch: true, show: 'setting' })",
-    'appClaim.markReady();', 'runRestores(restorePlan);']);
-  const body = bodyAt(MAIN, MAIN.indexOf('async function decideRestore('));
-  inOrder(body, ['if (!APP_LOCK.on) return [];', 'if (!ownsAppLock()) return [];', 'readRecord(OPEN_WINDOWS_FILE)', 'restoreDecision({',
-    'createOpenWindowsWriter({', 'owns: ownsAppLock', 'openRecord.writer.begin({ restoring: d.restore.length > 0']);
-  assert.match(MAIN, /function windowsChanged\(\) \{[\s\S]{0,200}if \(openRecord\.writer\) openRecord\.writer\.sync\(currentWindows\(\)\);/);
+  // PR #258 Dexter 8 / Miguel I1: decided before the launch window, WRITTEN (beginRecord) only once this process stays
+  inOrder(readyBody, ['startTray()', 'const restorePlan = await appLifecycle.decideRestore(', "await startProject(LAUNCH_CWD, { launch: true, show: 'setting' })",
+    'if (quitIfEmpty()) return;', 'appLifecycle.beginRecord();', 'appClaim.markReady();', 'appLifecycle.runRestores(restorePlan)']);
+  assert.match(MAIN, /function windowsChanged\(\) \{[\s\S]{0,200}appLifecycle\.syncRecord\(\);/);
   assert.match(MAIN, /app\.on\('will-quit', \(\) => \{ markRecordClean\(\); \}\);/);
   assert.match(MAIN, /sessionEnded: \(\) => markRecordClean\(\),/);
-  const restores = MAIN.slice(MAIN.indexOf('function runRestores('));
-  assert.match(restores.slice(0, 700), /openProject\(\{ cwd: w\.cwd, show: w\.hidden \? 'hidden' : 'shown' \}\)/);
-  assert.match(restores.slice(0, 700), /openRecord\.writer\.endRestore\(currentWindows\(\)\)/);
+  assert.match(MAIN, /makeWriter: \(\{ owner, owns \}\) => createOpenWindowsWriter\(\{ file: OPEN_WINDOWS_FILE, owner, owns \}\),/);
+});
+
+test('PR #258 Dexter 7 / Miguel I2: window-all-closed goes through the app lifecycle (an open in flight is waited for)', () => {
+  assert.match(MAIN, /app\.on\('window-all-closed', \(\) => \{\s*appLifecycle\.onWindowAllClosed\(\);\s*\}\);/);
+});
+
+test('PR #258 Dexter 2 / 13: the reclaim tick runs every 30 s; the app claim refuses launches while the quit question is up', () => {
+  assert.match(MAIN, /setInterval\(\(\) => \{ appLifecycle\.reclaimTick\(\)\.catch\(\(\) => \{\}\); \}, 30_000\)\.unref\(\);/);
+  assert.match(MAIN, /refuse: \(\) => appLifecycle\.refuseLaunches\(\),/);
 });
 
 test('step 12: the record is written only through its writer (no other write of open-windows.json)', () => {
@@ -140,9 +150,4 @@ test('the new single-instance modules require no Electron (they load under plain
     const src = fs.readFileSync(path.join(root, f), 'utf8');
     assert.doesNotMatch(src, /require\(\s*['"]electron['"]\s*\)/, f);
   }
-});
-
-test('found by verify/probe-single-instance.js case 7: the record is written clean in before-quit, BEFORE the app claim stops (stop releases app.json, and the writer writes only while this process owns it)', () => {
-  const body = (MAIN.match(/app\.on\('before-quit', \(e\) => \{[\s\S]*?\n\}\);/) || [''])[0];
-  assert.match(body, /if \(quitGate\.onBeforeQuit\(e\)\) return;\s*markRecordClean\(\);\s*quitting = true; forEachProject\(\(p\) => p\.claim\.stop\(\)\); appClaim\.stop\(\);/);
 });
