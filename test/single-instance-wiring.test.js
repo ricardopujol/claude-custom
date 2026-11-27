@@ -91,7 +91,7 @@ test('step 11: quitCancelled puts quitting back, resets the gate, resumes the ap
 test('step 11: the question sits on the dirty window used last, shown first; the probe answers discard and records it', () => {
   const ask = MAIN.slice(MAIN.indexOf('const quitGate = createQuitGate({'));
   assert.match(ask, /const parent = dirtyParent\(\);\s*if \(parent\) parent\.focusWindow\(\);/);
-  assert.match(ask, /probe: !!PROBE_PORT,[\s\S]{0,200}record: \(entry\) => \{ probeConfirms\.push\(entry\); console\.log\(/);
+  assert.match(ask, /probe: !!PROBE_PORT,[\s\S]{0,200}record: \(entry\) => \{\s*probeConfirms\.push\(entry\);\s*console\.log\(/);
   // which windows are asked about, and which one the question sits on: app/app-lifecycle.js (gateWindows, dirtyParent; PR #258 Dexter 6)
   assert.match(ask, /windows: \(\) => appLifecycle\.gateWindows\(\),/);
   assert.match(MAIN, /const dirtyParent = \(\) => appLifecycle\.dirtyParent\(\);/);

@@ -86,6 +86,8 @@ const { createOpenQueue } = require('./open-queue');
 const { createOpenProject } = require('./open-project');
 const { createQuitGate, questionText } = require('./quit-gate');
 const { createAppLifecycle } = require('./app-lifecycle');
+// The tray's one list of sessions with no window, over every window's tabs (appBackgroundModel).
+const { menuModel } = require('./background-menu');
 const { restoreDecision, createOpenWindowsWriter, readRecord } = require('../host/open-windows');
 const appOwner = require('../host/app-owner');
 const { proveOwner } = require('../host/owner-file');
@@ -1352,7 +1354,12 @@ const quitGate = createQuitGate({
   quit: () => app.quit(),
   probe: !!PROBE_PORT,
   // the probe reads this line after the process ended (verify/probe-single-instance.js case 7): window names and file names only
-  record: (entry) => { probeConfirms.push(entry); console.log(`[main] quit question (probe, answered discard): ${JSON.stringify(entry.unsaved)}`); },
+  record: (entry) => {
+    probeConfirms.push(entry);
+    console.log(`[main] quit question (probe, answered discard): ${JSON.stringify(entry.unsaved)}`);
+    // every registered window as the gate saw it (a window left out of the question says why: no window, or no text)
+    console.log(`[main] quit question windows (probe): ${JSON.stringify(registry.list().map((p) => ({ window: p.label, live: !!p.win && !p.win.isDestroyed(), unsaved: p.readerUnsaved.all().length })))}`);
+  },
   log: (l) => console.log(l),
 });
 

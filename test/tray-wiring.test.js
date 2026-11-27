@@ -120,3 +120,10 @@ test('the preload and the Style tab: the DESIRED state goes out, the saved answe
   const refresh = JS.slice(JS.indexOf('function refreshTraySettings'), JS.indexOf('function settledChrome'));
   assert.match(refresh, /setTimeout\(refreshTraySettings/, 'a null answer asks again, never reads as OFF');
 });
+
+test('found by a probe run: main imports menuModel, which appBackgroundModel calls (the tray said "menuModel is not defined" and listed no windowless session)', () => {
+  const body = bodyOf(/async function appBackgroundModel\(\)/);
+  assert.match(body, /menuModel\(await listBackground\(\)/);
+  // main.js ALONE (this file's MAIN also holds app/project-window.js, which has its own import)
+  assert.match(require('./main-source').mainOnly(), /^const \{ menuModel \} = require\('\.\/background-menu'\);/m);
+});
