@@ -5,7 +5,11 @@
  *
  * A named pipe the window's own main process listens on, `\\.\pipe\claude-custom-window-<pid>` -- the same transport the
  * hook helper already uses for a host (`claude-custom-<pid>`). The pid is the one in the owner file (host/window-owner.js), so the
- * launcher needs nothing else to find it. One JSON line in ({ cwd?, port? }), one JSON line out ({ ok }), then it closes.
+ * launcher needs nothing else to find it. One JSON line in ({ root?, cwd?, port? }), one JSON line out ({ ok }), then it closes.
+ * SINGLE-INSTANCE PR 3: one process holds several windows, so it listens ONCE on that name and routes by `root` (host/window-router.js);
+ * the same listener serves the app pipe `claude-custom-app-<pid>` (appPipeNameFor, another message filter: host/app-claim.js). A sender
+ * may ask for an ack (`ack: true`): it is answered `{"ack":true}` at once, so a hung owner (no ack) is told from one that holds the
+ * launch while it starts. A sender that does not ask gets exactly one line, as before.
  * A window that is READY answers ok the moment the message is understood and focuses and selects right after. A window still starting
  * HOLDS the launch (no idle drop) until it is ready (ok) or stops / passes its start bound (not ok), so ok is never said by a window that
  * may end before it acts (PR #247 round 2 M2). The launch's own wait is longer than the bound (host/window-claim.js).

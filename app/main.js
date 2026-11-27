@@ -2,14 +2,20 @@
 /**
  * claude-custom :: Electron main  -- the app-wide half of the tab shell
  *
- * One Electron process, any number of project windows (single-instance PR 2; one launch is still one process, the app lock is PR 3).
+ * One Electron process per install (single-instance PR 3), any number of project windows (PR 2). A launch first runs the APP LOCK
+ * (host/app-claim.js over `<state>\app.json` and the app pipe; on/off and where is host/app-lock-config.js, NOT Electron's
+ * requestSingleInstanceLock, which is per user-data folder and would hand a test build's launch to the daily app): a running Jiandu of this
+ * install gets the folder and this launch ends; else this process becomes it. Every open (that handoff, the tray, the ▾ menu, the probe
+ * driver, a crash restore) is openProject (app/open-project.js) behind one queue (app/open-queue.js). Every window holds its own one-window
+ * claim on the process's ONE routed window pipe (host/window-router.js). One tray speaks for every window; quit asks once for every
+ * window's unsaved text (app/quit-gate.js); the crash-restore record is host/open-windows.js.
  * Everything that belongs to ONE project's window (its BrowserWindow, tab shell, marks, occupancy, views, dev servers, focus and cue
  * state, the one-window claim, the launch folder's MODE) lives in app/project-window.js, made by createProjectWindow() and started by
  * its own start(); the tabs/single modes are described there. app/project-registry.js is the registry of the windows.
  *
  * This file keeps what is app-wide and what must be registered once per process: every ipcMain handler (each reaches a window
  * through stripOwner(e) / viewOwner(sender) / registry.panelOwner(sender), or a per-window unit or record found the same way, never by
- * naming "the" window), the UI store, the tray (it speaks for the first window), the Resources service and sampler (over every window),
+ * naming "the" window), the UI store, the tray (it sums and lists every window), the Resources service and sampler (over every window),
  * the per-project records (secrets, layout: app/project-records.js) and units (lean, indexing overlay), startProject (open a project in
  * this process), the launch order in whenReady and the quit handlers. The decisions themselves are pure and tested elsewhere
  * (host/tab-lifecycle.js, app/tab-model.js, app/tab-shell.js).

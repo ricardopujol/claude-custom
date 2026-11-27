@@ -9,7 +9,8 @@
  * for a window that has a live peer, the one whose cache the peer holds (PR #251 Miguel Y4): the first or only window keeps its
  * shader cache and its first-paint speed.
  * The folder is removed at will-quit when it can be (Chromium may still hold files then, and app.exit() skips will-quit), and
- * otherwise by the next start, which sweeps every folder whose pid is gone. */
+ * otherwise by the next start, which sweeps every folder whose pid is gone. A launch handed to the running Jiandu (single-instance PR 3)
+ * ends with app.exit(0), so it removes its own folder first (removeOwn): the owner may live for days, and nothing else would sweep it. */
 const fs = require('fs');
 const os = require('os');
 const path = require('path');

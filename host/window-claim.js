@@ -2,6 +2,8 @@
 /**
  * "One window per project", the launch-time orchestration and the owner's life cycle (DESIGN_TABS_SESSIONS.md 3.3). Out of app/main.js
  * with every effect handed in (PR #247 Miguel I2), so each path is a test and not a regex over main.js.
+ * SINGLE-INSTANCE PR 3: every window of a process holds one (its listen is host/window-router.js register), and the APP lock is this same
+ * claim with another owner file, pipe and message (host/app-claim.js), through the optional deps below; not a second copy.
  *
  *   createWindowClaim(deps) -> { run(), markReady(), stop(), resume(), accepting() }
  *

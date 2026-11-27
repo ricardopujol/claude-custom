@@ -118,3 +118,30 @@ test('step 12: the record is written only through its writer (no other write of 
   assert.strictEqual(uses.filter((u) => /file: OPEN_WINDOWS_FILE/.test(u)).length, 1);
   assert.doesNotMatch(MAIN, /writeFileAtomic\(OPEN_WINDOWS_FILE|writeFileSync\(OPEN_WINDOWS_FILE/);
 });
+
+// ---- step 14: seam guards ---------------------------------------------------------------------------------------------------------
+
+test('main never calls requestSingleInstanceLock: Electron\'s lock is per user-data folder, which every build shares, so it would hand a test build\'s launch to the daily app (design §3.1, pick S2)', () => {
+  // the code, comments stripped (the header names the API to say why it is not used)
+  assert.doesNotMatch(MAIN, /requestSingleInstanceLock|hasSingleInstanceLock|'second-instance'/);
+});
+
+test('startProject is called only by openProject (app/open-project.js, behind the queue) and by whenReady for the launch window', () => {
+  const calls = [...MAIN.matchAll(/\bstartProject\(/g)].map((m) => MAIN.slice(Math.max(0, m.index - 60), m.index + 60));
+  assert.strictEqual(calls.length, 2, calls.join('\n---\n'));
+  assert.ok(calls.some((c) => /startProject: \(cwd, opts\) => startProject\(cwd, opts\)/.test(c)), 'the opener');
+  assert.ok(calls.some((c) => /await startProject\(LAUNCH_CWD, \{ launch: true/.test(c)), 'the launch');
+  const opener = MAIN.slice(MAIN.indexOf('const opener = createOpenProject({'), MAIN.indexOf('const openQueue = createOpenQueue('));
+  assert.match(opener, /startProject: \(cwd, opts\) => startProject\(cwd, opts\)/);
+});
+
+test('the new single-instance modules require no Electron (they load under plain node and are tested there)', () => {
+  const fs = require('fs');
+  const path = require('path');
+  const root = path.join(__dirname, '..');
+  for (const f of ['host/app-lock-config.js', 'host/app-owner.js', 'host/app-claim.js', 'host/window-router.js', 'host/open-windows.js',
+    'host/owner-file.js', 'app/quit-gate.js', 'app/open-queue.js', 'app/open-project.js']) {
+    const src = fs.readFileSync(path.join(root, f), 'utf8');
+    assert.doesNotMatch(src, /require\(\s*['"]electron['"]\s*\)/, f);
+  }
+});
