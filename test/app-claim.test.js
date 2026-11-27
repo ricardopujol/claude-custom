@@ -249,3 +249,43 @@ test('PR #258 Dexter 4: no start time for this process -> proceed, publish nothi
     assert.ok(lines.some((l) => /without the owner file \(no-self-start/.test(l)), lines.join('\n'));
   } finally { a.claim.stop(); }
 });
+
+test('PR #258 Dexter 2: a displaced owner claims again: once the displacer released app.json, reclaim() makes it this process\'s again', async () => {
+  const dir = tmpDir('cc-app-');
+  const alive = new Set();
+  const a = launch({ dir, alive });
+  try {
+    assert.strictEqual(await a.claim.run(), 'proceed');
+    a.claim.markReady();
+    // a launch that took the file over (A looked hung) and then quit, releasing it: the install has no owner
+    fs.rmSync(appFile(dir), { force: true });
+    assert.strictEqual(await a.claim.reclaim(), true);
+    assert.strictEqual(readOwner(dir).pid, a.pid);
+    // and A's stop releases it again (released is reset)
+  } finally { a.claim.stop(); }
+  assert.strictEqual(readOwner(dir), null);
+});
+
+test('PR #258 Dexter 2: reclaim() leaves a LIVE other owner alone (two processes stay the residual, never a stolen file)', async () => {
+  const dir = tmpDir('cc-app-');
+  const alive = new Set();
+  const other = uniquePid();
+  alive.add(other);
+  const a = launch({ dir, alive });
+  try {
+    assert.strictEqual(await a.claim.run(), 'proceed');
+    const text = JSON.stringify({ pid: other, start: `S${other}` });
+    fs.writeFileSync(appFile(dir), text);
+    assert.strictEqual(await a.claim.reclaim(), false);
+    assert.strictEqual(fs.readFileSync(appFile(dir), 'utf8'), text);
+  } finally { a.claim.stop(); }
+});
+
+test('PR #258 Dexter 2: reclaim() after stop() does nothing (a quitting process claims nothing)', async () => {
+  const dir = tmpDir('cc-app-');
+  const a = launch({ dir, alive: new Set() });
+  assert.strictEqual(await a.claim.run(), 'proceed');
+  a.claim.stop();
+  assert.strictEqual(await a.claim.reclaim(), false);
+  assert.strictEqual(readOwner(dir), null);
+});

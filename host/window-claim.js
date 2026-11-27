@@ -209,7 +209,26 @@ function createWindowClaim(deps) {
     }
   }
 
-  return { run, markReady, stop, resume, accepting };
+  // PR #258 Dexter 2: an owner that was passed by (it looked hung, a launch took the file over) and then left by that launch (which quit,
+  // releasing the file) owned nothing for the rest of its life. While it runs, it claims again: the file is taken only when it names nobody
+  // alive (no file, a dead owner, or this process); a LIVE other owner is left alone. true when the file names this process again.
+  async function reclaim() {
+    if (!enabled || stopped || !pipe) return false;
+    try {
+      const r = await claim({ stateRoot, self, startTimes });
+      if (stopped) { if (r.published === true) { released = false; releaseFile(); } return false; }
+      if (r.published !== true) return false;
+      released = false;
+      hookExit();
+      log(`[main] ${tag}: the owner file named nobody alive; this process owns it again`);
+      return true;
+    } catch (err) {
+      log(`[main] ${tag}: reclaim failed: ${err && err.message}`);
+      return false;
+    }
+  }
+
+  return { run, markReady, stop, resume, accepting, reclaim };
 }
 
 module.exports = { createWindowClaim, DEFAULT_READY_BOUND_MS };
