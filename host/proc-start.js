@@ -106,9 +106,15 @@ async function startTimes(pids, { exec = defaultExec, retryExec = null, platform
   return queryOnce(wanted, retryExec);
 }
 
+// The options patientStartTimes runs with: the default retry unless a retry exec is GIVEN (an explicit undefined keeps the default:
+// PR #261 Miguel S2).
+function patientOptions(opts = {}) {
+  return { ...opts, retryExec: typeof opts.retryExec === 'function' ? opts.retryExec : retryExecDefault };
+}
+
 /** startTimes with the one retry on the longer budget: for a decision a launch must not get wrong because powershell.exe was slow. */
 function patientStartTimes(pids, opts = {}) {
-  return startTimes(pids, { retryExec: retryExecDefault, ...opts });
+  return startTimes(pids, patientOptions(opts));
 }
 
 // One powershell.exe run for the (already validated) pids: a Map, or null when it did not run to the END sentinel.
@@ -145,20 +151,45 @@ async function queryOnce(wanted, exec) {
 }
 
 /**
- * This process's own start time, asked once and cached. A failed query is not
- * cached, so the next caller asks again. `opts.retryExec` (fix/owner-proof) gives
- * that first ask its one retry on a longer budget (app/main.js passes it).
+ * This process's own start time, asked once and cached. `opts.retryExec`
+ * (fix/owner-proof) gives an ask its one retry on a longer budget (app/main.js
+ * passes it).
+ *
+ * SINGLE-FLIGHT, AND A FAILURE IS HELD (PR #261 Dexter 1 / Miguel I1): with the
+ * retry one failed ask costs up to 20 s, and a launch's callers (the app claim,
+ * the shared poller, the Resources service, the restore decision, each window
+ * claim) ask within seconds of each other. Concurrent callers share the ONE
+ * query in flight; a failure is the answer (null) for `failHoldMs`, then the
+ * next caller asks again. So a launch pays the own-start budget once.
  */
+const FAILED_START_HOLD_MS = 60_000;
 function createSelfStartTime(opts = {}) {
+  const { now = Date.now, failHoldMs = FAILED_START_HOLD_MS, ...query } = opts;
   let cached = null;
-  return async function selfStartTime() {
-    if (cached !== null) return cached;
-    const m = await startTimes([process.pid], opts);
-    const own = m ? m.get(process.pid) : null;
-    if (typeof own === 'string') cached = own;
-    return own === undefined ? null : own;
+  let inflight = null;
+  let failedAt = null;
+  return function selfStartTime() {
+    if (cached !== null) return Promise.resolve(cached);
+    if (inflight) return inflight;
+    if (failedAt !== null && now() - failedAt < failHoldMs) return Promise.resolve(null);
+    inflight = (async () => {
+      try {
+        const m = await startTimes([process.pid], query);
+        const own = m ? m.get(process.pid) : null;
+        if (typeof own === 'string') { cached = own; failedAt = null; return own; }
+        failedAt = now();
+        return null;
+      } catch {
+        failedAt = now();
+        return null;
+      } finally {
+        inflight = null;
+      }
+    })();
+    return inflight;
   };
 }
 
-module.exports = { isAlive, startTimes, patientStartTimes, createSelfStartTime, QUERY_TIMEOUT_MS, RETRY_QUERY_TIMEOUT_MS, defaultExec,
+module.exports = { isAlive, startTimes, patientStartTimes, patientOptions, createSelfStartTime, QUERY_TIMEOUT_MS, RETRY_QUERY_TIMEOUT_MS,
+  FAILED_START_HOLD_MS, defaultExec,
   retryExec: retryExecDefault, createExec, POWERSHELL, BOM_AT_START };
