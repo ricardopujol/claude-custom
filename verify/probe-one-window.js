@@ -260,6 +260,7 @@ async function main() {
   await sleep(5000);                                 // the other one has had every chance to say it too
   const enders = [r1, r2].filter(a => /this launch ends/.test(a.out));
   const keepers = [r1, r2].filter(a => !/this launch ends/.test(a.out));
+  console.log(`      (7: ${[r1, r2].map((a) => `${a.child.pid}: ${a.out.split('\n').filter((l) => /\[main\] one window:/.test(l)).join(' | ')}`).join(' || ')})`);
   check('7: two launches started together: one hands over and ends, the other keeps the project', !!decided && enders.length === 1 && keepers.length === 1,
     `enders=${enders.length} keepers=${keepers.length}`);
   if (keepers.length === 1) {
