@@ -34,7 +34,9 @@
  *       now, readyBoundMs, log.
  * Optional (single-instance PR 3): root (this window's project root: sent as msg.root, and handed to listen with hasPort(port), so
  *       listen may be host/window-router.js register), message() (the message to send, replacing the root/lane/port one: the app claim's
- *       open), tag (the log lines' name, default 'one window'), ackMs (ask the owner for the ack: 'no ack' within it is a refusal).
+ *       open), tag (the log lines' name, default 'one window'), ackMs (ask the owner for the ack), prove(owner) (re-proof after a missed
+ *       ack). A missed ack is not a refusal by itself (PR #258 Dexter 1): an owner still proven live, or not proven gone, gets one more send
+ *       with the full wait; only its silence then (a true hang) is a refusal.
  */
 
 const DEFAULT_READY_BOUND_MS = 180_000;
@@ -48,6 +50,8 @@ function createWindowClaim(deps) {
     root, hasPort, message, ackMs,
   } = deps;
   const tag = typeof deps.tag === 'string' && deps.tag ? deps.tag : 'one window';
+  // proof of the owner after a missed ack: 'live' | 'dead' | 'unknown' (default: the owner-file proof by pid + start)
+  const prove = typeof deps.prove === 'function' ? deps.prove : (owner) => require('./owner-file').proveOwner(owner, { startTimes });
   const now = deps.now || Date.now;
   const log = deps.log || (() => {});
   const readyBoundMs = Number.isFinite(deps.readyBoundMs) ? deps.readyBoundMs : DEFAULT_READY_BOUND_MS;
@@ -137,7 +141,18 @@ function createWindowClaim(deps) {
         const msg = launchMessage();
         // Waits as long as the owner may take to be ready, then the owner has said ok (and will act) or no. With ackMs, an owner that does
         // not even acknowledge (hung) is a refusal within ackMs.
-        const told = await send({ pid: r.owner.pid, msg, timeoutMs: readyBoundMs + SEND_SLACK_MS, ackMs });
+        let told = await send({ pid: r.owner.pid, msg, timeoutMs: readyBoundMs + SEND_SLACK_MS, ackMs });
+        // PR #258 Dexter 1 / Miguel S2: no ack is NOT proof of a hang. A starting Electron at full CPU (or an owner of older code, which never
+        // acks) can miss the bound. The owner is proven again; unless it is now proven gone, it gets one more send with no ack bound and the
+        // full wait, and only a second silence (a true hang) lets this launch go on and take the file over.
+        if (Number.isFinite(ackMs) && told && told.error === 'no ack') {
+          let proof = 'unknown';
+          try { proof = await prove(r.owner); } catch { proof = 'unknown'; }
+          if (proof !== 'dead') {
+            log(`[main] ${tag}: owner pid ${r.owner.pid} did not acknowledge within ${ackMs} ms but is ${proof === 'live' ? 'still alive' : 'not proven gone'}; waiting for its answer`);
+            told = await send({ pid: r.owner.pid, msg, timeoutMs: readyBoundMs + SEND_SLACK_MS });
+          }
+        }
         if (told && told.ok === true) {
           // verify/probe-one-window.js check 2 reads the window claim's wording
           log(`[main] ${tag}: ${tag === 'one window' ? "this project's window" : 'the owner'} (pid ${r.owner.pid}) has it; this launch ends`);

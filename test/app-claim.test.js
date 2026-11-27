@@ -104,7 +104,7 @@ test('a live owner that is closing -> proceed, and the file is taken over with t
   } finally { b.claim.stop(); await new Promise((r) => srv.close(r)); }
 });
 
-test('a live owner that does not acknowledge (hung) -> the same: proceed and take the file over, within the ack bound', async () => {
+test('a live owner that does not acknowledge (hung) -> proceed and take the file over, after the second, full wait (PR #258 Dexter 1)', async () => {
   const dir = tmpDir('cc-app-');
   const alive = new Set();
   const hungPid = uniquePid();
@@ -113,11 +113,12 @@ test('a live owner that does not acknowledge (hung) -> the same: proceed and tak
   const socks = [];
   const srv = net.createServer((s) => { socks.push(s); s.on('error', () => {}); });
   await new Promise((r) => srv.listen(require('../host/window-focus').appPipeNameFor(hungPid), r));
-  const b = launch({ dir, alive, over: { ackMs: 200 } });
+  const b = launch({ dir, alive, over: { ackMs: 200, readyBoundMs: 100 } });
   try {
     const t0 = Date.now();
     assert.strictEqual(await b.claim.run(), 'proceed');
-    assert.ok(Date.now() - t0 < 3000, 'decided within the ack bound');
+    // a missed ack from a live owner is not enough: the second send waits readyBound + 10 s slack, and only that silence passes the owner by
+    assert.ok(Date.now() - t0 >= 10_000, `waited for the second answer (${Date.now() - t0} ms)`);
     assert.strictEqual(readOwner(dir).pid, b.pid);
   } finally { b.claim.stop(); for (const s of socks) s.destroy(); await new Promise((r) => srv.close(r)); }
 });

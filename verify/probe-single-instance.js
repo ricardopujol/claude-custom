@@ -19,8 +19,9 @@
  *      the record is clean, app.json and both window.json are gone
  *   8  crash: A and B open (B hidden), the Electron main is killed by its own pid (hosts left alive); a relaunch on A brings A and B back in
  *      one process, B hidden, every tab on the same host pid. A clean quit, then a relaunch, opens only A
- *   9  hung owner: the owner main is suspended (host/process-suspend.js, by pid + start); a second launch gets no ack in 10 s, opens its own
- *      process and takes app.json over; the first is resumed and both quit
+ *   9  hung owner: the owner main is suspended (its own child, by pid + start); a second launch gets no ack in 10 s, finds the owner still
+ *      alive and waits the full bound (readyBound + 10 s, PR #258 Dexter 1), then opens its own process and takes app.json over; the first is
+ *      resumed and both quit
  *
  * SAFE. Scratch projects in a temp folder (never dev\), the hosts' `claude` is cmd.exe (CLAUDE_CUSTOM_BIN), ELECTRON_RUN_AS_NODE and every
  * CLAUDE_CUSTOM_* the probe doesn't set are deleted by the launcher, registry / portraits / uploads / UI state / user data are temp folders,
@@ -384,8 +385,11 @@ $r = $t::${fn}($p.Handle)
   try {
     const t0 = Date.now();
     b = await launchApp(B.container, { uiState: ui });
-    const said = await waitFor(() => (/single instance: owner pid \d+ did not accept \(no ack\)/.test(b.out) ? true : null), 120000, 500);
-    check('9: a second launch got no ack and went on', said === true, b.out.slice(-400));
+    // PR #258 Dexter 1: a missed ack is not a hang by itself; the live owner is waited for (readyBound 180 s + 10 s), then passed by
+    const slow = await waitFor(() => (/single instance: owner pid \d+ did not acknowledge within 10000 ms but is still alive; waiting/.test(b.out) ? true : null), 120000, 500);
+    check('9: a second launch got no ack, found the owner still alive, and waited', slow === true, b.out.slice(-400));
+    const said = await waitFor(() => (/single instance: owner pid \d+ did not accept \(timed out/.test(b.out) ? true : null), 260000, 1000);
+    check('9: ...the owner stayed silent for the full wait (a true hang), and the launch went on', said === true, b.out.slice(-400));
     const up = await windowUp(b);
     check('9: ...it opened its own process', !!up && !b.exited, `${Date.now() - t0} ms`);
     const o = readJson(appJson);

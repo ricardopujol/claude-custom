@@ -321,3 +321,60 @@ test('PR 3, real files + a real router: two windows of one process each publish 
     assert.ok(samePath(acted.b[0].root, rootB));
   } finally { a.stop(); b.stop(); await router.stop(); }
 });
+
+// ---- PR #258 round 1, Dexter 1 / Miguel S2: a live but slow owner is not taken over on the ack timeout alone ---------------------------
+
+test('D1: "no ack" from an owner still proven live: one more send with no ack bound and the full wait; it says ok -> exit, no takeover', async () => {
+  const { createWindowClaim } = load();
+  const sent = [];
+  const lines = [];
+  const { deps, calls } = fakes({
+    claim: async () => live, ackMs: 10_000, log: (l) => lines.push(l),
+    prove: async () => 'live',
+    send: async (o) => { sent.push(o); return sent.length === 1 ? { ok: false, error: 'no ack' } : { ok: true }; },
+  });
+  assert.strictEqual(await createWindowClaim(deps).run(), 'exit');
+  assert.strictEqual(sent.length, 2);
+  assert.strictEqual(sent[0].ackMs, 10_000);
+  assert.strictEqual(sent[1].ackMs, undefined, 'the second send waits for the answer, not for an ack');
+  assert.strictEqual(sent[1].timeoutMs, 5000 + 10_000, 'readyBound + slack');
+  assert.ok(!calls.some((c) => c[0] === 'takeOver'));
+  assert.ok(lines.some((l) => /did not acknowledge within 10000 ms but is still alive/.test(l)), lines.join('\n'));
+});
+
+test('D1: an owner that cannot be proven either way is waited for too (never taken over on the timeout alone)', async () => {
+  const { createWindowClaim } = load();
+  const sent = [];
+  const { deps, calls } = fakes({ claim: async () => live, ackMs: 10_000, prove: async () => 'unknown',
+    send: async (o) => { sent.push(o); return sent.length === 1 ? { ok: false, error: 'no ack' } : { ok: true }; } });
+  assert.strictEqual(await createWindowClaim(deps).run(), 'exit');
+  assert.ok(!calls.some((c) => c[0] === 'takeOver'));
+});
+
+test('D1: the true-hang path stays: no answer to the second send either -> proceed and take the file over', async () => {
+  const { createWindowClaim } = load();
+  const sent = [];
+  const { deps, calls } = fakes({ claim: async () => live, ackMs: 10_000, prove: async () => 'live',
+    send: async (o) => { sent.push(o); return sent.length === 1 ? { ok: false, error: 'no ack' } : { ok: false, error: 'timed out after 15000ms' }; } });
+  assert.strictEqual(await createWindowClaim(deps).run(), 'proceed');
+  assert.ok(calls.some((c) => c[0] === 'takeOver'));
+  assert.strictEqual(sent.length, 2);
+});
+
+test('D1: "no ack" from an owner proven DEAD since: taken over at once, no second send', async () => {
+  const { createWindowClaim } = load();
+  const sent = [];
+  const { deps, calls } = fakes({ claim: async () => live, ackMs: 10_000, prove: async () => 'dead',
+    send: async (o) => { sent.push(o); return { ok: false, error: 'no ack' }; } });
+  assert.strictEqual(await createWindowClaim(deps).run(), 'proceed');
+  assert.strictEqual(sent.length, 1);
+  assert.ok(calls.some((c) => c[0] === 'takeOver'));
+});
+
+test('D1: the default prove is the owner-file proof over startTimes', async () => {
+  const { createWindowClaim } = load();
+  const sent = [];
+  const { deps } = fakes({ claim: async () => live, ackMs: 10_000, startTimes: async () => new Map([[10, 'S10']]),
+    send: async (o) => { sent.push(o); return sent.length === 1 ? { ok: false, error: 'no ack' } : { ok: true }; } });
+  assert.strictEqual(await createWindowClaim(deps).run(), 'exit', 'S10 is the start the owner file names: live, so it is waited for');
+});

@@ -10,7 +10,9 @@
  *               knows it.
  *   the message { cwd, install, probe, env }, type 'open'. No port (a port-named launch is its own process). `env` carries only
  *               CLAUDE_CUSTOM_BIN / CONPTY / SHELL, so the owner can log which differ (design 3.1: the open runs on the owner's env).
- *   the ack     10 s: an owner that does not even acknowledge is hung; the launch goes on and takes app.json over with the judged bytes.
+ *   the ack     10 s: an owner that does not acknowledge is proven again; unless it is now gone, it gets one more send with the full wait
+ *               (readyBound + 10 s), and only its silence then (a true hang) lets the launch go on and take app.json over with the judged
+ *               bytes (PR #258 Dexter 1: a live owner that is only slow is never passed by on the 10 s alone).
  * Everything else is window-claim's: a starting owner holds the launch until markReady() (or says no when it stops or its bound passes),
  * ok only from a ready owner, the takeover with the judged bytes, the guarded release, stop() / resume().
  *
