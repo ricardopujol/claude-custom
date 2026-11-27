@@ -191,3 +191,27 @@ test('a window\'s phases are one start(): its parts are not callable from outsid
   }
   assert.strictEqual(pw.isUnseen(), true, 'a window not made yet is unseen');
 });
+
+// ---- single-instance PR 3 step 7: who starts hidden ------------------------------------------------------------------------------
+
+test('PR 3: startHiddenFor: "setting" follows Start minimised (with a tray), "shown" ignores it, "hidden" hides only with a tray', () => {
+  const { startHiddenFor } = require('../app/project-window');
+  const on = { startMinimised: true };
+  const off = { startMinimised: false };
+  assert.strictEqual(startHiddenFor({ show: 'setting', trayOn: true, settings: on }), true);
+  assert.strictEqual(startHiddenFor({ show: 'setting', trayOn: true, settings: off }), false);
+  assert.strictEqual(startHiddenFor({ show: 'setting', trayOn: false, settings: on }), false, 'never hidden without the icon');
+  assert.strictEqual(startHiddenFor({ show: 'shown', trayOn: true, settings: on }), false, 'a handed-off launch always shows (Q1)');
+  assert.strictEqual(startHiddenFor({ show: 'hidden', trayOn: true, settings: off }), true, 'a restored hidden window');
+  assert.strictEqual(startHiddenFor({ show: 'hidden', trayOn: false, settings: off }), false, 'otherwise shown');
+  assert.strictEqual(startHiddenFor({ show: undefined, trayOn: true, settings: on }), true, 'no word is today\'s ("setting")');
+  assert.strictEqual(startHiddenFor({ show: 'bogus', trayOn: true, settings: on }), true);
+});
+
+test('PR 3: start({ show }) hands its word to createWindow, which asks startHiddenFor (not the setting alone)', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'app', 'project-window.js'), 'utf8');
+  assert.match(src, /async function start\(\{ seams, openPrsReader, show \}\)/);
+  assert.match(src, /createWindow\(\{ show \}\);/);
+  assert.match(src, /function createWindow\(\{ show \} = \{\}\)/);
+  assert.match(src, /const startHidden = startHiddenFor\(\{ show, trayOn: TRAY_ON, settings: readTraySettings\(uiStore\) \}\);/);
+});

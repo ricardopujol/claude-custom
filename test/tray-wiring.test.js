@@ -36,7 +36,8 @@ test('main makes the one Tray through the controller, in startTray, called once 
 test('a probe window has no tray (a killed Electron leaves a ghost icon) unless it is the tray probe', () => {
   assert.match(MAIN, /const TRAY_ON = !PROBE_PORT \|\| process\.env\.CLAUDE_CUSTOM_TRAY_PROBE === '1';/);
   assert.match(bodyOf(/function startTray\(\)/), /if \(!TRAY_ON\) return;/);
-  assert.match(MAIN, /const startHidden = TRAY_ON && startsHidden\(readTraySettings\(uiStore\)\);/);
+  // PR 3 step 7: the start's word decides (startHiddenFor), and without TRAY_ON it is never hidden (test/project-window.test.js)
+  assert.match(MAIN, /const startHidden = startHiddenFor\(\{ show, trayOn: TRAY_ON, settings: readTraySettings\(uiStore\) \}\);/);
 });
 
 test('close hides to the tray only through hidesOnClose, ahead of the unsaved-text guard, and a quit closes', () => {
@@ -46,7 +47,7 @@ test('close hides to the tray only through hidesOnClose, ahead of the unsaved-te
   assert.ok(hide < close.indexOf('closeGuarded ||'), 'the hide decision comes first: hiding loses nothing, so no question');
   assert.match(close, /const tray = getTray\(\);\s*if \(hidesOnClose\(\{ settings: readTraySettings\(uiStore\), trayExists: !!tray && tray\.state\(\)\.exists, quitting: isQuitting\(\) \}\)\)/);
   assert.match(close, /e\.preventDefault\(\);\s*win\.hide\(\);/);
-  assert.match(MAIN, /app\.on\('before-quit', \(\) => \{ quitting = true; forEachProject\(\(p\) => p\.claim\.stop\(\)\); \}\);/);
+  assert.match(MAIN, /app\.on\('before-quit', \(\) => \{ quitting = true; forEachProject\(\(p\) => p\.claim\.stop\(\)\); appClaim\.stop\(\); \}\);/);
   assert.match(MAIN, /win\.on\('session-end', \(\) => \{ setQuitting\(true\); \}\);/);
 });
 

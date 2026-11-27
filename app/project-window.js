@@ -116,6 +116,20 @@ function requireAll(kind, bag, names) {
   }
 }
 
+/**
+ * Does a new window start hidden (single-instance PR 3, step 7)? `show` is the start's word:
+ *   'setting'  "Start minimised to tray" decides (the launch that starts Jiandu; also any unknown word: today's behaviour)
+ *   'shown'    always shown (a launch handed to the running Jiandu: §5 Q1)
+ *   'hidden'   hidden (a restored window that was hidden)
+ * Never hidden without a tray icon to bring it back.
+ */
+function startHiddenFor({ show, trayOn, settings } = {}) {
+  if (!trayOn) return false;
+  if (show === 'shown') return false;
+  if (show === 'hidden') return true;
+  return startsHidden(settings);
+}
+
 function createProjectWindow({ launchCwd, electron, config, services }) {
   if (typeof launchCwd !== 'string' || launchCwd === '') throw new Error('createProjectWindow: missing launchCwd');
   requireAll('electron member', electron, REQUIRED_ELECTRON);
@@ -422,14 +436,15 @@ function createProjectWindow({ launchCwd, electron, config, services }) {
   let cueOn = false;
   let focused = false;
 
-  function createWindow() {
+  function createWindow({ show } = {}) {
     // Layout pass L2 (#28): read once, for THIS window -- a frame can't change on
     // an open window, so a later toggle applies to the next one.
     ensureStatusDefault(uiStore);   // #67: write the default the relay reads, before anything asks
     const chrome = readChromeSettings(uiStore);
     windowFrameless = chrome.framelessWindow === true;
-    // "Start minimised to tray": the window is made but not shown; the tray icon brings it up. Never without the icon.
-    const startHidden = TRAY_ON && startsHidden(readTraySettings(uiStore));
+    // "Start minimised to tray": the window is made but not shown; the tray icon brings it up. Never without the icon. Which windows obey
+    // it is the start's word (startHiddenFor): the first launch does, a handed-off launch does not, a restore follows its record.
+    const startHidden = startHiddenFor({ show, trayOn: TRAY_ON, settings: readTraySettings(uiStore) });
     win = new BrowserWindow(forProbe({
       width: 1200,
       height: 800,
@@ -1696,10 +1711,10 @@ function createProjectWindow({ launchCwd, electron, config, services }) {
    * then the window (whose events call the shell), then the dev servers' sampling (read AFTER the window exists, and after a start hidden to
    * the tray), then the first open. Answers what tabShell.open() answers.
    */
-  async function start({ seams, openPrsReader }) {
+  async function start({ seams, openPrsReader, show }) {
     startServices({ seams, openPrsReader });
     startDevServers();
-    createWindow();
+    createWindow({ show });
     syncDevServersSampling();
     return open();
   }
@@ -1800,4 +1815,4 @@ function createProjectWindow({ launchCwd, electron, config, services }) {
   return self;
 }
 
-module.exports = { createProjectWindow };
+module.exports = { createProjectWindow, startHiddenFor };

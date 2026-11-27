@@ -152,7 +152,7 @@ test('whenReady runs the launch in this order (single-instance PR 2: the window\
   // sampling is read after the window exists): they are start() in the window, not main's interleaving.
   const startBody = bodyAt(WINDOW, WINDOW.indexOf('async function start('));
   let p = -1;
-  for (const step of ['startServices({ seams, openPrsReader })', 'startDevServers()', 'createWindow()', 'syncDevServersSampling()', 'return open()']) {
+  for (const step of ['startServices({ seams, openPrsReader })', 'startDevServers()', 'createWindow({ show })', 'syncDevServersSampling()', 'return open()']) {
     const at = startBody.indexOf(step);
     assert.ok(at !== -1 && at > p, `start() must run ${step} after the one before it`);
     p = at;
