@@ -137,6 +137,58 @@ test('selfStartTime is null when the query fails, and asks again next time', asy
   assert.strictEqual(await self(), '5');
 });
 
+// --- fix/owner-proof: ONE retry with a longer budget ---------------------------------------------------------------
+// MEASURED 2026-11-27 (Raider): one query takes 1.3-1.7 s on a calm machine and 2.3-4.5 s under CPU load at an Electron start;
+// on a busy machine it passed the 5 s budget, and a launch went on as a second process ('unproven-owner' / 'no-self-start').
+
+test('retryExec: a query that failed (timed out) is asked ONCE more with the retry exec, and its answer is the result', async () => {
+  const first = fakeExec({ reject: Object.assign(new Error('timeout'), { killed: true }) });
+  const retry = fakeExec({ stdout: '12 34\nEND\n' });
+  const m = await startTimes([12], opts({ exec: first.exec, retryExec: retry.exec }));
+  assert.deepStrictEqual([...m], [[12, '34']]);
+  assert.strictEqual(first.calls.length, 1);
+  assert.strictEqual(retry.calls.length, 1);
+});
+
+test('retryExec: a query that answered is never asked again (an absent pid is an answer, not a failure)', async () => {
+  const first = fakeExec({ stdout: 'END\n' });
+  const retry = fakeExec({ stdout: '12 34\nEND\n' });
+  const m = await startTimes([12], opts({ exec: first.exec, retryExec: retry.exec }));
+  assert.strictEqual(m.size, 0);
+  assert.strictEqual(retry.calls.length, 0);
+});
+
+test('retryExec: both failing is null (still "could not ask", never "not running"), after exactly two queries', async () => {
+  const first = fakeExec({ reject: new Error('x') });
+  const retry = fakeExec({ stdout: '12 34\n' });          // no END: did not run to the end
+  assert.strictEqual(await startTimes([12], opts({ exec: first.exec, retryExec: retry.exec })), null);
+  assert.strictEqual(first.calls.length + retry.calls.length, 2);
+});
+
+test('retryExec: no retry off Windows or with no valid pid (nothing is spawned)', async () => {
+  const retry = fakeExec({ stdout: 'END\n' });
+  assert.strictEqual(await startTimes([12], { platform: 'linux', exec: retry.exec, retryExec: retry.exec }), null);
+  assert.strictEqual((await startTimes([0], opts({ exec: retry.exec, retryExec: retry.exec }))).size, 0);
+  assert.strictEqual(retry.calls.length, 0);
+});
+
+test('selfStartTime with retryExec: a first query that timed out is retried, so this process still learns its start', async () => {
+  const first = fakeExec({ reject: Object.assign(new Error('timeout'), { killed: true }) });
+  const retry = fakeExec({ stdout: `${process.pid} 777\nEND\n` });
+  const self = createSelfStartTime(opts({ exec: first.exec, retryExec: retry.exec }));
+  assert.strictEqual(await self(), '777');
+  assert.strictEqual(await self(), '777');
+  assert.strictEqual(first.calls.length + retry.calls.length, 2, 'cached once it succeeded');
+});
+
+test('patientStartTimes and the retry budget: the retry waits longer than the first query, and stays bounded', () => {
+  const ps = require('../host/proc-start');
+  assert.strictEqual(typeof ps.patientStartTimes, 'function');
+  assert.ok(ps.RETRY_QUERY_TIMEOUT_MS > ps.QUERY_TIMEOUT_MS);
+  // Q10: a launch's whole wait is ~190 s; the proof must stay far below it
+  assert.ok(ps.QUERY_TIMEOUT_MS + ps.RETRY_QUERY_TIMEOUT_MS <= 30_000);
+});
+
 // --- a process that has EXITED but is still in the table (found by verify/probe-worktree-occupancy.js) -------------
 //
 // Windows keeps an exited process in the process table for as long as ANYONE holds a handle to it, and

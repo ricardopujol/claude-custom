@@ -61,6 +61,13 @@ test('the app claim is made from the config table, acts through openProject (sho
   assert.match(MAIN, /const openQueue = createOpenQueue\(\{ open: \(o\) => opener\.openProject\(o\)/);
 });
 
+test('fix/owner-proof: this process\'s start is asked with the one retry, and the app claim\'s fallback query has it too', () => {
+  // the retry's behaviour is test/proc-start.test.js's; the pipe proof is test/app-claim.test.js's (host/app-claim.js wires focus.who)
+  assert.match(MAIN, /const ownStartTime = createSelfStartTime\(\{ retryExec: procRetryExec \}\);/);
+  assert.match(MAIN, /retryExec: procRetryExec[^}]*\} = require\('\.\.\/host\/proc-start'\)/);
+  assert.match(MAIN, /const appClaim = createAppClaim\(\{[\s\S]{0,400}ownStart: \(\) => ownStartTime\(\), startTimes: patientStartTimes,/);
+});
+
 test('cache-dirs exports removeOwn and main calls it only on the handed-over exit', () => {
   // removeOwn's behaviour is test/cache-dirs.test.js's (this file scans source text and requires no mutated module)
   assert.match(MAIN, /require\('\.\/cache-dirs'\)\.removeOwn\(\)/);
