@@ -47,7 +47,8 @@ test('close hides to the tray only through hidesOnClose, ahead of the unsaved-te
   assert.ok(hide < close.indexOf('closeGuarded ||'), 'the hide decision comes first: hiding loses nothing, so no question');
   assert.match(close, /const tray = getTray\(\);\s*if \(hidesOnClose\(\{ settings: readTraySettings\(uiStore\), trayExists: !!tray && tray\.state\(\)\.exists, quitting: isQuitting\(\) \}\)\)/);
   assert.match(close, /e\.preventDefault\(\);\s*win\.hide\(\);/);
-  assert.match(MAIN, /app\.on\('before-quit', \(\) => \{ quitting = true; forEachProject\(\(p\) => p\.claim\.stop\(\)\); appClaim\.stop\(\); \}\);/);
+  // PR 3: one before-quit handler, the quit gate first (test/single-instance-wiring.test.js pins the whole body)
+  assert.match(MAIN, /if \(quitGate\.onBeforeQuit\(e\)\) return;\s*quitting = true;/);
   assert.match(MAIN, /win\.on\('session-end', \(\) => \{ setQuitting\(true\); \}\);/);
 });
 
@@ -78,7 +79,7 @@ test('the menu actions: Stop is the ▾ menu\'s own (it asks), Quit is app.quit,
   assert.match(actions, /lastUsed: \(\) => \{ const w = registry\.lastUsed\(\);/);
   assert.match(actions, /background: \(\) => appBackgroundModel\(\),/);
   assert.doesNotMatch(actions, /stopHost\(/);
-  assert.match(actions, /app\.quit\(\); \}/);
+  assert.match(actions, /quit: \(\) => app\.quit\(\),/);
   assert.match(actions, /hideAll: \(\) => registry\.forEach\(\(p\) => \{ const w = p\.win; if \(w && !w\.isDestroyed\(\)\) w\.hide\(\); \}\)/);
   assert.match(actions, /showAll: \(\) => registry\.forEach\(\(p\) => p\.focusWindow\(\)\)/);
   // Open on a session with no window: a window in this process (DESIGN_TABS_SESSIONS.md 3.4), through main's one open
@@ -86,13 +87,17 @@ test('the menu actions: Stop is the ▾ menu\'s own (it asks), Quit is app.quit,
   assert.match(actions, /setStartMinimised: on => \{ writeTraySetting\(uiStore, 'startMinimised', on === true\); \}/);
 });
 
-test('Quit from the tray brings a hidden window up first when there is unsaved reader text (Miguel Y1)', () => {
-  assert.match(bodyOf(/function startTray\(\)/), /quit: \(\) => \{ const dirty = registry\.list\(\)\.find\(\(p\) => p\.readerUnsaved\.all\(\)\.length > 0\); if \(dirty\) dirty\.focusWindow\(\); app\.quit\(\); \}/);
+test('Quit from the tray: the one quit question brings a hidden dirty window up first (Miguel Y1, now the quit gate\'s)', () => {
+  // PR 3: the tray only asks to quit; the gate's question sits on the dirty window used last, focused (shown) first
+  assert.match(bodyOf(/function startTray\(\)/), /quit: \(\) => app\.quit\(\),/);
+  assert.match(MAIN, /const parent = dirtyParent\(\);\s*if \(parent\) parent\.focusWindow\(\);/);
 });
 
 test('a cancelled close puts quitting back, so close-to-tray keeps working (Miguel Y2)', () => {
   const close = MAIN.slice(MAIN.indexOf("win.on('close'"), MAIN.indexOf("win.on('closed'"));
-  assert.match(close, /closeGuarded = true; win\.close\(\); \}\s*else \{\s*setQuitting\(false\);/);
+  // PR 3: through main's quitCancelled(), which sets quitting = false (pinned in test/single-instance-wiring.test.js)
+  assert.match(close, /closeGuarded = true; win\.close\(\); \}[\s\S]{0,300}else quitCancelled\(\);/);
+  assert.match(MAIN, /function quitCancelled\(\) \{\s*quitting = false;/);
 });
 
 test('will-quit destroys the tray FIRST, so a throwing sampler stop cannot leave a ghost icon (Miguel S1)', () => {

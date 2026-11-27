@@ -78,6 +78,7 @@ const { appLockConfig } = require('../host/app-lock-config');
 const { createAppClaim, ENV_NAMES: LAUNCH_ENV_NAMES } = require('../host/app-claim');
 const { createOpenQueue } = require('./open-queue');
 const { createOpenProject } = require('./open-project');
+const { createQuitGate, questionText } = require('./quit-gate');
 // The repo browser's two main-only actions (#45): Show in Explorer, and the drag-out. Both re-run the path
 // guard against the asking tab's own worktree, and neither ever opens or runs a file (app/repo-actions.js).
 // The drag icon is a small accent-coloured square: startDrag wants a non-empty image, and a real file icon
@@ -421,7 +422,8 @@ function startTray() {
       showAll: () => registry.forEach((p) => p.focusWindow()),
       setStartMinimised: on => { writeTraySetting(uiStore, 'startMinimised', on === true); },
       // Unsaved reader text asks Save / Discard / Cancel on the window, so that window has to be visible to be answered.
-      quit: () => { const dirty = registry.list().find((p) => p.readerUnsaved.all().length > 0); if (dirty) dirty.focusWindow(); app.quit(); },
+      // The one quit question (app/quit-gate.js, before-quit) sits on a dirty window, shown first: the tray only asks to quit.
+      quit: () => app.quit(),
     },
   });
   trayController.sync();
@@ -1297,6 +1299,50 @@ process.on('exit', () => {
 });
 function onProcessExit(pw, fn) { const fns = exitHooks.get(pw) || []; fns.push(fn); exitHooks.set(pw, fns); }
 
+// --- quit: one question for every window's unsaved reader text (single-instance PR 3, app/quit-gate.js) ----------------------------
+// The question sits on the dirty window used last (else the first dirty one), shown first if hidden. Asked in before-quit, before any
+// claim stops, so Cancel has nothing to undo. Under the probe driver nobody is asked: the answer is discard, and it is recorded.
+function dirtyParent() {
+  const dirty = registry.list().filter((p) => p.readerUnsaved.all().length > 0);
+  const last = registry.lastUsed();
+  return dirty.includes(last) ? last : (dirty[0] || null);
+}
+const quitGate = createQuitGate({
+  windows: () => registry.list().map((p) => ({
+    label: p.label,
+    unsaved: () => p.readerUnsaved.all().map((u) => u.path),
+    saveAll: () => p.saveReaders(),
+    allowClose: () => p.allowClose(true),
+    pw: p,
+  })),
+  ask: async (dirty) => {
+    const parent = dirtyParent();
+    if (parent) parent.focusWindow();
+    const q = questionText(dirty);
+    const w = parent && parent.win && !parent.win.isDestroyed() ? parent.win : null;
+    const opts = { type: 'warning', buttons: q.buttons, defaultId: 2, cancelId: 2, message: q.message, detail: q.detail };
+    const r = await (w ? dialog.showMessageBox(w, opts) : dialog.showMessageBox(opts));
+    return ['save', 'discard', 'cancel'][r.response] || 'cancel';
+  },
+  notify: (detail) => { const p = dirtyParent(); if (!PROBE_PORT && p && p.win && !p.win.isDestroyed()) dialog.showMessageBox(p.win, { type: 'info', message: 'Jiandu did not quit', detail }); },
+  waitCleared: async (w) => {
+    for (let i = 0; i < 80; i++) { if (w.pw.readerUnsaved.all().length === 0) return true; await new Promise((r) => setTimeout(r, 100)); }
+    return false;
+  },
+  quit: () => app.quit(),
+  probe: !!PROBE_PORT,
+  record: (entry) => probeConfirms.push(entry),
+  log: (l) => console.log(l),
+});
+// A quit cancelled after before-quit ran (a window's own unsaved-text prompt answered Cancel): this process stays, so it is the install's
+// owner and every open window its project's owner again; the next quit asks again.
+function quitCancelled() {
+  quitting = false;
+  quitGate.reset();
+  appClaim.resume().catch(() => {});
+  forEachProject((p) => { p.allowClose(false); if (p.win && !p.win.isDestroyed()) p.claim.resume().catch(() => {}); });
+}
+
 // ONE place that hears "the set of windows, or what they show, changed" (single-instance PR 3): a window started (the lifecycle), closed,
 // or was minimised, restored, hidden or shown. The Resources sampler asks who is looking, and the tray syncs.
 const seenGate = createSeenGate({ registry, getResources: () => resources });
@@ -1322,6 +1368,7 @@ const windowServices = {
   windowRouter, onProcessExit,
   onFocused: (pw) => registry.touch(pw),
   openProject: (o) => openProject(o),
+  quitCancelled: () => quitCancelled(),
 };
 
 // The project window (app/project-window.js): everything that is one project's. Made by startProject, after every app-wide constant it is
@@ -1465,7 +1512,12 @@ app.on('will-quit', (e) => {
   e.preventDefault();
   resources.resumeAll({ deadlineMs: 10000 }).catch(() => {}).finally(() => app.quit());
 });
-app.on('before-quit', () => { quitting = true; forEachProject((p) => p.claim.stop()); appClaim.stop(); });   // a launch from here on opens its own window (close, then reopen)
+// ONE before-quit handler: the quit gate first (held for its one question, nothing stopped yet); only once it passes does the quit begin,
+// and a launch from here on opens its own process (close, then reopen).
+app.on('before-quit', (e) => {
+  if (quitGate.onBeforeQuit(e)) return;
+  quitting = true; forEachProject((p) => p.claim.stop()); appClaim.stop();
+});
 app.on('will-quit', () => { if (trayController) trayController.destroy(); if (resourceSampler) resourceSampler.stop(); forEachProject((p) => p.closeOccupancy()); });
 // A panel page that called window.print() leaves the browser unable to terminate; this ends the process if quitting stalls (app/quit-watchdog.js).
 armQuitWatchdog(app, QUIT_LOG_FILE ? { onFire: () => quitMark('quit watchdog fires') } : {});

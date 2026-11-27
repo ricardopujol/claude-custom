@@ -108,7 +108,7 @@ const REQUIRED_CONFIG = ['EXPLICIT_PORT', 'STRIP_HEIGHT', 'POLL_MS', 'PROBE_PORT
 const REQUIRED_SERVICES = ['uiStore', 'readDim', 'usageCounters', 'forProbe', 'openInBrowser', 'probeConfirms', 'logShellError', 'canvasAsks',
   'nextCanvasAskId', 'previewProbeProxy', 'stopHostByPid', 'occupantAt', 'tokenFileFor', 'ownIdentities', 'ownStartTime', 'waitForHost',
   'HARNESS_DIR', 'INSTALL_DIR', 'listBackground', 'capture', 'stripFileFor', 'isQuitting', 'setQuitting', 'onWindowCreated', 'onClosed', 'getResources', 'getTray', 'seenChanged',
-  'windowRouter', 'onProcessExit', 'onFocused', 'openProject'];
+  'windowRouter', 'onProcessExit', 'onFocused', 'openProject', 'quitCancelled'];
 
 function requireAll(kind, bag, names) {
   for (const name of names) {
@@ -141,7 +141,7 @@ function createProjectWindow({ launchCwd, electron, config, services }) {
     uiStore, readDim, usageCounters, forProbe, openInBrowser, probeConfirms, logShellError, canvasProbeResolve, canvasAsks,
     nextCanvasAskId, previewProbeProxy, stopHostByPid, occupantAt, tokenFileFor, ownIdentities, ownStartTime, waitForHost,
     HARNESS_DIR, INSTALL_DIR, listBackground, capture, stripFileFor, isQuitting, setQuitting, onWindowCreated, onClosed, getResources, getTray, seenChanged,
-    windowRouter, onProcessExit, onFocused, openProject,
+    windowRouter, onProcessExit, onFocused, openProject, quitCancelled,
   } = services;
 
   // --- what this window is ----------------------------------------------------------
@@ -435,6 +435,7 @@ function createProjectWindow({ launchCwd, electron, config, services }) {
   // reload while the cue is up would clear it for good.
   let cueOn = false;
   let focused = false;
+  let quitAllowed = false;           // the one quit question already covered this window's unsaved text (allowClose)
 
   function createWindow({ show } = {}) {
     // Layout pass L2 (#28): read once, for THIS window -- a frame can't change on
@@ -542,7 +543,8 @@ function createProjectWindow({ launchCwd, electron, config, services }) {
         win.hide();
         return;
       }
-      if (closeGuarded || readerUnsaved.all().length === 0) return;
+      // quitAllowed: the one quit question (app/quit-gate.js) already answered for this window's text
+      if (closeGuarded || quitAllowed || readerUnsaved.all().length === 0) return;
       e.preventDefault();
       if (closeAsking) return;
       closeAsking = true;
@@ -550,7 +552,7 @@ function createProjectWindow({ launchCwd, electron, config, services }) {
         list: () => readerUnsaved.all(),
         ask: askWindowClose,
         notify: (detail) => { if (!PROBE_PORT && win && !win.isDestroyed()) dialog.showMessageBox(win, { type: 'info', message: 'The window was not closed', detail }); },
-        saveAll: () => { if (win && !win.isDestroyed()) win.webContents.send('reader-save'); forEachView((v) => v.webContents.send('reader-save')); },
+        saveAll: () => saveReaders(),
         waitCleared: async () => {
           for (let i = 0; i < 80; i++) { if (readerUnsaved.all().length === 0) return true; await new Promise(r => setTimeout(r, 100)); }
           return false;
@@ -559,11 +561,9 @@ function createProjectWindow({ launchCwd, electron, config, services }) {
         if (ok && win && !win.isDestroyed()) { closeGuarded = true; win.close(); }
         // Cancel (or a save that didn't clear) also cancels a quit that started this close: Electron says nothing when a quit is
         // cancelled, so without this `quitting` stays true and close-to-tray is dead for the rest of the session.
-        else {
-          setQuitting(false);
-          // before-quit already stopped the one-window claim; the window stays, so it is the project's owner again (PR #247 Dexter M1).
-          if (win && !win.isDestroyed()) windowClaim.resume().catch(() => {});
-        }
+        // PR 3: main's quitCancelled() puts `quitting` back, resets the quit gate and resumes the app claim and EVERY open window's claim
+        // (before-quit stopped them all; the window stays, so it is the project's owner again: PR #247 Dexter M1).
+        else quitCancelled();
       }).catch(logShellError('window close guard')).finally(() => { closeAsking = false; });
     });
     // Closed: this window has no page left. Main decides what that means for the process (a closed window of several is disposed; the last
@@ -573,6 +573,15 @@ function createProjectWindow({ launchCwd, electron, config, services }) {
     onWindowCreated(self);
     return win;
   }
+
+  // Ask every code reader of this window to save (the window's own close guard, and the one quit question's Save all).
+  function saveReaders() {
+    if (win && !win.isDestroyed()) win.webContents.send('reader-save');
+    forEachView((v) => v.webContents.send('reader-save'));
+  }
+
+  /** The one quit question answered for this window's unsaved text (true), or a quit that was cancelled after all (false). */
+  function allowClose(on = true) { quitAllowed = on === true; }
 
   // Give the selected tab's view the keyboard. Coming back to the window keeps a half-typed indexing note's keyboard (#66) unless
   // `evenWithField`: the indexing overlay's own leave / close-list say the person is done with the field.
@@ -1791,6 +1800,8 @@ function createProjectWindow({ launchCwd, electron, config, services }) {
     showBackgroundMenu,
     focusWindow,
     showLane,
+    saveReaders,
+    allowClose,
     viewTop: currentViewTop,
     focusSelected,
     setIndexFieldFocused,

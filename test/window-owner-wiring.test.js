@@ -55,13 +55,15 @@ test('the window is ready for launches once its tabs are open, and not before (m
 });
 
 test('the owner stops being one at before-quit, before a dialog that ends the process, and when startup throws', () => {
-  assert.match(src, /app\.on\('before-quit', \(\) => \{ quitting = true; forEachProject\(\(p\) => p\.claim\.stop\(\)\);/);
+  assert.match(src, /if \(quitGate\.onBeforeQuit\(e\)\) return;\s*quitting = true; forEachProject\(\(p\) => p\.claim\.stop\(\)\);/);
   assert.match(ready, /if \(launchWindow\.attachOnlyRefusal\) \{\s*\n\s*launchWindow\.claim\.stop\(\);/);
   assert.match(ready, /\}\)\.catch\(\(err\) => \{[\s\S]{0,260}forEachProject\(\(p\) => p\.claim\.stop\(\)\);[\s\S]{0,260}app\.exit\(1\)/);
 });
 
 test('a cancelled quit (the unsaved-text prompt answered Cancel) puts the window back as the project\'s owner (M1)', () => {
-  assert.match(src, /else \{\s*\n\s*setQuitting\(false\);[\s\S]{0,260}windowClaim\.resume\(\)/);
+  // PR 3: through main's quitCancelled(), which resumes every open window's claim and the app claim
+  assert.match(src, /else quitCancelled\(\);/);
+  assert.match(src, /function quitCancelled\(\) \{[\s\S]{0,300}p\.claim\.resume\(\)/);
 });
 
 test('every app.exit after markReady() in whenReady is preceded by windowClaim.stop(): a held launch must hear no, not ok (PR #248 Dexter 1)', () => {

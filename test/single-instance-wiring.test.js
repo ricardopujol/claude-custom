@@ -68,3 +68,29 @@ test('cache-dirs exports removeOwn and main calls it only on the handed-over exi
   assert.strictEqual((MAIN.match(/removeOwnCache\(\);/g) || []).length, 1, 'one call');
   assert.ok(readyBody.indexOf('removeOwnCache();') > readyBody.indexOf("appClaim.run() === 'exit'"));
 });
+
+test('step 11: ONE before-quit handler, the gate first; only when it passes, quitting = true and the app claim and every window claim stop', () => {
+  assert.strictEqual((MAIN.match(/app\.on\('before-quit'/g) || []).length, 1);
+  const h = MAIN.slice(MAIN.indexOf("app.on('before-quit'"));
+  const body = h.slice(0, h.indexOf('\n});') + 4);
+  assert.match(body, /if \(quitGate\.onBeforeQuit\(e\)\) return;\s*quitting = true; forEachProject\(\(p\) => p\.claim\.stop\(\)\); appClaim\.stop\(\);/);
+});
+
+test('step 11: quitCancelled puts quitting back, resets the gate, resumes the app claim and every open window\'s claim; the tray\'s quit is app.quit alone', () => {
+  const fn = MAIN.slice(MAIN.indexOf('function quitCancelled('));
+  const body = fn.slice(0, fn.indexOf('\n}\n'));
+  for (const piece of ['quitting = false;', 'quitGate.reset();', 'appClaim.resume()', 'p.claim.resume()', 'p.allowClose(false)']) assert.ok(body.includes(piece), piece);
+  assert.match(MAIN, /quitCancelled: \(\) => quitCancelled\(\),/);
+  assert.match(MAIN, /quit: \(\) => app\.quit\(\),/);
+  const win = require('fs').readFileSync(require('path').join(__dirname, '..', 'app', 'project-window.js'), 'utf8');
+  assert.match(win, /else quitCancelled\(\);/, 'the window\'s own Cancel goes through main');
+  assert.doesNotMatch(win, /windowClaim\.resume\(\)/, 'the window no longer resumes only its own claim');
+  assert.match(win, /if \(closeGuarded \|\| quitAllowed \|\| readerUnsaved\.all\(\)\.length === 0\) return;/);
+});
+
+test('step 11: the question sits on the dirty window used last, shown first; the probe answers discard and records it', () => {
+  const ask = MAIN.slice(MAIN.indexOf('const quitGate = createQuitGate({'));
+  assert.match(ask, /const parent = dirtyParent\(\);\s*if \(parent\) parent\.focusWindow\(\);/);
+  assert.match(ask, /probe: !!PROBE_PORT,\s*record: \(entry\) => probeConfirms\.push\(entry\),/);
+  assert.match(MAIN, /return dirty\.includes\(last\) \? last : \(dirty\[0\] \|\| null\);/);
+});
