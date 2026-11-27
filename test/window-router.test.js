@@ -148,3 +148,20 @@ test('P-R1: a message with root R resolves to the entry registered for R or to n
       assert.strictEqual(router.size(), open.size);
     }), { numRuns: 100 });
 });
+
+test('PR #258 Dexter 12 / Miguel S1: the target is resolved ONCE per message: a window registered between the hold and the act does not take the launch', async () => {
+  const { router, gates } = fakeRouter();
+  const heard = [];
+  const lone = path.resolve('/elsewhere/repo');
+  await router.register(entry(lone, { onFocus: async (m) => { heard.push(['outer', m]); } }));
+  const g = gates();
+  const msg = { cwd: path.join(lone, 'sub', 'x') };            // an old sender: no root, a cwd inside the registered root
+  assert.strictEqual(g.accepting(msg), true);
+  assert.strictEqual(await g.whenReady(msg), true);
+  await router.register(entry(path.join(lone, 'sub'), { onFocus: async (m) => { heard.push(['inner', m]); } }));   // deeper, registered in between
+  await g.onFocus(msg);
+  assert.deepStrictEqual(heard.map((h) => h[0]), ['outer'], 'the act went to the window that answered the hold');
+  // a NEW message resolves afresh (to the deepest root now)
+  await g.onFocus({ cwd: path.join(lone, 'sub', 'x') });
+  assert.deepStrictEqual(heard.map((h) => h[0]), ['outer', 'inner']);
+});

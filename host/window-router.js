@@ -48,11 +48,21 @@ function createWindowRouter({ listen, pid, projectOf, samePath, isInside, log = 
     return entries.length === 1 ? entries[0] : null;
   }
 
+  // The target is resolved ONCE per message (the listener hands every gate the same cleaned object): the window that is held on is the one
+  // told ok and the one that acts, even when another registers or closes in between (PR #258 Dexter 12, Miguel S1).
+  const chosen = new WeakMap();
+  const target = (msg) => {
+    if (msg && typeof msg === 'object') {
+      if (!chosen.has(msg)) chosen.set(msg, resolve(msg));
+      return chosen.get(msg);
+    }
+    return resolve(msg);
+  };
   const gates = {
     pid,
-    accepting: (msg) => { const e = resolve(msg); return e ? e.accepting(msg) : NO_SUCH_WINDOW; },
-    whenReady: (msg) => { const e = resolve(msg); return e ? e.whenReady(msg) : false; },
-    onFocus: (msg) => { const e = resolve(msg); return e ? e.onFocus(msg) : undefined; },
+    accepting: (msg) => { const e = target(msg); return e ? e.accepting(msg) : NO_SUCH_WINDOW; },
+    whenReady: (msg) => { const e = target(msg); return e ? e.whenReady(msg) : false; },
+    onFocus: (msg) => { const e = target(msg); return e ? e.onFocus(msg) : undefined; },
     log,
   };
 
