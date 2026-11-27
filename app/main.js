@@ -1315,7 +1315,8 @@ const appLifecycle = createAppLifecycle({
   ownStart: () => ownStartTime(),
   readLockOwner: () => (APP_LOCK.on ? appOwner.read(APP_LOCK.dir) : null),
   readRecord: () => readRecord(OPEN_WINDOWS_FILE),
-  proveOwner: (owner) => proveOwner(owner, { startTimes }),
+  // PR #261 Dexter 3: the query with its one retry; an 'unknown' after one slow query would keep no window of a crashed run
+  proveOwner: (owner) => proveOwner(owner, { startTimes: patientStartTimes }),
   decide: (record, proof, launchRoot) => restoreDecision({ record, proof, bootAt: Date.now() - os.uptime() * 1000, launchRoot,
     exists: (p) => fs.existsSync(p), samePath }),
   makeWriter: ({ owner, owns }) => createOpenWindowsWriter({ file: OPEN_WINDOWS_FILE, owner, owns }),

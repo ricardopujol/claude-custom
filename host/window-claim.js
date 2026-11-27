@@ -36,7 +36,9 @@
  *       listen may be host/window-router.js register), message() (the message to send, replacing the root/lane/port one: the app claim's
  *       open), tag (the log lines' name, default 'one window'), ackMs (ask the owner for the ack), prove(owner) (re-proof after a missed
  *       ack), ask(owner) -> { pid, start } | null (fix/owner-proof: the owner's answer on its pipe, handed to claim as the first proof;
- *       every listen gets who() so this process answers it). A missed ack is not a refusal by itself (PR #258 Dexter 1): an owner still proven live, or not proven gone, gets one more send
+ *       every listen gets who(), which the app pipe (host/window-focus.js listen) and the window pipe (host/window-router.js) answer).
+ *       claim also gets resolveStart(): this process's start is asked at run() but awaited only where it is used (PR #261 Dexter 1).
+ *       A missed ack is not a refusal by itself (PR #258 Dexter 1): an owner still proven live, or not proven gone, gets one more send
  *       with the full wait; only its silence then (a true hang) is a refusal.
  */
 
@@ -118,8 +120,25 @@ function createWindowClaim(deps) {
   // file never names this process before that). Read at each answer, since `self` gets its start after the pipe is up.
   const whoAmI = () => (typeof self.start === 'string' && self.start ? { pid, start: self.start } : null);
   const listenOpts = () => ({ pid, root, hasPort, onFocus: onLaunch, accepting, whenReady, who: whoAmI, log });
+  // This process's start, asked of ownStart() while it is not known (PR #261 Dexter 1 + 4). run() starts the ask at once and does not wait
+  // for it: a live owner is proven on its pipe and handed the launch without it, and the claim asks it (resolveStart) only to publish. A
+  // start that run() could not learn is asked again by a later claim (reclaim, resume). One ask at a time; never rejects.
+  const knownStart = (s) => typeof s === 'string' && s !== '';
+  let learning = null;
+  function learnStart() {
+    if (knownStart(self.start)) return Promise.resolve(self.start);
+    if (!learning) {
+      learning = (async () => {
+        let s = null;
+        try { s = await ownStart(); } catch { s = null; }
+        if (knownStart(s)) self = { pid, start: s };
+        return knownStart(s) ? s : null;
+      })().finally(() => { learning = null; });
+    }
+    return learning;
+  }
   // ask(owner) (optional dep): the owner's own answer on its pipe, a proof the claim tries before the start-time query
-  const claimNow = () => claim({ stateRoot, self, startTimes, ...(typeof ask === 'function' ? { ask } : {}) });
+  const claimNow = () => claim({ stateRoot, self, startTimes, ...(typeof ask === 'function' ? { ask } : {}), resolveStart: learnStart });
 
   function launchMessage() {
     if (typeof message === 'function') return message();
@@ -136,12 +155,14 @@ function createWindowClaim(deps) {
   async function run() {
     if (!enabled) return 'proceed';
     try {
+      self = { pid, start: null };
+      learnStart();                      // asked now, alongside the pipe and the owner's proof; awaited only where the start is used
       pipe = await listen(listenOpts()).catch((err) => {
         log(`[main] ${tag}: no launch pipe (${err && err.message})`);
         return null;
       });
-      self = { pid, start: await ownStart() };
       let r = await claimNow();
+      if (r.action !== 'focus') await learnStart();      // going on here: the file, the exit hook and `who` use this process's start
       let published = r.published === true;
       // A refused launch takes the file over only with the bytes it judged; when another launch took over first, the takeover fails and
       // the claim is made again, which finds that window and hands this launch to it (PR #247 Dexter M3). Bounded: never a loop.
@@ -172,10 +193,12 @@ function createWindowClaim(deps) {
         // A proven owner that won't take it (closing, or a build from before the pipe): a window of its own, which then owns the file.
         const why = told && typeof told.error === 'string' ? told.error : 'no usable answer';
         log(`[main] ${tag}: owner pid ${r.owner.pid} did not accept (${why}); going on here and taking the owner file over`);
+        await learnStart();              // the takeover writes this process's start
         if (takeOver({ stateRoot, self, judgedText: r.text }) === true) { published = true; break; }
         published = false;
         if (attempt + 1 >= MAX_TAKEOVER_TRIES) break;
         r = await claimNow();
+        if (r.action !== 'focus') await learnStart();
         published = r.published === true;
       }
       // PR #258 Dexter 4: going on WITHOUT the owner file (an owner that could not be proven, no start time of our own, a contended or
@@ -204,6 +227,7 @@ function createWindowClaim(deps) {
       if (stopped) { if (p) await p.close().catch(() => {}); return; }       // stopped again while listening: quitting for real
       pipe = p;
       const r = await claimNow();
+      if (r.published === true) await learnStart();
       if (stopped) {
         // A quit landed while the claim ran: stop() found no file to release yet, so release what the claim just published.
         if (r.published === true) { released = false; releaseFile(); }
@@ -223,7 +247,8 @@ function createWindowClaim(deps) {
   async function reclaim() {
     if (!enabled || stopped || !pipe) return false;
     try {
-      const r = await claimNow();
+      const r = await claimNow();         // a start run() could not learn is asked again here (PR #261 Dexter 4)
+      if (r.published === true) await learnStart();
       if (stopped) { if (r.published === true) { released = false; releaseFile(); } return false; }
       if (r.published !== true) return false;
       released = false;

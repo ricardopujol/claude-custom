@@ -131,24 +131,31 @@ function publish({ file, prepare = nothing }, doc, { staleText = null, link = fs
  *   self       { pid, start }   this process (start from host/proc-start.js createSelfStartTime)
  *   startTimes async (pids) -> Map|null   host/proc-start.js startTimes
  *   ask        async (owner) -> { pid, start } | null   optional: the owner's answer on its pipe (proveOwner)
+ *   resolveStart async () -> start | null   optional (PR #261 Dexter 1): asked when `self.start` is missing and the decision needs it (a
+ *              publish). A live owner is handed over without it, so a launch never waits for its own start to hand over.
  *   hooks      { beforePublish() }   a test seam for the race between the read and the publish
  */
-async function claimFile({ file, usable = always, prepare = nothing, unusableReason = 'unusable', self, startTimes, ask, now = Date.now, link, hooks = {} } = {}) {
+async function claimFile({ file, usable = always, prepare = nothing, unusableReason = 'unusable', self, startTimes, ask, resolveStart, now = Date.now, link, hooks = {} } = {}) {
   if (!usable()) return { action: 'proceed', reason: unusableReason, file: null, published: false };
+  const known = (s) => typeof s === 'string' && s !== '';
+  let selfStart = self.start;
   for (let i = 0; i < ATTEMPTS; i++) {
     const text = readRaw(file);
     const owner = text === null ? null : parseOwner(text);
     const proof = owner && owner.pid !== self.pid ? await proveOwner(owner, { startTimes, ask }) : null;
     const d = decide({ owner, proof, selfPid: self.pid });
     if (d.action === 'focus') return { ...d, owner, file, text };
-    if (typeof self.start !== 'string' || !self.start) return { ...d, reason: 'no-self-start', file, published: false };
+    if (!known(selfStart) && typeof resolveStart === 'function') {
+      try { selfStart = await resolveStart(); } catch { selfStart = null; }
+    }
+    if (!known(selfStart)) return { ...d, reason: 'no-self-start', file, published: false };
     // A proof that could not be made (a slow PowerShell) proceeds but never takes a LIVE owner's file: it would cut that owner off for good
     // (PR #247 Miguel I4). A file that names nobody (garbage) is still replaced.
     if (d.reason === 'unproven-owner') return { ...d, file, published: false };
     if (typeof hooks.beforePublish === 'function') hooks.beforePublish();
     let r;
     try {
-      r = publish({ file, prepare }, { pid: self.pid, start: self.start, at: now() }, { staleText: text, link, now, hooks });
+      r = publish({ file, prepare }, { pid: self.pid, start: selfStart, at: now() }, { staleText: text, link, now, hooks });
     } catch {
       return { ...d, file, published: false };           // cannot write the file: still no reason to refuse
     }

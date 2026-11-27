@@ -37,8 +37,8 @@ function placeOf(stateRoot) {
  * Called once, before this process makes a window. Resolves { action: 'focus', owner, file, text } (forward and exit) or
  * { action: 'proceed', reason, file, published } (make the window; `published` says the file now names this process).
  */
-async function claim({ stateRoot, self, startTimes, now = Date.now, link, hooks = {} } = {}) {
-  return core.claimFile({ ...placeOf(stateRoot), unusableReason: 'foreign-dir', self, startTimes, now, link, hooks });
+async function claim({ stateRoot, self, startTimes, ask, resolveStart, now = Date.now, link, hooks = {} } = {}) {
+  return core.claimFile({ ...placeOf(stateRoot), unusableReason: 'foreign-dir', self, startTimes, ask, resolveStart, now, link, hooks });
 }
 
 /**
