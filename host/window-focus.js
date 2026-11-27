@@ -65,6 +65,22 @@ function cleanMessage(raw) {
 }
 
 /**
+ * Say ok, and act only once that ok has gone out (PR #258 Dexter 3). A sender that gave up before its line was read (an owner whose loop
+ * was blocked while the line AND the close were pending) has no pipe to write to: the write fails, and nothing is opened for a launch that
+ * already opened its own window. A socket already gone is not written to at all.
+ */
+function okThenAct(sock, act, log = () => {}) {
+  if (sock.destroyed) return;
+  try {
+    sock.write('{"ok":true}\n', (err) => {
+      if (err) { log(`[window-focus] the launch left before its ok: ${err.code || err.message}`); return; }
+      act();
+    });
+    sock.end();
+  } catch { /* the launch went away */ }
+}
+
+/**
  * Listen for launches. Resolves { close() } once the pipe is up; rejects when it can't be (the name is taken): the caller then
  * publishes no owner file. `onFocus(msg)` runs AFTER the launch was answered ok, which only a ready window does.
  * `accepting(msg)` -> bool: false answers not-ok at once. `whenReady(msg)` -> bool | Promise<bool>: held on until it settles; anything but
@@ -118,10 +134,12 @@ function listen({ pid, name, clean = cleanMessage, onFocus, accepting = () => tr
         ready.catch(() => false).then((isReady) => {
           if (sock.destroyed) return;        // the launch gave up while held: nobody to answer, and nothing to act for (PR #248 Miguel S2)
           let open = false;
-          try { open = isReady === true && accepting(msg) === true; } catch { open = false; }
-          if (!open) return reply({ ok: false, error: 'closing' });
-          reply({ ok: true });
-          Promise.resolve().then(() => onFocus(msg)).catch((err) => log(`[window-focus] onFocus failed: ${err && err.message}`));
+          let why2 = 'closing';
+          try { const a = isReady === true ? accepting(msg) : false; open = a === true; if (typeof a === 'string' && a) why2 = a; } catch { open = false; }
+          if (!open) return reply({ ok: false, error: why2 });          // the real reason, as the first refusal says it (PR #258 Miguel S1)
+          if (answered) return;
+          answered = true;
+          okThenAct(sock, () => { Promise.resolve().then(() => onFocus(msg)).catch((err) => log(`[window-focus] onFocus failed: ${err && err.message}`)); }, log);
         });
       });
     });
@@ -186,4 +204,4 @@ function send({ pid, name, type = 'focus', msg = {}, timeoutMs = DEFAULT_SEND_TI
   });
 }
 
-module.exports = { pipeNameFor, appPipeNameFor, listen, send, cleanMessage, MAX_CWD };
+module.exports = { pipeNameFor, appPipeNameFor, listen, send, cleanMessage, okThenAct, MAX_CWD };

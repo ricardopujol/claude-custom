@@ -140,3 +140,37 @@ test('cleanMessage keeps root (text, at most 1024) and still accepts a message w
   assert.strictEqual(cleanMessage({ type: 'focus', root: 'x'.repeat(1025) }), null);
   assert.deepStrictEqual(cleanMessage({ type: 'focus', root: 'x'.repeat(1024) }), { root: 'x'.repeat(1024) });
 });
+
+test('PR #258 Dexter 3: ok is written first, and the launch is acted on only once that write went through (a sender that left is never acted for)', async () => {
+  const { okThenAct } = load();
+  const mk = (writeErr, gone = false) => {
+    const sock = { destroyed: gone, writes: [], ended: false,
+      write(data, cb) { this.writes.push(data); setImmediate(() => cb(writeErr)); return true; },
+      end() { this.ended = true; } };
+    return sock;
+  };
+  let acted = 0;
+  const act = () => { acted++; };
+  const okSock = mk(null);
+  okThenAct(okSock, act);
+  await new Promise((r) => setImmediate(r)); await new Promise((r) => setImmediate(r));
+  assert.deepStrictEqual(okSock.writes, ['{"ok":true}\n']);
+  assert.strictEqual(okSock.ended, true);
+  assert.strictEqual(acted, 1, 'written: acted');
+  okThenAct(mk(Object.assign(new Error('pipe gone'), { code: 'EPIPE' })), act);
+  await new Promise((r) => setImmediate(r)); await new Promise((r) => setImmediate(r));
+  assert.strictEqual(acted, 1, 'the write failed (the sender left): not acted');
+  okThenAct(mk(null, true), act);
+  await new Promise((r) => setImmediate(r)); await new Promise((r) => setImmediate(r));
+  assert.strictEqual(acted, 1, 'a socket already gone: nothing written, not acted');
+});
+
+test('PR #258 Miguel S1: a refusal after the hold says the real reason, not always "closing"', async () => {
+  const { listen, send } = load();
+  const pid = uniquePid();
+  let n = 0;
+  const server = await listen({ pid, accepting: () => (++n === 1 ? true : 'no such window'), whenReady: () => true, onFocus: async () => {} });
+  try {
+    assert.deepStrictEqual(await send({ pid, msg: {} }), { ok: false, error: 'no such window' });
+  } finally { await server.close(); }
+});
