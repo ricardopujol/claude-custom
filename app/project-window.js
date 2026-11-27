@@ -58,7 +58,7 @@ const { readLook, lookDirState, ensureLookDir } = require('../host/style');
 const { createOccupancyService } = require('../host/occupancy-service');
 const { readCloseFacts } = require('../host/close-safety');
 const { occupancyDir, createClaimWriter } = require('../host/occupancy-store');
-const { startTimes } = require('../host/proc-start');
+const { startTimes, patientStartTimes } = require('../host/proc-start');
 const windowOwner = require('../host/window-owner');
 const windowFocus = require('../host/window-focus');
 const { createWindowClaim } = require('../host/window-claim');
@@ -1566,11 +1566,13 @@ function createProjectWindow({ launchCwd, electron, config, services }) {
   const windowClaim = createWindowClaim({
     // EVERY window holds its claim (single-instance PR 3): the process has ONE window pipe (host/window-router.js, main's), and this
     // window's claim registers its entry there instead of listening, so a launch is routed to the window whose root it names.
-    enabled: ONE_WINDOW_ON, stateRoot: STATE_ROOT, pid: process.pid, ownStart: () => ownStartTime(), startTimes,
+    // PR #261 Dexter 2: the owner window proves itself on the window pipe (`who`), the query with its one retry behind it
+    enabled: ONE_WINDOW_ON, stateRoot: STATE_ROOT, pid: process.pid, ownStart: () => ownStartTime(), startTimes: patientStartTimes,
     project: PROJECT, launchCwd: LAUNCH_CWD, explicitPort: EXPLICIT_PORT, root: PROJECT_ROOT,
     hasPort: (port) => !!tabShell && tabShell.snapshot().tabs.some((t) => t && t.port === port),
     listen: (entry) => windowRouter.register(entry), claim: windowOwner.claim, send: windowFocus.send, takeOver: windowOwner.takeOver,
     release: windowOwner.release, forwardedCwd: windowOwner.forwardedCwd,
+    ask: (owner) => windowFocus.who({ pid: owner.pid }),
     act: onLaunchFocus,
     ackMs: 10_000,                                 // a hung owner is told from a slow one (host/window-focus.js, the ack)
     onExit: (fn) => onProcessExit(self, fn),      // main's ONE process 'exit' hook (app.exit skips will-quit); emptied when this window closes

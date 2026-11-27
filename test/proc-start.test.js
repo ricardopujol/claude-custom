@@ -128,13 +128,118 @@ test('selfStartTime asks once for this process and caches the answer', async () 
   assert.strictEqual(calls.length, 1);
 });
 
-test('selfStartTime is null when the query fails, and asks again next time', async () => {
+test('selfStartTime is null when the query fails, and asks again once the failure hold has passed', async () => {
   let fail = true;
-  const exec = async () => { if (fail) throw new Error('x'); return `${process.pid} 5\nEND\n`; };
-  const self = createSelfStartTime(opts({ exec }));
+  let t = 1000;
+  let asked = 0;
+  const exec = async () => { asked++; if (fail) throw new Error('x'); return `${process.pid} 5\nEND\n`; };
+  const self = createSelfStartTime(opts({ exec, now: () => t, failHoldMs: 60_000 }));
   assert.strictEqual(await self(), null);
   fail = false;
+  t += 59_999;
+  assert.strictEqual(await self(), null, 'inside the hold: the failure is the answer, nothing is asked');
+  assert.strictEqual(asked, 1);
+  t += 1;
   assert.strictEqual(await self(), '5');
+  assert.strictEqual(asked, 2);
+});
+
+// PR #261 Dexter 1 / Miguel I1 + I2: with the retry, one failed ask costs 5 + 15 s, and four callers on a launch's path asked one after the
+// other (the app claim, the Resources service, the restore decision, the window claim): about 80 s before the first window.
+test('selfStartTime is single-flight: N concurrent callers share ONE query (and its one retry)', async () => {
+  let first = 0;
+  let retry = 0;
+  const slow = (ms, fn) => new Promise((resolve, reject) => setTimeout(() => { try { resolve(fn()); } catch (e) { reject(e); } }, ms));
+  const self = createSelfStartTime(opts({
+    exec: () => slow(30, () => { first++; throw new Error('timeout'); }),
+    retryExec: () => slow(30, () => { retry++; return `${process.pid} 9\nEND\n`; }),
+  }));
+  const answers = await Promise.all(Array.from({ length: 6 }, () => self()));
+  assert.deepStrictEqual(answers, Array(6).fill('9'));
+  assert.strictEqual(first, 1);
+  assert.strictEqual(retry, 1);
+});
+
+test('selfStartTime: a launch pays the own-start budget ONCE: sequential callers after a failure do not ask again (bounded wait)', async () => {
+  const BUDGET = 40;          // stands for QUERY_TIMEOUT_MS + RETRY_QUERY_TIMEOUT_MS (20 s): each fake exec "times out" after BUDGET / 2
+  let asked = 0;
+  const timesOut = () => new Promise((_, reject) => setTimeout(() => { asked++; reject(new Error('timeout')); }, BUDGET / 2));
+  const self = createSelfStartTime(opts({ exec: timesOut, retryExec: timesOut }));
+  const t0 = Date.now();
+  // the launch's callers, in the order main runs them: the app claim and the poller together, then three more one after the other
+  await Promise.all([self(), self()]);
+  for (let i = 0; i < 3; i++) assert.strictEqual(await self(), null);
+  const waited = Date.now() - t0;
+  assert.strictEqual(asked, 2, 'one query and its one retry for the whole launch');
+  assert.ok(waited < BUDGET * 2, `the callers waited one budget, not one each (${waited} ms for a ${BUDGET} ms budget)`);
+  // the real numbers: one own-start pair is at most 20 s per launch, inside the ~190 s a launch may wait (Q10)
+  const ps = require('../host/proc-start');
+  assert.ok(ps.QUERY_TIMEOUT_MS + ps.RETRY_QUERY_TIMEOUT_MS <= 20_000);
+  assert.ok(ps.FAILED_START_HOLD_MS >= 30_000, 'the hold covers the launch path (its callers run within seconds of each other)');
+});
+
+test('patientStartTimes retries a failed query (the wrapper, not only the constants); retryExec undefined keeps the default retry (Miguel S2)', async () => {
+  const { patientStartTimes } = require('../host/proc-start');
+  const failing = fakeExec({ reject: new Error('timeout') });
+  const retry = fakeExec({ stdout: '12 34\nEND\n' });
+  const m = await patientStartTimes([12], opts({ exec: failing.exec, retryExec: retry.exec }));
+  assert.deepStrictEqual([...m], [[12, '34']]);
+  // an explicit undefined must not switch the retry off: the options resolve to the default retry exec (no real powershell.exe here)
+  const ps = require('../host/proc-start');
+  assert.strictEqual(ps.patientOptions({ retryExec: undefined }).retryExec, ps.retryExec);
+  assert.strictEqual(ps.patientOptions({ retryExec: retry.exec }).retryExec, retry.exec);
+});
+
+// --- fix/owner-proof: ONE retry with a longer budget ---------------------------------------------------------------
+// MEASURED 2026-11-27 (Raider): one query takes 1.3-1.7 s on a calm machine and 2.3-4.5 s under CPU load at an Electron start;
+// on a busy machine it passed the 5 s budget, and a launch went on as a second process ('unproven-owner' / 'no-self-start').
+
+test('retryExec: a query that failed (timed out) is asked ONCE more with the retry exec, and its answer is the result', async () => {
+  const first = fakeExec({ reject: Object.assign(new Error('timeout'), { killed: true }) });
+  const retry = fakeExec({ stdout: '12 34\nEND\n' });
+  const m = await startTimes([12], opts({ exec: first.exec, retryExec: retry.exec }));
+  assert.deepStrictEqual([...m], [[12, '34']]);
+  assert.strictEqual(first.calls.length, 1);
+  assert.strictEqual(retry.calls.length, 1);
+});
+
+test('retryExec: a query that answered is never asked again (an absent pid is an answer, not a failure)', async () => {
+  const first = fakeExec({ stdout: 'END\n' });
+  const retry = fakeExec({ stdout: '12 34\nEND\n' });
+  const m = await startTimes([12], opts({ exec: first.exec, retryExec: retry.exec }));
+  assert.strictEqual(m.size, 0);
+  assert.strictEqual(retry.calls.length, 0);
+});
+
+test('retryExec: both failing is null (still "could not ask", never "not running"), after exactly two queries', async () => {
+  const first = fakeExec({ reject: new Error('x') });
+  const retry = fakeExec({ stdout: '12 34\n' });          // no END: did not run to the end
+  assert.strictEqual(await startTimes([12], opts({ exec: first.exec, retryExec: retry.exec })), null);
+  assert.strictEqual(first.calls.length + retry.calls.length, 2);
+});
+
+test('retryExec: no retry off Windows or with no valid pid (nothing is spawned)', async () => {
+  const retry = fakeExec({ stdout: 'END\n' });
+  assert.strictEqual(await startTimes([12], { platform: 'linux', exec: retry.exec, retryExec: retry.exec }), null);
+  assert.strictEqual((await startTimes([0], opts({ exec: retry.exec, retryExec: retry.exec }))).size, 0);
+  assert.strictEqual(retry.calls.length, 0);
+});
+
+test('selfStartTime with retryExec: a first query that timed out is retried, so this process still learns its start', async () => {
+  const first = fakeExec({ reject: Object.assign(new Error('timeout'), { killed: true }) });
+  const retry = fakeExec({ stdout: `${process.pid} 777\nEND\n` });
+  const self = createSelfStartTime(opts({ exec: first.exec, retryExec: retry.exec }));
+  assert.strictEqual(await self(), '777');
+  assert.strictEqual(await self(), '777');
+  assert.strictEqual(first.calls.length + retry.calls.length, 2, 'cached once it succeeded');
+});
+
+test('patientStartTimes and the retry budget: the retry waits longer than the first query, and stays bounded', () => {
+  const ps = require('../host/proc-start');
+  assert.strictEqual(typeof ps.patientStartTimes, 'function');
+  assert.ok(ps.RETRY_QUERY_TIMEOUT_MS > ps.QUERY_TIMEOUT_MS);
+  // Q10: a launch's whole wait is ~190 s; the proof must stay far below it
+  assert.ok(ps.QUERY_TIMEOUT_MS + ps.RETRY_QUERY_TIMEOUT_MS <= 30_000);
 });
 
 // --- a process that has EXITED but is still in the table (found by verify/probe-worktree-occupancy.js) -------------

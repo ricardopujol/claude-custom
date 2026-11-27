@@ -8,8 +8,9 @@
  * name a pid that some unrelated process now owns. The start time can.
  * verify/probe-session-registry.js measured that
  * `(Get-Process -Id P).StartTime.ToFileTimeUtc()` returns exactly the FILETIME
- * the CLI writes as `procStart`, for one ~250 ms powershell.exe call however
- * many pids it covers. `Date.now() - process.uptime()` was 12 ms off, so this
+ * the CLI writes as `procStart`, for one powershell.exe call however many pids
+ * it covers (~250 ms then; 1.3-1.7 s on Raider on 2026-11-27, more under load:
+ * see RETRY_QUERY_TIMEOUT_MS). `Date.now() - process.uptime()` was 12 ms off, so this
  * process's own start time comes from the same query, never from a clock.
  *
  * THREE ANSWERS THAT MUST STAY APART:
@@ -37,6 +38,10 @@ const path = require('path');
 const { execFile } = require('child_process');
 
 const QUERY_TIMEOUT_MS = 5000;
+// fix/owner-proof: the budget of the ONE retry a caller may ask for (`retryExec`). MEASURED 2026-11-27 (Raider, scratch measure): one query
+// takes 1.3-1.7 s on a calm machine (not the ~250 ms of 2026), 2.3-4.5 s at an Electron start under CPU load, and on a busy machine it
+// passed 5 s: a launch then could not prove the running Jiandu, nor learn its own start. 5 + 15 s stays far below a launch's ~190 s wait.
+const RETRY_QUERY_TIMEOUT_MS = 15_000;
 // By absolute path (Miguel, PR #71 G1): a bare `powershell.exe` is looked up
 // in the parent's cwd first, and this host's cwd is a project folder.
 const POWERSHELL = path.join(process.env.SystemRoot || 'C:\\Windows',
@@ -84,16 +89,36 @@ function createExec(timeoutMs = QUERY_TIMEOUT_MS) {
   };
 }
 const defaultExec = createExec();
+const retryExecDefault = createExec(RETRY_QUERY_TIMEOUT_MS);
 
 /**
  * Start times as FILETIME strings (100 ns ticks since 1601, UTC), keyed by pid.
  * Resolves to a Map, or null when the query could not be run.
+ * `retryExec` (fix/owner-proof): a query that could not be run (timed out, failed, no END) is asked ONCE more with it. An answer -- a
+ * listed pid, an absent one -- is never asked again; two failures are still null ("could not ask", never "not running").
  */
-async function startTimes(pids, { exec = defaultExec, platform = process.platform } = {}) {
+async function startTimes(pids, { exec = defaultExec, retryExec = null, platform = process.platform } = {}) {
   if (platform !== 'win32') return null;
   const wanted = [...new Set((Array.isArray(pids) ? pids : []).filter(validPid))];
   if (wanted.length === 0) return new Map();
+  const first = await queryOnce(wanted, exec);
+  if (first !== null || typeof retryExec !== 'function') return first;
+  return queryOnce(wanted, retryExec);
+}
 
+// The options patientStartTimes runs with: the default retry unless a retry exec is GIVEN (an explicit undefined keeps the default:
+// PR #261 Miguel S2).
+function patientOptions(opts = {}) {
+  return { ...opts, retryExec: typeof opts.retryExec === 'function' ? opts.retryExec : retryExecDefault };
+}
+
+/** startTimes with the one retry on the longer budget: for a decision a launch must not get wrong because powershell.exe was slow. */
+function patientStartTimes(pids, opts = {}) {
+  return startTimes(pids, patientOptions(opts));
+}
+
+// One powershell.exe run for the (already validated) pids: a Map, or null when it did not run to the END sentinel.
+async function queryOnce(wanted, exec) {
   const script = "$ErrorActionPreference='SilentlyContinue'; " +
     // `Where-Object { -not $_.HasExited }`: Windows keeps an EXITED process in the table while anyone holds a
     // handle to it, and Get-Process still returns it with its StartTime. MEASURED (verify/probe-worktree-
@@ -126,18 +151,45 @@ async function startTimes(pids, { exec = defaultExec, platform = process.platfor
 }
 
 /**
- * This process's own start time, asked once and cached. A failed query is not
- * cached, so the next caller asks again.
+ * This process's own start time, asked once and cached. `opts.retryExec`
+ * (fix/owner-proof) gives an ask its one retry on a longer budget (app/main.js
+ * passes it).
+ *
+ * SINGLE-FLIGHT, AND A FAILURE IS HELD (PR #261 Dexter 1 / Miguel I1): with the
+ * retry one failed ask costs up to 20 s, and a launch's callers (the app claim,
+ * the shared poller, the Resources service, the restore decision, each window
+ * claim) ask within seconds of each other. Concurrent callers share the ONE
+ * query in flight; a failure is the answer (null) for `failHoldMs`, then the
+ * next caller asks again. So a launch pays the own-start budget once.
  */
+const FAILED_START_HOLD_MS = 60_000;
 function createSelfStartTime(opts = {}) {
+  const { now = Date.now, failHoldMs = FAILED_START_HOLD_MS, ...query } = opts;
   let cached = null;
-  return async function selfStartTime() {
-    if (cached !== null) return cached;
-    const m = await startTimes([process.pid], opts);
-    const own = m ? m.get(process.pid) : null;
-    if (typeof own === 'string') cached = own;
-    return own === undefined ? null : own;
+  let inflight = null;
+  let failedAt = null;
+  return function selfStartTime() {
+    if (cached !== null) return Promise.resolve(cached);
+    if (inflight) return inflight;
+    if (failedAt !== null && now() - failedAt < failHoldMs) return Promise.resolve(null);
+    inflight = (async () => {
+      try {
+        const m = await startTimes([process.pid], query);
+        const own = m ? m.get(process.pid) : null;
+        if (typeof own === 'string') { cached = own; failedAt = null; return own; }
+        failedAt = now();
+        return null;
+      } catch {
+        failedAt = now();
+        return null;
+      } finally {
+        inflight = null;
+      }
+    })();
+    return inflight;
   };
 }
 
-module.exports = { isAlive, startTimes, createSelfStartTime, QUERY_TIMEOUT_MS, defaultExec, createExec, POWERSHELL, BOM_AT_START };
+module.exports = { isAlive, startTimes, patientStartTimes, patientOptions, createSelfStartTime, QUERY_TIMEOUT_MS, RETRY_QUERY_TIMEOUT_MS,
+  FAILED_START_HOLD_MS, defaultExec,
+  retryExec: retryExecDefault, createExec, POWERSHELL, BOM_AT_START };

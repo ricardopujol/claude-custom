@@ -57,7 +57,7 @@ const { projectLabel } = require('../host/project-path');
 const { readIdentity, defaultIsAlive } = require('../host/host-identity');
 const { lookDir, lookDirState, ensureLookDir } = require('../host/style');
 const { createProjectLayoutStore } = require('./project-layout-store');
-const { startTimes, createSelfStartTime, isAlive: isPidAlive } = require('../host/proc-start');
+const { startTimes, patientStartTimes, createSelfStartTime, retryExec: procRetryExec, isAlive: isPidAlive } = require('../host/proc-start');
 const { readOpenPrs, parseOpenPrs } = require('../host/open-prs');
 const { readSeams, fixtureReader } = require('../host/probe-seams');
 const { sanitizeDim } = require('../host/look');
@@ -1175,7 +1175,9 @@ function windowCreated(pw) { giveUiFont(pw); watchPlayback(pw); }
 // A second launch of this project is answered by the first window (focus + the lane it named) and ends without a window. The logic is
 // host/window-claim.js with these effects handed in; the pipe is up BEFORE the owner file names this process, and the owner says no
 // while it is quitting or its start never finished.
-const ownStartTime = createSelfStartTime();   // this process's own start time, asked once: the owner file, the claims and the sampler prove "this process" with it
+// This process's own start time, asked once: the owner file, the claims and the sampler prove "this process" with it. A first query that
+// timed out on a busy machine is asked once more on the longer budget (fix/owner-proof: it was 'no-self-start', a second process).
+const ownStartTime = createSelfStartTime({ retryExec: procRetryExec });
 
 // --- the Resources service (#63) -----------------------------------------------------------------------------
 // One per process, made before any window: windows read it through getResources(). Its tabs are the union of every window's.
@@ -1287,7 +1289,8 @@ function openProject(o) { return openQueue.push(o); }
 // window settled and this process decided to stay (whenReady); until then a launch is held, so an owner that ends never swallowed one.
 const appClaim = createAppClaim({
   enabled: APP_LOCK.on,
-  dir: APP_LOCK.dir, pid: process.pid, ownStart: () => ownStartTime(), startTimes,
+  // the owner proves itself on its app pipe first (host/app-claim.js); the query behind it gets its one retry (fix/owner-proof)
+  dir: APP_LOCK.dir, pid: process.pid, ownStart: () => ownStartTime(), startTimes: patientStartTimes,
   launchCwd: LAUNCH_CWD, installDir: INSTALL_DIR, probe: APP_LOCK.probe, env: process.env, samePath,
   act: (msg) => openProject({ cwd: msg.cwd, env: msg.env, show: 'shown' }),
   onExit: (fn) => onProcessExit('app', fn),        // main's one exit hook (below); its entry is never dropped
@@ -1312,7 +1315,8 @@ const appLifecycle = createAppLifecycle({
   ownStart: () => ownStartTime(),
   readLockOwner: () => (APP_LOCK.on ? appOwner.read(APP_LOCK.dir) : null),
   readRecord: () => readRecord(OPEN_WINDOWS_FILE),
-  proveOwner: (owner) => proveOwner(owner, { startTimes }),
+  // PR #261 Dexter 3: the query with its one retry; an 'unknown' after one slow query would keep no window of a crashed run
+  proveOwner: (owner) => proveOwner(owner, { startTimes: patientStartTimes }),
   decide: (record, proof, launchRoot) => restoreDecision({ record, proof, bootAt: Date.now() - os.uptime() * 1000, launchRoot,
     exists: (p) => fs.existsSync(p), samePath }),
   makeWriter: ({ owner, owns }) => createOpenWindowsWriter({ file: OPEN_WINDOWS_FILE, owner, owns }),

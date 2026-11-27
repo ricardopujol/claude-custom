@@ -17,7 +17,7 @@
  *          migration window only, when an old sender meets an owner with two or more windows.
  *
  *   createWindowRouter({ listen, pid, projectOf, samePath, isInside, log }) -> { register(entry), resolve(msg), size(), stop() }
- *     entry   { root, hasPort(port), accepting(msg), whenReady(msg), onFocus(msg) }
+ *     entry   { root, hasPort(port), accepting(msg), whenReady(msg), onFocus(msg), who() }   (who: this process's { pid, start } | null)
  *     register resolves { close() } once the pipe is up (so before any owner file names this pid); a listen failure rejects it.
  * No Electron.
  */
@@ -63,6 +63,16 @@ function createWindowRouter({ listen, pid, projectOf, samePath, isInside, log = 
     accepting: (msg) => { const e = target(msg); return e ? e.accepting(msg) : NO_SUCH_WINDOW; },
     whenReady: (msg) => { const e = target(msg); return e ? e.whenReady(msg) : false; },
     onFocus: (msg) => { const e = target(msg); return e ? e.onFocus(msg) : undefined; },
+    // `who` (PR #261 Dexter 2): every window of this process is the same process, so the first entry that knows its start answers for the
+    // pid; none yet -> no identity. A launch compares it with window.json (host/owner-file.js proveOwner); it opens nothing.
+    who: () => {
+      for (const e of entries) {
+        let id = null;
+        try { id = typeof e.who === 'function' ? e.who() : null; } catch { id = null; }
+        if (id) return id;
+      }
+      return null;
+    },
     log,
   };
 
