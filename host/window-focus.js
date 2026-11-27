@@ -100,9 +100,11 @@ function listen({ pid, name, clean = cleanMessage, onFocus, accepting = () => tr
         // Asked for: the line was understood, by a process whose event loop runs. Sent once, before any gate.
         if (raw && raw.ack === true) { try { sock.write('{"ack":true}\n'); } catch { /* the launch went away */ } }
         // An owner that is quitting, or whose start never finished, says no: the launch then opens its own window (host/window-claim.js).
+        // `accepting` may name its refusal (the router: 'no such window'); anything else that is not true is 'closing'.
         let open = false;
-        try { open = accepting(msg) === true; } catch { open = false; }
-        if (!open) return reply({ ok: false, error: 'closing' });
+        let why = 'closing';
+        try { const a = accepting(msg); open = a === true; if (typeof a === 'string' && a) why = a; } catch { open = false; }
+        if (!open) return reply({ ok: false, error: why });
         // A launch is held (no idle drop) while this window finishes starting: ok is only ever said by a window that is ready, so an
         // owner that then ends before it is ready (attach-only refusal, failed start) cannot have swallowed a launch (PR #247 Dexter M2).
         sock.setTimeout(0);
