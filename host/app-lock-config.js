@@ -6,7 +6,7 @@
  *   a named port (good or bad)                   off  a port-named launch is its own process (DESIGN_SINGLE_INSTANCE.md 3.1)
  *   CLAUDE_CUSTOM_ATTACH_ONLY=1                  off  an attach-only window (the ▾ menu's old Open, the command line) is its own process
  *   CLAUDE_CUSTOM_SCREENSHOT                     off  the headless screenshot path
- *   CLAUDE_CUSTOM_TABS_PROBE + the flag + a      on   the probe's own CLAUDE_CUSTOM_UI_STATE_DIR (verify/probe-single-instance.js)
+ *   CLAUDE_CUSTOM_TABS_PROBE + the flag + a      on   the probe's own UI state folder (host/probe-seams.js uiStateDir; verify/probe-single-instance.js)
  *     state folder of its own
  *   CLAUDE_CUSTOM_TABS_PROBE + the flag alone    off  'probe without its own state folder': it would share the person's app.json
  *   CLAUDE_CUSTOM_TABS_PROBE                     off  every other probe: each launch is its own process, as before

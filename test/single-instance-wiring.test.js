@@ -63,7 +63,8 @@ test('the app claim is made from the config table, acts through openProject (sho
 });
 
 test('cache-dirs exports removeOwn and main calls it only on the handed-over exit', () => {
-  assert.strictEqual(typeof require('../app/cache-dirs').removeOwn, 'function');
+  // removeOwn's behaviour is test/cache-dirs.test.js's (this file scans source text and requires no mutated module)
+  assert.match(MAIN, /require\('\.\/cache-dirs'\)\.removeOwn\(\)/);
   assert.strictEqual((MAIN.match(/removeOwnCache\(\);/g) || []).length, 1, 'one call');
   assert.ok(readyBody.indexOf('removeOwnCache();') > readyBody.indexOf("appClaim.run() === 'exit'"));
 });

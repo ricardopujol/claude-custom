@@ -54,11 +54,11 @@ test('P5 with opens and closes: Resources is minimised exactly when every window
     const resources = { minimised: null, setMinimised(v) { this.minimised = v; } };
     const seenChanged = createSeenGate({ registry, getResources: () => resources });
     let n = 0;
-    const mk = () => { const w = { ...fakeWin(`W${n++}`), unseen: false, async start() { return { started: true }; }, startPoll() {}, dispose() {}, focusWindow() {}, win: null }; return w; };
-    const launch = mk();
-    registry.add(launch);
+    // PR 3: every window holds a claim (here one that always proceeds), and the lifecycle registers it, the launch window too
+    const claim = { run: async () => 'proceed', markReady() {}, stop() {} };
+    const mk = () => { const w = { ...fakeWin(`W${n++}`), unseen: false, claim, async start() { return { started: true }; }, startPoll() {}, dispose() {}, focusWindow() {}, win: null }; return w; };
     const lc = createProjectLifecycle({
-      registry, launchWindow: launch, rootOf: (c) => c, makeWindow: () => mk(),
+      registry, rootOf: (c) => c, makeWindow: () => mk(),
       makeRecord() {}, stopRecord() {}, makeUnits() {}, dropUnits() {}, dropWatch() {}, getAppStart: () => null, log() {},
       onChanged: seenChanged,
     });
