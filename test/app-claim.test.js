@@ -225,3 +225,27 @@ test('app-owner: the file is <dir>\\app.json, made in a plain folder (no .claude
   assert.strictEqual(o.release({ stateRoot: dir, selfPid: 77, selfStart: 'S77' }), true);
   assert.strictEqual(o.read(dir), null);
 });
+
+test('PR #258 Dexter 4: an owner that cannot be proven (startTimes null under load) -> proceed by the plan\'s rule, and the log says why', async () => {
+  const dir = tmpDir('cc-app-');
+  const text = JSON.stringify({ pid: 12345, start: 'S12345' });
+  fs.writeFileSync(appFile(dir), text);
+  const lines = [];
+  const a = launch({ dir, alive: new Set(), over: { startTimes: async () => null, log: (l) => lines.push(l) } });
+  try {
+    assert.strictEqual(await a.claim.run(), 'proceed');
+    assert.strictEqual(fs.readFileSync(appFile(dir), 'utf8'), text, 'never taken as "no owner": the file is not taken');
+    assert.ok(lines.some((l) => /single instance: going on here without the owner file \(unproven-owner/.test(l)), lines.join('\n'));
+  } finally { a.claim.stop(); }
+});
+
+test('PR #258 Dexter 4: no start time for this process -> proceed, publish nothing, and say so', async () => {
+  const dir = tmpDir('cc-app-');
+  const lines = [];
+  const a = launch({ dir, alive: new Set(), over: { ownStart: async () => null, log: (l) => lines.push(l) } });
+  try {
+    assert.strictEqual(await a.claim.run(), 'proceed');
+    assert.strictEqual(readOwner(dir), null);
+    assert.ok(lines.some((l) => /without the owner file \(no-self-start/.test(l)), lines.join('\n'));
+  } finally { a.claim.stop(); }
+});

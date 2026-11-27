@@ -170,6 +170,9 @@ function createWindowClaim(deps) {
         r = await claim({ stateRoot, self, startTimes });
         published = r.published === true;
       }
+      // PR #258 Dexter 4: going on WITHOUT the owner file (an owner that could not be proven, no start time of our own, a contended or
+      // foreign file) is said, with the reason: under load it is a second process (or window), and the log is the only trace of why.
+      if (!published && r && r.action === 'proceed' && r.reason !== 'self') log(`[main] ${tag}: going on here without the owner file (${r.reason})`);
       if (published && !pipe) releaseFile();     // a file naming a window nobody can reach
       else if (published) hookExit();
       return 'proceed';
