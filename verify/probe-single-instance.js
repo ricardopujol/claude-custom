@@ -305,7 +305,9 @@ async function cases6and7() {
   await command(app, { cmd: 'quit', graceful: true });
   const gone = await waitFor(() => (app.exited ? true : null), 300000, 1000);
   const asked = app.out.split('\n').filter((l) => /quit question \(probe, answered discard\)/.test(l));
-  check('7: exactly one quit question, naming both windows', asked.length === 1 && asked[0].includes(path.basename(A.container)) && asked[0].includes(path.basename(B.container)), JSON.stringify(asked));
+  const seen = app.out.split('\n').filter((l) => /quit question windows \(probe\)/.test(l));
+  check('7: exactly one quit question, naming both windows', asked.length === 1 && asked[0].includes(path.basename(A.container)) && asked[0].includes(path.basename(B.container)),
+    `${JSON.stringify(asked)} ${JSON.stringify(seen)}`);
   check('7: the process ended with exit 0', gone === true && app.exitCode === 0, `exit=${app.exitCode}`);
   const rec = readJson(path.join(ui, 'open-windows.json'));
   check('7: the record is clean', !!rec && rec.clean === true, JSON.stringify(rec));
