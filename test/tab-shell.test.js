@@ -1884,6 +1884,21 @@ test('criterion 10: a failing setup still starts the session, and the error stay
   assert.strictEqual(tabModel.phaseText(e), "Setup failed: run: 'npm ci' exited with 1 (output in L).");
 });
 
+test('PR #265 Miguel G6: createWorktree\'s answer says a failed setup (setupError), so Home never reads it as a clean success', async () => {
+  const h = harness({ running: { 7700: wt('dev') } });
+  await h.shell.open();
+  await flush();
+  h.setupResult = { ok: false, error: "run: 'npm ci' exited with 1 (output in L).", log: 'L' };
+  const r = await h.shell.createWorktree('feat/demo');
+  assert.strictEqual(r.ok, true, 'the lane was made');
+  assert.strictEqual(r.setupError, "run: 'npm ci' exited with 1 (output in L).");
+  const h2 = harness({ running: { 7700: wt('dev') } });
+  await h2.shell.open();
+  await flush();
+  const ok = await h2.shell.createWorktree('feat/demo');
+  assert.strictEqual(ok.setupError, undefined, 'a setup that passed says nothing');
+});
+
 test('a tab closed by hand while its setup runs leaves no setup error behind for a reopen', async () => {
   const h = harness({ running: { 7700: wt('dev') } });
   await h.shell.open();

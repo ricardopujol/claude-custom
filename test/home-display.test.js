@@ -278,6 +278,135 @@ test('New lane: a name typed with its own prefix is kept as typed; Cancel and Es
   assert.strictEqual(doc.querySelector('input[data-field="name"]').value, 'docs/a b', 'the form is back with the name');
 });
 
+// ---- PR #265 review fixes on the page --------------------------------------------------------------------------------------------
+
+const other = (over = {}) => windowless({ key: 'kb', root: 'C:\\b', label: 'beta', ...over });
+const formOf = (doc, key) => doc.querySelector(`[data-key="${key}"] .lane-form`);
+const typeName = (p, key, value) => {
+  const input = p.dom.window.document.querySelector(`[data-key="${key}"] input[data-field="name"]`);
+  input.value = value;
+  input.dispatchEvent(new p.dom.window.Event('input', { bubbles: true }));
+  return input;
+};
+
+test('Dexter 7 / Miguel G4: a question or a form whose card lost the action is gone, and never comes back by itself', async () => {
+  const p = stopPage({ count: 2 });
+  const doc = p.dom.window.document;
+  p.onModel(payload([windowless()]));
+  doc.querySelector('[data-act="stop-sessions"]').click();
+  await settle();
+  assert.ok(doc.querySelector('.confirm'));
+  p.onModel(payload([windowless({ state: 'open', actions: ['go-to', 'close-window'] })]));
+  p.onModel(payload([windowless()]));
+  assert.strictEqual(doc.querySelector('.confirm'), null, 'the old question does not come back');
+  doc.querySelector('[data-act="new-lane"]').click();
+  assert.ok(formOf(doc, 'kw'));
+  p.onModel(payload([windowless({ actions: ['open'] })]));
+  p.onModel(payload([windowless()]));
+  assert.strictEqual(formOf(doc, 'kw'), null, 'the old form does not come back');
+  doc.querySelector('[data-act="new-lane"]').click();
+  p.onModel(payload([other()]));                       // the card left the list (a filter, a stop)
+  p.onModel(payload([windowless(), other()]));
+  assert.strictEqual(formOf(doc, 'kw'), null);
+});
+
+test('Dexter 8: each card has its own form: a late refusal on one card never replaces the form open on another', async () => {
+  let fail;
+  const late = new Promise((r) => { fail = r; });
+  const p = livePage((m) => (m.action === 'new-lane' && m.key === 'kw' ? late : { ok: true }));
+  const doc = p.dom.window.document;
+  p.onModel(payload([windowless(), other()]));
+  doc.querySelector('[data-key="kw"] [data-act="new-lane"]').click();
+  typeName(p, 'kw', 'first');
+  doc.querySelector('[data-key="kw"] [data-act="lane-create"]').click();
+  doc.querySelector('[data-key="kb"] [data-act="new-lane"]').click();
+  typeName(p, 'kb', 'second');
+  fail({ ok: false, error: 'feat/first already exists' });
+  await settle();
+  assert.strictEqual(doc.querySelector('[data-key="kb"] input[data-field="name"]').value, 'second', 'B\'s form is untouched');
+  assert.strictEqual(doc.querySelector('[data-key="kw"] input[data-field="name"]').value, 'first', 'A\'s form is back with its own name');
+  assert.strictEqual(noteOf(doc, 'kw'), 'The lane was not made: feat/first already exists');
+  assert.strictEqual(noteOf(doc, 'kb'), null);
+});
+
+test('Miguel Y2: a push never redraws an open form: the same input, its focus and its caret stay; its status line still follows', () => {
+  const p = livePage();
+  const doc = p.dom.window.document;
+  p.onModel(payload([windowless(), other()]));
+  doc.querySelector('[data-key="kw"] [data-act="new-lane"]').click();
+  const input = typeName(p, 'kw', 'my-change');
+  const select = doc.querySelector('[data-key="kw"] select[data-field="prefix"]');
+  input.focus();
+  input.setSelectionRange(3, 3);
+  p.onModel(payload([windowless({ state: 'closed', sessions: null, actions: ['open', 'pin', 'show-in-explorer', 'new-lane'] }), other()]));
+  assert.strictEqual(doc.querySelector('[data-key="kw"] input[data-field="name"]'), input, 'the same element');
+  assert.strictEqual(doc.querySelector('[data-key="kw"] select[data-field="prefix"]'), select);
+  assert.strictEqual(doc.activeElement, input);
+  assert.strictEqual(input.selectionStart, 3);
+  assert.strictEqual(doc.querySelector('[data-key="kw"] .state').textContent, 'closed', 'the status line follows the push');
+  assert.strictEqual(doc.querySelector('[data-key="kb"] .state').textContent, '2 sessions, no window');
+});
+
+test('Dexter 4 / Miguel G3: Create with no name sends nothing and says why; the form stays', () => {
+  const p = livePage();
+  const doc = p.dom.window.document;
+  p.onModel(payload([windowless()]));
+  doc.querySelector('[data-act="new-lane"]').click();
+  typeName(p, 'kw', '   ');
+  doc.querySelector('[data-act="lane-create"]').click();
+  typeName(p, 'kw', 'feat/');
+  doc.querySelector('[data-act="lane-create"]').click();
+  assert.deepStrictEqual(p.acts, []);
+  assert.strictEqual(noteOf(doc, 'kw'), 'Type a name after the branch type.');
+  assert.ok(formOf(doc, 'kw'));
+});
+
+test('Dexter 9 / Miguel G3: one length rule: the longest name the box takes, with the longest type, is a branch main accepts (120)', () => {
+  const p = livePage((m) => (m.action === 'new-lane' ? { ok: true, branch: m.branch } : { ok: true }));
+  const doc = p.dom.window.document;
+  p.onModel(payload([windowless()]));
+  doc.querySelector('[data-act="new-lane"]').click();
+  const input = doc.querySelector('input[data-field="name"]');
+  const max = Number(input.getAttribute('maxlength'));
+  const longest = Math.max(...[...doc.querySelectorAll('select[data-field="prefix"] option')].map((o) => o.value.length));
+  assert.strictEqual(max + longest, 120);
+  const select = doc.querySelector('select[data-field="prefix"]');
+  select.value = 'refactor/';
+  select.dispatchEvent(new p.dom.window.Event('change', { bubbles: true }));
+  typeName(p, 'kw', 'x'.repeat(max));
+  doc.querySelector('[data-act="lane-create"]').click();
+  assert.strictEqual(p.acts.pop().branch.length, 120);
+  doc.querySelector('[data-act="new-lane"]').click();
+  typeName(p, 'kw', `feat/${'y'.repeat(116)}`);           // a name typed with its own prefix, 121 long
+  doc.querySelector('[data-act="lane-create"]').click();
+  assert.deepStrictEqual(p.acts, []);
+  assert.strictEqual(noteOf(doc, 'kw'), 'A branch name is at most 120 characters.');
+});
+
+test('Miguel G6: a lane made whose setup failed says both, and the form does not come back', async () => {
+  const p = livePage((m) => (m.action === 'new-lane' ? { ok: false, made: true, branch: m.branch, error: 'its setup failed: npm ci failed' } : { ok: true }));
+  const doc = p.dom.window.document;
+  p.onModel(payload([windowless()]));
+  doc.querySelector('[data-act="new-lane"]').click();
+  typeName(p, 'kw', 'x');
+  doc.querySelector('[data-act="lane-create"]').click();
+  await settle();
+  assert.strictEqual(noteOf(doc, 'kw'), 'feat/x opened in its window, but its setup failed: npm ci failed.');
+  assert.strictEqual(formOf(doc, 'kw'), null);
+});
+
+test('Dexter 6: a card that is stopping shows no Stop button (main leaves it out) and keeps its note', async () => {
+  const p = stopPage({ count: 2, stops: [new Promise(() => {})] });
+  const doc = p.dom.window.document;
+  p.onModel(payload([windowless()]));
+  doc.querySelector('[data-act="stop-sessions"]').click();
+  await settle();
+  doc.querySelector('[data-act="stop-confirm"]').click();
+  p.onModel(payload([windowless({ stopping: true, actions: ['open', 'pin', 'show-in-explorer', 'new-lane'] })]));
+  assert.strictEqual(doc.querySelector('[data-act="stop-sessions"]'), null);
+  assert.strictEqual(noteOf(doc, 'kw'), 'Stopping 2 sessions…');
+});
+
 test('the H-PR3 buttons read "Stop its sessions" and "New lane", with titles that say what they do', () => {
   const html = D.cardsHtml(payload([windowless()]));
   assert.match(html, /<button data-act="stop-sessions" title="[^"]+">Stop its sessions<\/button>/);

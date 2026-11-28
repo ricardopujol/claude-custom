@@ -37,6 +37,10 @@ const BUTTONS = {
 // The New lane form's type prefixes (the worktree scripts accept these: new-worktree.ps1). The first is the default.
 const PREFIXES = ['feat/', 'fix/', 'spike/', 'chore/', 'docs/', 'refactor/', 'test/'];
 const HAS_PREFIX = /^(feat|fix|spike|chore|docs|refactor|test)\//;
+// ONE length rule with main (app/home-controller.js MAX_BRANCH): the whole branch is at most 120, so the name box takes 120 less the
+// longest type, and a name typed with its own type is checked whole (PR #265 Dexter 9, Miguel G3).
+const MAX_BRANCH = 120;
+const NAME_MAX = MAX_BRANCH - Math.max(...PREFIXES.map((p) => p.length));
 const plural = (n, one) => `${n} ${one}${n === 1 ? '' : 's'}`;
 
 function usedText(t, now) {
@@ -85,7 +89,7 @@ function confirmHtml(c, ask) {
 function laneFormHtml(form) {
   const opts = PREFIXES.map((p) => `<option value="${esc(p)}"${p === form.prefix ? ' selected' : ''}>${esc(p)}</option>`).join('');
   return `<div class="lane-form"><select data-field="prefix" aria-label="Branch type">${opts}</select>`
-    + `<input data-field="name" type="text" maxlength="120" spellcheck="false" placeholder="my-change" aria-label="Branch name" value="${esc(form.name)}">`
+    + `<input data-field="name" type="text" maxlength="${NAME_MAX}" spellcheck="false" placeholder="my-change" aria-label="Branch name" value="${esc(form.name)}">`
     + '<button data-act="lane-create">Create</button><button data-act="lane-cancel">Cancel</button></div>';
 }
 
@@ -110,11 +114,12 @@ function cardHtml(c, now, ui) {
 function below(c, u) {
   const acts = Array.isArray(c.actions) ? c.actions : [];
   if (u.confirm && u.confirm.key === c.key && acts.includes('stop-sessions')) return confirmHtml(c, u.confirm);
-  if (u.laneForm && u.laneForm.key === c.key && acts.includes('new-lane')) return laneFormHtml(u.laneForm);
+  const form = u.forms && Object.prototype.hasOwnProperty.call(u.forms, c.key) ? u.forms[c.key] : null;
+  if (form && acts.includes('new-lane')) return laneFormHtml(form);
   return `<div class="actions">${acts.map(buttonHtml).join('')}</div>`;
 }
 
-/** The cards; `ui` is the page's own state: { confirm: { key, token, count }, laneForm: { key, prefix, name }, notes: { key: text } }. */
+/** The cards; `ui` is the page's own state: { confirm: { key, token, count }, forms: { key: { prefix, name } }, notes: { key: text } }. */
 function cardsHtml(p, ui) {
   const payload = p && typeof p === 'object' ? p : {};
   if (typeof payload.empty === 'string' && payload.empty) return `<div class="empty">${esc(payload.empty)}</div>`;
@@ -153,16 +158,46 @@ function start(doc, home) {
   const box = doc.getElementById('filter');
   // The page's own state, drawn into every render so a push never drops it: the card asking to stop (H8), the open New lane form
   // with what was typed, and each card's last note.
-  const ui = { confirm: null, laneForm: null, notes: {} };
-  function render() {
-    const typing = doc.activeElement && doc.activeElement.getAttribute && doc.activeElement.getAttribute('data-field') === 'name';
-    cards.innerHTML = cardsHtml(last, ui);
-    if (ui.laneForm && typing) {
-      const input = cards.querySelector('input[data-field="name"]');
-      if (input) { input.focus(); const n = input.value.length; try { input.setSelectionRange(n, n); } catch { /* not a text input */ } }
-    }
+  const ui = { confirm: null, forms: {}, notes: {} };
+  const shownCards = () => (last && Array.isArray(last.cards) && !(typeof last.empty === 'string' && last.empty) ? last.cards : []);
+  const cardOf = (key) => shownCards().find((x) => x.key === key) || null;
+  const offers = (key, action) => { const c = cardOf(key); return !!c && Array.isArray(c.actions) && c.actions.includes(action); };
+  const nodeOf = (key) => [...cards.children].find((n) => n.getAttribute && n.getAttribute('data-key') === key) || null;
+
+  // A question or a form whose card lost the action is dropped, so it never comes back by itself (PR #265 Dexter 7, Miguel G4).
+  function prune() {
+    if (ui.confirm && !offers(ui.confirm.key, 'stop-sessions')) ui.confirm = null;
+    for (const key of Object.keys(ui.forms)) if (!offers(key, 'new-lane')) delete ui.forms[key];
   }
-  const focusName = () => { const input = cards.querySelector('input[data-field="name"]'); if (input) input.focus(); };
+
+  // Each card is drawn on its own. A card whose New lane form is open keeps its element (the form, its focus, its caret, an IME
+  // composition: Miguel Y2); only its status line and its note follow the push. The other cards are drawn fresh.
+  function render() {
+    prune();
+    const list = shownCards();
+    if (list.length === 0) { cards.innerHTML = cardsHtml(last, ui); return; }
+    const tpl = doc.createElement('template');
+    const wanted = list.map((c) => {
+      const old = nodeOf(c.key);
+      tpl.innerHTML = cardHtml(c, last.now, ui);
+      const fresh = tpl.content.firstElementChild;
+      if (old && ui.forms[c.key] && old.querySelector('.lane-form')) {
+        const swap = (sel) => {
+          const a = old.querySelector(sel);
+          const b = fresh.querySelector(sel);
+          if (a && b) a.replaceWith(b); else if (a) a.remove(); else if (b) old.appendChild(b);
+        };
+        swap('.status');
+        swap('.card-note');
+        old.className = fresh.className;
+        return old;
+      }
+      return fresh;
+    });
+    wanted.forEach((node, i) => { if (cards.children[i] !== node) cards.insertBefore(node, cards.children[i] || null); });
+    while (cards.children.length > wanted.length) cards.lastElementChild.remove();
+  }
+  const focusName = (key) => { const n = nodeOf(key); const input = n && n.querySelector('input[data-field="name"]'); if (input) input.focus(); };
   home.onModel((p) => {
     last = p;
     render();
@@ -174,7 +209,7 @@ function start(doc, home) {
   // H8, the first click: main reads the card's sessions now and answers how many, with the token the second click must carry
   function askStop(key) {
     ui.confirm = null;
-    ui.laneForm = null;
+    delete ui.forms[key];
     delete ui.notes[key];
     render();
     Promise.resolve(home.act({ action: 'stop-ask', key })).then((r) => r, () => null).then((r) => {
@@ -197,19 +232,28 @@ function start(doc, home) {
   }
 
   function createLane(key) {
-    const f = ui.laneForm;
-    if (!f || f.key !== key) return;
+    const f = ui.forms[key];
+    if (!f) return;
     const typed = f.name.trim();
     const branch = HAS_PREFIX.test(typed) ? typed : `${f.prefix}${typed}`;
-    ui.laneForm = null;
+    // refused here, before anything opens, with the reason main would give (PR #265 Dexter 4, 9, Miguel G3)
+    const refused = !typed || /\/$/.test(branch) ? 'Type a name after the branch type.'
+      : branch.length > MAX_BRANCH ? `A branch name is at most ${MAX_BRANCH} characters.` : null;
+    if (refused) { ui.notes[key] = refused; render(); focusName(key); return; }
+    delete ui.forms[key];
     ui.notes[key] = `Creating ${branch}… Its window shows the progress.`;
     render();
     Promise.resolve(home.act({ action: 'new-lane', key, branch })).then((r) => r, () => null).then((r) => {
+      const made = typeof (r && r.branch) === 'string' && r.branch ? r.branch : branch;
+      const why = r && typeof r.error === 'string' && r.error ? r.error : 'no answer';
       if (r && r.ok === true) {
-        ui.notes[key] = `${typeof r.branch === 'string' && r.branch ? r.branch : branch} opened in its window.`;
+        ui.notes[key] = `${made} opened in its window.`;
+      } else if (r && r.made === true) {
+        ui.notes[key] = `${made} opened in its window, but ${why.replace(/\.+$/, '')}.`;   // made: no form to fix (Miguel G6)
       } else {
-        ui.notes[key] = `The lane was not made: ${r && typeof r.error === 'string' && r.error ? r.error : 'no answer'}`;
-        ui.laneForm = { key, prefix: f.prefix, name: f.name };     // back, with what was typed, so it can be fixed
+        ui.notes[key] = `The lane was not made: ${why}`;
+        // back on THIS card only, with what was typed, so it can be fixed (Dexter 8); a form opened again meanwhile wins
+        if (!ui.forms[key]) ui.forms[key] = { prefix: f.prefix, name: f.name };
       }
       render();
     });
@@ -221,24 +265,39 @@ function start(doc, home) {
       case 'stop-sessions': askStop(t.key); return true;
       case 'stop-cancel': ui.confirm = null; render(); return true;
       case 'stop-confirm': stopConfirmed(t.key); return true;
-      case 'new-lane': ui.laneForm = { key: t.key, prefix: PREFIXES[0], name: '' }; ui.confirm = null; delete ui.notes[t.key]; render(); focusName(); return true;
-      case 'lane-cancel': ui.laneForm = null; render(); return true;
+      case 'new-lane':
+        ui.forms[t.key] = { prefix: PREFIXES[0], name: '' };
+        if (ui.confirm && ui.confirm.key === t.key) ui.confirm = null;
+        delete ui.notes[t.key];
+        render();
+        focusName(t.key);
+        return true;
+      case 'lane-cancel': delete ui.forms[t.key]; render(); return true;
       case 'lane-create': createLane(t.key); return true;
       default: return false;
     }
   }
 
+  // the form a field belongs to: its card's (Dexter 8)
+  const formFor = (el) => {
+    const card = el && typeof el.closest === 'function' ? el.closest('[data-key]') : null;
+    const key = card ? card.getAttribute('data-key') : null;
+    return key && ui.forms[key] ? { key, form: ui.forms[key] } : null;
+  };
   const fieldEvent = (e) => {
     const field = e.target && e.target.getAttribute ? e.target.getAttribute('data-field') : null;
-    if (!ui.laneForm || (field !== 'prefix' && field !== 'name')) return;
-    ui.laneForm[field] = String(e.target.value);
+    const f = formFor(e.target);
+    if (!f || (field !== 'prefix' && field !== 'name')) return;
+    f.form[field] = String(e.target.value);
   };
   cards.addEventListener('input', fieldEvent);
   cards.addEventListener('change', fieldEvent);
   cards.addEventListener('keydown', (e) => {
-    if (!ui.laneForm || !e.target || !e.target.getAttribute || e.target.getAttribute('data-field') !== 'name') return;
-    if (e.key === 'Enter') { e.preventDefault(); ui.laneForm.name = String(e.target.value); createLane(ui.laneForm.key); }
-    else if (e.key === 'Escape') { e.preventDefault(); ui.laneForm = null; render(); }
+    if (!e.target || !e.target.getAttribute || e.target.getAttribute('data-field') !== 'name') return;
+    const f = formFor(e.target);
+    if (!f) return;
+    if (e.key === 'Enter') { e.preventDefault(); f.form.name = String(e.target.value); createLane(f.key); }
+    else if (e.key === 'Escape') { e.preventDefault(); delete ui.forms[f.key]; render(); }
   });
 
   cards.addEventListener('click', (e) => {

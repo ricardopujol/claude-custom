@@ -1899,7 +1899,9 @@ function createShell(deps) {
     }
     const tab = tabByKey(key);
     if (tab && key === selectedKey && !tab.started && !tab.starting) start(tab);
-    return { ok: true, path: made.path };
+    // the lane is made either way; a failed setup is said, so a caller (Jiandu Home) never reads it as a clean success (PR #265 Miguel G6)
+    const st = setups.get(key);
+    return st && st.running === false && typeof st.error === 'string' && st.error ? { ok: true, path: made.path, setupError: st.error } : { ok: true, path: made.path };
   }
 
   /**
