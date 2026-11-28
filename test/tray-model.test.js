@@ -253,3 +253,15 @@ test('anyWindowHidden: one hidden window of several is enough; none, or a destro
   assert.strictEqual(anyWindowHidden([w(true), w(true, true)]), true, 'a destroyed window is not visible');
   assert.strictEqual(anyWindowHidden([w(true), null]), true, 'a window not made yet is not visible');
 });
+
+test('Jiandu Home: view.home puts a Home row first, then a separator, above the window rows; without it the menu is as before', () => {
+  const calls = [];
+  const actions = { focusWindow: () => {}, showHome: () => calls.push('home'), hideAll() {}, showAll() {}, setStartMinimised() {}, quit() {} };
+  const t = trayTemplate({ home: true, windows: [W('A')] }, actions);
+  assert.strictEqual(t[0].label, 'Home');
+  assert.deepStrictEqual(t[1], { type: 'separator' });
+  assert.match(t[2].label, /^a/);
+  t[0].click();
+  assert.deepStrictEqual(calls, ['home']);
+  assert.notStrictEqual(trayTemplate({ windows: [W('A')] }, actions)[0].label, 'Home');
+});
