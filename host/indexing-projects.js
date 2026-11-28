@@ -36,19 +36,21 @@ function projectChoices({ current, recents, projectOf, labelOf, hasBacklog }) {
   return out;
 }
 
-function readRecentsOffThread({ projectsDir } = {}) {
+function readRecentsOffThread({ projectsDir, limit } = {}) {
+  // 20 for the indexing chip; Jiandu Home asks for 50 (each row costs a transcript read). Only a whole number from 1 is a limit.
+  const rows = typeof limit === 'number' && Number.isInteger(limit) && limit >= 1 ? limit : 20;
   return new Promise((resolve) => {
     let Worker;
     try { ({ Worker } = require('worker_threads')); } catch { resolve(null); return; }
     const code = `
       const { parentPort, workerData } = require('worker_threads');
       const { listRecentProjects } = require(workerData.recent);
-      try { parentPort.postMessage(listRecentProjects({ projectsDir: workerData.projectsDir || undefined, limit: 20 })); }
+      try { parentPort.postMessage(listRecentProjects({ projectsDir: workerData.projectsDir || undefined, limit: workerData.limit })); }
       catch { parentPort.postMessage(null); }`;
     let done = false;
     const finish = (v) => { if (!done) { done = true; resolve(Array.isArray(v) ? v : null); } };
     try {
-      const w = new Worker(code, { eval: true, workerData: { recent: path.join(__dirname, 'recent.js'), projectsDir: projectsDir || null } });
+      const w = new Worker(code, { eval: true, workerData: { recent: path.join(__dirname, 'recent.js'), projectsDir: projectsDir || null, limit: rows } });
       w.once('message', finish);
       w.once('error', () => finish(null));
       w.once('exit', () => finish(null));

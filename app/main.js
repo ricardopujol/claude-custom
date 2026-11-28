@@ -30,7 +30,9 @@ const { createBusyGate } = require('./busy-gate');
 const { createSeenGate } = require('./seen-gate');
 const { createAppApi, startProbeServer } = require('./probe-driver');
 const { createProjectLifecycle } = require('./project-lifecycle');
-const { anyWindowHidden } = require('./tray-model');
+const { anyWindowHidden, needsYouKeys, windowlessItems, hidesOnClose, startsHidden } = require('./tray-model');
+const { createHomeWindow } = require('./home-window');
+const { createHomeController, windowFacts } = require('./home-controller');
 const { createProjectRecords } = require('./project-records');
 const { armQuitWatchdog } = require('./quit-watchdog');
 const { createQuitLog, wireQuitLog, markWillQuitEnd } = require('./quit-log');
@@ -76,7 +78,7 @@ const { createRepoActions } = require('./repo-actions');
 // readlink come first, so a symlink to a share is refused before stat follows it.
 const fileFs = { lstat: (p) => fs.promises.lstat(p), readlink: (p) => fs.promises.readlink(p),
   stat: (p) => fs.promises.stat(p), realpath: (p) => fs.promises.realpath(p) };
-const { projectOf, samePath, isInside } = require('../host/project-layout');
+const { projectOf, samePath, isInside, normPath } = require('../host/project-layout');
 const windowFocus = require('../host/window-focus');
 const { createWindowRouter } = require('../host/window-router');
 // The app lock (single-instance PR 3): one Jiandu process per install, a second launch hands its folder here.
@@ -133,6 +135,7 @@ const taskLogsRoot = path.join(require('os').tmpdir(), 'claude');
 const { createResourcesService, parseWarnAt } = require('./resources-service');
 const { createChipStore, watchChip, KEY: CHIP_KEY } = require('../host/chip-store');
 const { createHomeRecord } = require('./home-record');
+const { createHomePaths } = require('./home-paths');
 const { createScoreStore } = require('../host/game-scores');
 const { listDeps } = require('../host/stop-deps');
 // The tray icon (BACKLOG #119 A8): the needs-you count, show/hide, start minimised, minimise on close.
@@ -160,7 +163,10 @@ const UI_KEY = 'look-global';
 const resourceChip = createChipStore(uiStore);
 const gameScores = createScoreStore(uiStore);   // #41: the wait games' bests, install-wide
 // Jiandu Home (documentation/DESIGN_PROJECT_HUB.md): the projects Jiandu opened, the pins and the removed set, install-wide.
-const homeRecord = createHomeRecord({ store: uiStore, log: (l) => console.log(l) });
+// Its disk facts per path are cached (app/home-paths.js, PR #263 Miguel Y2): a Home sync on main never stats a path it already placed,
+// and never a UNC or \\?\ path at all. Cleared when the controller's source lists change.
+const homePaths = createHomePaths({ projectOf, exists: (p) => fs.existsSync(p) });
+const homeRecord = createHomeRecord({ store: uiStore, projectOf: homePaths.projectOf, log: (l) => console.log(l) });
 const readDim = () => sanitizeDim((uiStore.read(UI_KEY, {}) || {}).unfocusedDim);
 
 // An explicit CLAUDE_CUSTOM_PORT is honoured exactly and never stepped: someone
@@ -187,6 +193,10 @@ const EXPLICIT_PORT = explicitPort();
 // What this launch's folder makes of itself (the project, its mode, its state root) is worked out by the project window
 // (app/project-window.js), made below once the app-wide constants it is handed exist.
 const LAUNCH_CWD = process.env.CLAUDE_CUSTOM_CWD || process.cwd();
+// `claude-custom --home` (host/launch-target.js homeEnv): open Jiandu Home and no project. Read once and REMOVED, so no host or window
+// started from here inherits it.
+const HOME_LAUNCH = process.env.CLAUDE_CUSTOM_HOME === '1';
+delete process.env.CLAUDE_CUSTOM_HOME;
 const STRIP_HEIGHT = 34;
 const POLL_MS = 3000;
 const PROBE_PORT = Number(process.env.CLAUDE_CUSTOM_TABS_PROBE) || 0;
@@ -415,11 +425,14 @@ function startTray() {
     windows: () => registry.list().map((p) => ({ root: p.root, label: p.label, tabs: p.tabShell ? p.tabShell.snapshot().tabs : [] })),
     lastUsed: () => { const w = registry.lastUsed(); return w ? w.root : null; },
     // ANY window hidden: hideAll / showAll act on every window, so the menu must offer "Show all" while one of them is hidden (PR #256 Dexter 6)
-    isHidden: () => anyWindowHidden(registry.list().map((p) => p.win)),
+    // Jiandu Home counts as a window here (PR #263 Dexter 7; an open question, the default built): Show all / Hide all act on it too
+    isHidden: () => anyWindowHidden([...registry.list().map((p) => p.win), ...(homeWindow.isOpen() ? [homeWindow.win()] : [])]),
     background: () => appBackgroundModel(),
     now: () => Date.now(),
     log: (...a) => console.log(...a),
     actions: {
+      // Jiandu Home: the menu's Home row, and a left click with no project window to go to
+      showHome: () => showHome(),
       // A row, or a left click: that window, and the tab waiting in it when there is one.
       focusWindow: (root, key) => { const w = registry.get(root); if (!w) return; if (key && w.tabShell) w.tabShell.select(key); w.focusWindow(); },
       // Open on a session with no window: a window here, in this process (DESIGN_TABS_SESSIONS.md 3.4; never an attach-only process).
@@ -433,8 +446,9 @@ function startTray() {
         w.focusWindow();
         w.backgroundActions.stop(row).catch(() => {});
       },
-      hideAll: () => registry.forEach((p) => { const w = p.win; if (w && !w.isDestroyed()) w.hide(); }),
-      showAll: () => registry.forEach((p) => p.focusWindow()),
+      hideAll: () => { registry.forEach((p) => { const w = p.win; if (w && !w.isDestroyed()) w.hide(); }); const h = homeWindow.win(); if (h) h.hide(); },
+      // Home first, so a project window ends in front
+      showAll: () => { if (homeWindow.isOpen()) homeWindow.show(); registry.forEach((p) => p.focusWindow()); },
       setStartMinimised: on => { writeTraySetting(uiStore, 'startMinimised', on === true); },
       // Unsaved reader text asks Save / Discard / Cancel on the window, so that window has to be visible to be answered.
       // The one quit question (app/quit-gate.js, before-quit) sits on a dirty window, shown first: the tray only asks to quit.
@@ -442,6 +456,71 @@ function startTray() {
     },
   });
   trayController.sync();
+}
+
+// --- Jiandu Home (documentation/DESIGN_PROJECT_HUB.md; plan documentation/PLAN_PROJECT_HUB.md H-PR2) -------------------------------
+// ONE Home window per process (app/home-window.js), its logic app/home-controller.js (no Electron), its cards app/home-model.js. Home is
+// not a project window: the registry never holds it, Electron's window-all-closed counts it (H5), and while it is open the last project
+// window is dropped like any other (the lifecycle's othersStay) and the process stays (the app lifecycle's homeOpen).
+const HOME_RECENTS = 50;              // the brief's default: how many Claude Code projects Home reads
+const homeWindow = createHomeWindow({
+  BrowserWindow, screen: require('electron').screen, store: uiStore,
+  preload: path.join(__dirname, 'preload-home.js'), page: path.join(__dirname, 'home.html'), forProbe,
+  hidesOnClose: () => hidesOnClose({ settings: readTraySettings(uiStore), trayExists: !!trayController && trayController.state().exists, quitting }),
+  onChanged: () => windowsChanged(),
+  // the project window's session-end rule (sessionEnded below): quitting, so a hidden Home closes, and the record clean (PR #263 Dexter 2)
+  onSessionEnd: () => { quitting = true; markRecordClean(); },
+  // a Home closed for good forgets its filter: the next Home starts with every card and an empty box (PR #263 Dexter 1)
+  onClosed: () => homeController.closed(),
+  log: (l) => console.log(l),
+});
+const homeController = createHomeController({
+  record: homeRecord,
+  readRecents: () => readRecentsOffThread({ projectsDir: readSeams(process.env).projectsDir || undefined, limit: HOME_RECENTS }),
+  // each LIVE project window's tabs, needs and lanes (app/home-controller.js windowFacts; a dead registered window is closed: Dexter 8)
+  windows: () => windowFacts(registry.list(), needsYouKeys),
+  windowless: async () => windowlessItems(await appBackgroundModel()).map((it) => ({ cwd: it.row && it.row.cwd })),
+  projectOf: homePaths.projectOf, exists: homePaths.exists, keyOf: normPath, labelOf: (root) => projectLabel(root),
+  push: (payload) => homeWindow.send(payload),
+  onSourcesChanged: () => homePaths.clear(),
+  effects: {
+    // every open takes the one open path (app/open-queue.js -> app/open-project.js): today's launch rules; H4: the project comes forward
+    open: (cwd) => { openProject({ cwd, show: 'shown' }).catch(() => {}); },
+    goTo: (root) => { const w = registry.get(root); if (w) w.focusWindow(); },
+    closeWindow: (root) => { const w = registry.get(root); const bw = w && w.win; if (bw && !bw.isDestroyed()) bw.close(); },
+    // through app/file-link.js, as every path handed to the OS is (#37: a folder opens in Explorer, nothing is ever run)
+    showInExplorer: (root) => {
+      fileLink.open(root, root, fileFs, shell).then((r) => { if (!r || r.ok !== true) console.log(`[main] home: Show in Explorer: ${r && r.why}`); },
+        (err) => console.log(`[main] home: Show in Explorer: ${err && err.message}`));
+    },
+    chooseFolder: () => {
+      const parent = homeWindow.win();
+      const ask = { title: 'Choose a folder', properties: ['openDirectory'] };
+      (parent ? dialog.showOpenDialog(parent, ask) : dialog.showOpenDialog(ask)).then((r) => {
+        if (r && r.canceled !== true && Array.isArray(r.filePaths) && typeof r.filePaths[0] === 'string') openProject({ cwd: r.filePaths[0], show: 'shown' }).catch(() => {});
+      }).catch(() => {});
+    },
+  },
+  log: (l) => console.log(l),
+});
+// Show Home (the --home launch, the app pipe's type 'home', the tray's Home, a restore): made, or brought forward, and its lists read again
+// (forced: a show is when a person looks, so the cached disk facts go too).
+function showHome({ hidden = false } = {}) {
+  homeWindow.show({ hidden });
+  homeController.refresh({ force: true }).catch(() => {});
+}
+function registerHomeIpc() {
+  ipcMain.on('home:ready', (e) => { if (homeWindow.isSender(e.sender)) homeWindow.send(homeController.model()); });
+  // an invoke: the page says what happened from main's answer, never before it (PR #263 Miguel Y3)
+  ipcMain.handle('home:act', (e, msg) => {
+    if (!homeWindow.isSender(e.sender)) return { ok: false, error: 'not the Home page' };
+    const r = homeController.act(msg);
+    if (!r.ok) console.log(`[main] home: ${JSON.stringify(msg && msg.action)} refused: ${r.error}`);
+    return r;
+  });
+  // While Home is shown its lists stay fresh: the recents and the windowless sessions at most once a minute (app/home-controller.js
+  // RECENTS_MAX_AGE_MS), so this beat starts no powershell of its own (Miguel G2). The live state comes with every strip push.
+  setInterval(() => { if (homeWindow.isVisible()) homeController.refresh().catch(() => {}); }, 30_000).unref();
 }
 
 
@@ -1295,7 +1374,9 @@ const appClaim = createAppClaim({
   // the owner proves itself on its app pipe first (host/app-claim.js); the query behind it gets its one retry (fix/owner-proof)
   dir: APP_LOCK.dir, pid: process.pid, ownStart: () => ownStartTime(), startTimes: patientStartTimes,
   launchCwd: LAUNCH_CWD, installDir: INSTALL_DIR, probe: APP_LOCK.probe, env: process.env, samePath,
-  act: (msg) => openProject({ cwd: msg.cwd, env: msg.env, show: 'shown' }),
+  // Jiandu Home: `claude-custom --home` sends type 'home' (host/app-claim.js), and the running Jiandu shows its Home
+  home: HOME_LAUNCH,
+  act: (msg) => (msg.home === true ? showHome() : openProject({ cwd: msg.cwd, env: msg.env, show: 'shown' })),
   onExit: (fn) => onProcessExit('app', fn),        // main's one exit hook (below); its entry is never dropped
   refuse: () => appLifecycle.refuseLaunches(),     // the quit question is up: a launch opens its own process (PR #258 Dexter 13)
   log: (...a) => console.log(...a),
@@ -1322,7 +1403,12 @@ const appLifecycle = createAppLifecycle({
   proveOwner: (owner) => proveOwner(owner, { startTimes: patientStartTimes }),
   decide: (record, proof, launchRoot) => restoreDecision({ record, proof, bootAt: Date.now() - os.uptime() * 1000, launchRoot,
     exists: (p) => fs.existsSync(p), samePath }),
-  makeWriter: ({ owner, owns }) => createOpenWindowsWriter({ file: OPEN_WINDOWS_FILE, owner, owns }),
+  makeWriter: ({ owner, owns }) => createOpenWindowsWriter({ file: OPEN_WINDOWS_FILE, owner, owns, homeOpen: () => homeWindow.isOpen(),
+    homeHidden: () => homeWindow.isHidden() }),
+  // Jiandu Home: an open Home keeps the process (H5), and a crash restore brings it back when it was open (H9), hidden when it was
+  // hidden to the tray and a tray is there to reach it (PR #263 Miguel G1)
+  homeOpen: () => homeWindow.isOpen(),
+  showHome: (o) => showHome({ hidden: !!o && o.hidden === true && !!trayController && trayController.state().exists }),
   openProject: (o) => openProject(o),
   quit: () => app.quit(),
   getLaunchWindow: () => launchWindow,
@@ -1377,6 +1463,7 @@ function windowsChanged() {
   seenGate();
   if (trayController) trayController.sync();
   appLifecycle.syncRecord();
+  if (homeWindow.isOpen()) homeController.sync();     // Jiandu Home: a fresh model at every shell change (the strip push is stripPushed)
 }
 
 // What every project window is handed (app/project-window.js). The Resources service, the tray and the lean/indexing units are read live.
@@ -1398,6 +1485,8 @@ const windowServices = {
   openProject: (o) => openProject(o),
   quitCancelled: () => quitCancelled(),
   sessionEnded: () => markRecordClean(),          // Windows ends the session (log off, shut down): a shutdown is a clean quit, not a crash
+  // the strip push, the tray's other sync moment: Home's "needs you" and tab counts follow it, coalesced (PR #263 Miguel Y1)
+  stripPushed: () => { if (homeWindow.isOpen()) homeController.syncSoon(); },
 };
 
 // The project window (app/project-window.js): everything that is one project's. Made by startProject, after every app-wide constant it is
@@ -1439,6 +1528,8 @@ const lifecycle = createProjectLifecycle({
   },
   // the count and the tooltip speak for the first window that is left, and the Resources sampler asks again who is looking
   onChanged: () => windowsChanged(),
+  // Jiandu Home is open: no window-all-closed comes for the last project window, so it is dropped like any other
+  othersStay: () => homeWindow.isOpen(),
 });
 const startProject = lifecycle.startProject;
 // Jiandu Home's record (app/home-record.js): a project window that started is a project Jiandu opened. A record that could not be
@@ -1477,8 +1568,23 @@ app.whenReady().then(async () => {
   registerIpc();
   startIndexing(seams);
   startTray();
+  registerHomeIpc();
   // A crash of the last owner: which windows come back (host/open-windows.js). They open after the launch window, through the queue.
-  const restorePlan = await appLifecycle.decideRestore((projectOf(LAUNCH_CWD) || { root: LAUNCH_CWD }).root);   // decides, writes nothing (PR #258 Dexter 8)
+  // A --home launch opens no project, so none is left out of the restore.
+  const restorePlan = await appLifecycle.decideRestore(HOME_LAUNCH ? null : (projectOf(LAUNCH_CWD) || { root: LAUNCH_CWD }).root);   // decides, writes nothing (PR #258 Dexter 8)
+
+  // `claude-custom --home` (Jiandu Home, H3): Home and no project window. It obeys "Start minimised to tray" as the first launch
+  // window does; a Home asked for later (the app pipe, the tray) always shows.
+  if (HOME_LAUNCH) {
+    const hidden = startsHidden(readTraySettings(uiStore)) && !!trayController && trayController.state().exists;
+    showHome({ hidden });
+    console.log(`[main] home          : shown${hidden ? ' (hidden: Start minimised to tray)' : ''}`);
+    appLifecycle.beginRecord();
+    appClaim.markReady();
+    appLifecycle.runRestores(restorePlan).catch(() => {});
+    startProbe();
+    return;
+  }
 
   // One window per project: the launch window's claim runs inside startProject, before the window is registered or made; a project whose
   // window is another process's has had this launch handed there, and this process ends with no window.
@@ -1519,16 +1625,7 @@ app.whenReady().then(async () => {
 
   // Headless verification path.
   if (process.env.CLAUDE_CUSTOM_SCREENSHOT) launchWindow.runScreenshotPath();
-  // One probe server for the process (app/probe-driver.js): every command names its window by project root (the launch window when it names none).
-  if (PROBE_PORT) {
-    startProbeServer({
-      port: PROBE_PORT, token: PROBE_TOKEN, lineMax: PROBE_LINE_MAX,
-      appApi: createAppApi({ probePort: PROBE_PORT, token: PROBE_TOKEN, tempRoot: os.tmpdir(), registry, launchWindow, openProject, countWebContents: () => webContents.getAllWebContents().length, portNamed: !!EXPLICIT_PORT,
-        appLock: () => ({ owns: ownsAppLock(), file: APP_LOCK.on ? appOwner.fileOf(APP_LOCK.dir) : null, pid: process.pid }),
-        openWindows: () => readRecord(OPEN_WINDOWS_FILE) }),
-      windowApi: (root) => { const pw = root === undefined ? registry.get(launchWindow.root) : registry.get(root); return pw ? pw.probeApi() : null; },
-    });
-  }
+  startProbe();
 }).catch((err) => {
   // A start that threw must not stay the project's owner: every later launch would be handed to a window that never comes up.
   console.error('[main] startup failed:', (err && err.stack) || err);
@@ -1537,6 +1634,57 @@ app.whenReady().then(async () => {
   // A window that already exists is left running (only the ownership is dropped); with none up, the process ends.
   if (!registry.list().some((p) => p.win && !p.win.isDestroyed())) app.exit(1);
 });
+
+// One probe server for the process (app/probe-driver.js): every command names its window by project root (the launch window when it names
+// none; a --home launch has none). Jiandu Home's own commands read and click the REAL Home page (verify/probe-home.js).
+function startProbe() {
+  if (!PROBE_PORT) return;
+  startProbeServer({
+    port: PROBE_PORT, token: PROBE_TOKEN, lineMax: PROBE_LINE_MAX,
+    appApi: createAppApi({ probePort: PROBE_PORT, token: PROBE_TOKEN, tempRoot: os.tmpdir(), registry, launchWindow, openProject, countWebContents: () => webContents.getAllWebContents().length, portNamed: !!EXPLICIT_PORT,
+      appLock: () => ({ owns: ownsAppLock(), file: APP_LOCK.on ? appOwner.fileOf(APP_LOCK.dir) : null, pid: process.pid }),
+      openWindows: () => readRecord(OPEN_WINDOWS_FILE),
+      home: homeProbeApi() }),
+    windowApi: (root) => {
+      const pw = root === undefined ? (launchWindow ? registry.get(launchWindow.root) : null) : registry.get(root);
+      return pw ? pw.probeApi() : null;
+    },
+  });
+}
+
+// The Home probe's reach (only with the probe driver's port and token): the window's state, and a real click or typing in its page.
+function homeProbeApi() {
+  const page = async (js) => { const w = homeWindow.win(); return w ? w.webContents.executeJavaScript(js) : null; };
+  return {
+    async state() {
+      const w = homeWindow.win();
+      const dom = w ? await page(`({ title: document.title, cards: [...document.querySelectorAll('.card')].map((c) => ({ key: c.dataset.key,
+        cls: c.className, state: (c.querySelector('.state') || {}).textContent || '' })), summary: document.getElementById('summary').textContent,
+        empty: (document.querySelector('.empty') || {}).textContent || null, notice: document.getElementById('notice').textContent,
+        filter: document.getElementById('filter').value, url: location.href, homeDisplay: typeof window.homeDisplay })`) : null;
+      return { open: homeWindow.isOpen(), visible: homeWindow.isVisible(), focused: !!w && w.isFocused(), bounds: w ? w.getBounds() : null, dom };
+    },
+    // a real click on the card's button (`act` is its data-act), as a person would make it
+    async click(key, act) {
+      const r = await page(`(() => { const c = [...document.querySelectorAll('.card')].find((x) => x.dataset.key === ${JSON.stringify(key)});
+        const b = c && c.querySelector('[data-act=' + JSON.stringify(${JSON.stringify(act)}) + ']'); if (!b) return false; b.click(); return true; })()`);
+      return r === true ? { ok: true } : { ok: false, error: 'no such button' };
+    },
+    async type(text) {
+      const r = await page(`(() => { const f = document.getElementById('filter'); f.value = ${JSON.stringify(text)};
+        f.dispatchEvent(new Event('input')); return true; })()`);
+      return r === true ? { ok: true } : { ok: false, error: 'Home is not open' };
+    },
+    async show() { showHome(); return { ok: true }; },
+    // the page sets location (a renderer navigation, as a dropped link makes one); Miguel B1's guard must leave home.html in place
+    async navigate(url) {
+      const r = await page(`(() => { location.href = ${JSON.stringify(url)}; return true; })()`);
+      return r === true ? { ok: true } : { ok: false, error: 'Home is not open' };
+    },
+    // Home's own close, as its close button makes it (H5: with no window left, Jiandu quits)
+    async close() { const w = homeWindow.win(); if (!w) return { ok: false, error: 'Home is not open' }; w.close(); return { ok: true }; },
+  };
+}
 
 // Closing the window detaches; it does not end the session.
 // The last window closed: quit, unless a launch already told ok is being opened (app/app-lifecycle.js; PR #258 Dexter 7 / Miguel I2).

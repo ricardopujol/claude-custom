@@ -143,6 +143,8 @@ function createProjectWindow({ launchCwd, electron, config, services }) {
     HARNESS_DIR, INSTALL_DIR, listBackground, capture, stripFileFor, isQuitting, setQuitting, onWindowCreated, onClosed, getResources, getTray, seenChanged,
     windowRouter, onProcessExit, onFocused, openProject, quitCancelled, sessionEnded,
   } = services;
+  // optional: Jiandu Home hears each strip push, as the tray does (PR #263 Miguel Y1)
+  const stripPushed = typeof services.stripPushed === 'function' ? services.stripPushed : () => {};
 
   // --- what this window is ----------------------------------------------------------
   const LAUNCH_CWD = launchCwd;
@@ -890,6 +892,7 @@ function createProjectWindow({ launchCwd, electron, config, services }) {
     win.webContents.send('strip-model', lastStripPayload);
     const tray = getTray();
     if (tray) tray.sync();     // the count and the tooltip follow the cues
+    stripPushed();             // and so do Home's cards (coalesced in app/home-controller.js syncSoon)
   }
 
   // Hand close (criterion 5): ask first, every time; then the reducer's stop +

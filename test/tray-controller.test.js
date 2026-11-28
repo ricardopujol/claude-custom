@@ -279,3 +279,28 @@ test('PR 3: a closed window\'s cues are forgotten (its oldest cue is never the c
   assert.deepStrictEqual(log.splice(0), [['focus', 'B', 'develop']]);
   assert.deepStrictEqual(c.state().cues, [{ root: 'B', key: 'develop' }]);
 });
+
+test('Jiandu Home: with actions.showHome the menu starts with Home, and a left click with no window to go to shows Home', async () => {
+  const homeLog = [];
+  const actions = { focusWindow: (r, k) => homeLog.push(['focus', r, k]), openBackground: () => {}, stopBackground: () => {},
+    hideAll: () => {}, showAll: () => {}, setStartMinimised: () => {}, quit: () => {}, showHome: () => homeLog.push(['home']) };
+  const withHome = setup({ actions });
+  withHome.state.windows = [];
+  withHome.state.lastUsed = null;
+  withHome.c.sync();
+  const t = await withHome.c.template();
+  assert.strictEqual(t[0].label, 'Home');
+  t[0].click();
+  FakeTray.made[0].emit('click');
+  assert.deepStrictEqual(homeLog, [['home'], ['home']]);
+});
+
+test('Jiandu Home: without actions.showHome (an older wiring) there is no Home row, and a click with no window does nothing', async () => {
+  const { c, state, log } = setup();
+  state.windows = [];
+  state.lastUsed = null;
+  c.sync();
+  assert.notStrictEqual((await c.template())[0].label, 'Home');
+  FakeTray.made[0].emit('click');
+  assert.deepStrictEqual(log, []);
+});

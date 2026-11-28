@@ -16,7 +16,7 @@
 
 const { spawn } = require('child_process');
 const path = require('path');
-const { resolveLaunchTarget, parseCli, launchEnv } = require('../host/launch-target');
+const { resolveLaunchTarget, parseCli, launchEnv, homeEnv } = require('../host/launch-target');
 const { portForCwd } = require('../host/port-for-project');
 
 const INSTALL_DIR = path.join(__dirname, '..');
@@ -33,9 +33,13 @@ try {
 if (cli.cmd === 'help') {
   console.log(`claude-custom [folder]
 claude-custom [folder] --stop
+claude-custom --home
 
   Opens the claude-custom harness on a project folder.
   With no folder, opens the one you are standing in.
+
+  --home  Opens Jiandu Home (the list of your projects) and no project. A
+          Jiandu already running shows its Home; there is one Home per Jiandu.
 
   A project laid out as a container (<root>/dev plus a sibling folder per git
   worktree) opens ONE window with a tab per worktree, whichever of those folders
@@ -89,6 +93,24 @@ if (cli.cmd === 'stop') {
   return;
 }
 
+// electron is resolved from the install's own node_modules rather than the
+// PATH: the launcher can be run from anywhere, and "anywhere" rarely has the
+// right electron on it.
+function spawnApp(env) {
+  const electron = require(path.join(INSTALL_DIR, 'node_modules', 'electron'));
+  const child = spawn(electron, [INSTALL_DIR], {
+    stdio: 'inherit',
+    env,
+  });
+  child.on('exit', code => process.exit(code == null ? 1 : code));
+}
+
+// Jiandu Home (documentation/DESIGN_PROJECT_HUB.md H3): no folder to check; the running Jiandu shows its Home, or this one starts with it.
+if (cli.cmd === 'home') {
+  spawnApp(homeEnv(process.env));
+  return;
+}
+
 let target;
 try {
   target = resolveLaunchTarget(cli.arg, { cwd: process.cwd() });
@@ -98,14 +120,4 @@ try {
 }
 
 console.log(`claude-custom: ${target}  (port ~${portForCwd(target)})`);
-
-// electron is resolved from the install's own node_modules rather than the
-// PATH: the launcher can be run from anywhere, and "anywhere" rarely has the
-// right electron on it.
-const electron = require(path.join(INSTALL_DIR, 'node_modules', 'electron'));
-
-const child = spawn(electron, [INSTALL_DIR], {
-  stdio: 'inherit',
-  env: launchEnv(process.env, target),
-});
-child.on('exit', code => process.exit(code == null ? 1 : code));
+spawnApp(launchEnv(process.env, target));

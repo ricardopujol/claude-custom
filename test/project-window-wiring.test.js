@@ -92,7 +92,8 @@ test('a window\'s own lean unit and indexing overlay are made per window and att
   assert.match(body, /windowUnits\.set\(pw, \{ lean, overlay \}\);\s*pw\.attach\(\{ leanBridge: lean, indexing: overlay \}\);/, 'the window sees both the moment main has them');
   const ready = MAIN.slice(MAIN.indexOf('app.whenReady().then('));
   // PR 3: the restore decision sits between the tray and the launch window; it makes no window
-  assert.match(ready, /startIndexing\(seams\);\s*startTray\(\);\s*const restorePlan = await appLifecycle\.decideRestore\([^\n]*\n\s*const launched = await startProject\(LAUNCH_CWD/, 'the service exists before the first window (and so its overlay)');
+  // Jiandu Home: its IPC is registered with the rest, and a --home launch (which opens no project window) leaves before the launch window
+  assert.match(ready, /startIndexing\(seams\);\s*startTray\(\);\s*registerHomeIpc\(\);\s*const restorePlan = await appLifecycle\.decideRestore\([^\n]*\n\s*if \(HOME_LAUNCH\) \{[\s\S]*?return;\s*\}\s*const launched = await startProject\(LAUNCH_CWD/, 'the service exists before the first window (and so its overlay)');
   // the order (record, then units, then start) is app/project-lifecycle.js's, pinned by behaviour in test/project-lifecycle.test.js
   assert.match(MAIN, /makeUnits: \(pw\) => makeWindowUnits\(pw\),/, 'the lifecycle makes the units before it starts the window');
   assert.match(MAIN, /onWindowCreated: \(pw\) => windowCreated\(pw\),/);
@@ -205,6 +206,7 @@ test('seam guard: `launchWindow` is named only where the launch itself is the po
     startIndexing: 'warming the chip\'s list for the launch project',
     'const appLifecycle': 'getLaunchWindow: after a crash restore the launched project keeps the focus (PR 3, plan §6 call 12)',
     registerIpc: 'the vault probe, which uses the launch window\'s service',
+    startProbe: 'the probe driver\'s default window (none on a Jiandu Home launch, which opens no project)',
   };
   const names = [...owners.keys()].filter((k) => k !== '(top level)').sort();
   assert.deepStrictEqual(names, Object.keys(allowed).sort(), 'a new place that names the launch window is a place a second window breaks: argue for it here');

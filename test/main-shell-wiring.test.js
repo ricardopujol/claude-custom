@@ -115,7 +115,9 @@ test('every strip channel is gated on the window\'s own page, and only they', ()
 test('every other channel is gated on "one of this window\'s tab views"', () => {
   // secretsFor(e) IS a gate: its definition below is `fromWindow(event) ? <that window's service> : null`, and every secrets:* handler answers a refusal on null
   assert.match(MAIN, /const secretsFor = \(event\) => \(fromWindow\(event\) \? projectRecords\.secretsOf\(viewOwner\(event\.sender\)\) : null\);/);
-  assert.deepStrictEqual(ungated(MAIN, /isTabView\(|fromWindow\(|secretsFor\(/, c => !c.name.startsWith('strip:')), []);
+  assert.deepStrictEqual(ungated(MAIN, /isTabView\(|fromWindow\(|secretsFor\(/, c => !c.name.startsWith('strip:') && !c.name.startsWith('home:')), []);
+  // Jiandu Home's two channels are its page's alone: gated on the Home window's own webContents (app/home-window.js isSender)
+  assert.deepStrictEqual(ungated(MAIN, /homeWindow\.isSender\(/, c => c.name.startsWith('home:')), []);
 });
 
 test('nothing compares a sender to the window\'s own webContents except the strip gate', () => {
@@ -215,7 +217,7 @@ test('the poller runs every 3 s', () => {
 test('the probe driver does nothing without its env var, and only listens locally', () => {
   assert.match(MAIN, /const PROBE_PORT = Number\(process\.env\.CLAUDE_CUSTOM_TABS_PROBE\) \|\| 0/);
   // single-instance PR 2: one server for the process (app/probe-driver.js), started only under a probe port; the window offers its api
-  assert.match(MAIN, /if \(PROBE_PORT\) \{\s*startProbeServer\(\{/);
+  assert.match(MAIN, /function startProbe\(\) \{\s*if \(!PROBE_PORT\) return;\s*startProbeServer\(\{/);
   assert.match(fs.readFileSync(path.join(__dirname, '..', 'app', 'probe-driver.js'), 'utf8'), /server\.listen\(port, '127\.0\.0\.1'/);
   assert.match(MAIN, /if \(PROBE_PORT\) \{\r?\n\s+probeConfirms\.push\(\{ label: tab\.branch \|\| projectLabel\(tab\.cwd\), reason, unsaved \}\);\r?\n\s+return reason === '';/,
     'the confirm is auto-yes only under the driver, and only for a close that had no reason to ask');

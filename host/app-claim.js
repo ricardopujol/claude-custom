@@ -7,7 +7,8 @@
  *   the owner   host/app-owner.js (`<dir>\app.json`, the owner-file proof)
  *   the pipe    `\\.\pipe\claude-custom-app-<pid>` (host/window-focus.js appPipeNameFor), a second name beside the window pipe, so the window
  *               pipe keeps "opens nothing" and its one-line protocol for old senders. The name is not a secret (see below).
- *   the message { cwd, install, probe, env }, type 'open'. No port (a port-named launch is its own process). `env` carries only
+ *   the message { cwd, install, probe, env }, type 'open', or type 'home' for `claude-custom --home` (Jiandu Home: the owner hears
+ *               `home: true` and shows its Home; an owner from a build before Home refuses that type). No port (a port-named launch is its own process). `env` carries only
  *               CLAUDE_CUSTOM_BIN / CONPTY / SHELL, so the owner can log which differ (design 3.1: the open runs on the owner's env).
  *   the ack     10 s: an owner that does not acknowledge is proven again; unless it is now gone, it gets one more send with the full wait
  *               (readyBound + 10 s), and only its silence then (a true hang) lets the launch go on and take app.json over with the judged
@@ -51,13 +52,19 @@ function envOf(env) {
 
 function cleanOpenFor({ install, probe, samePath }) {
   return (raw) => {
-    if (!isObj(raw) || raw.type !== 'open') return null;
+    if (!isObj(raw) || (raw.type !== 'open' && raw.type !== 'home')) return null;
     const { cwd } = raw;
     if (typeof cwd !== 'string' || !cwd || cwd.length > focus.MAX_CWD || !path.isAbsolute(cwd)) return null;
     if (typeof raw.install !== 'string' || !samePath(raw.install, install)) return null;
     if (raw.probe !== probe) return null;
-    return { cwd, env: envOf(raw.env) };
+    return raw.type === 'home' ? { cwd, env: envOf(raw.env), home: true } : { cwd, env: envOf(raw.env) };
   };
+}
+
+/** The launch's send: type 'home' for `claude-custom --home` (Jiandu Home: the owner shows its Home), else 'open'. */
+function sendFor({ send, home }) {
+  const type = home === true ? 'home' : 'open';
+  return (o) => send({ ...o, name: focus.appPipeNameFor(o.pid), type });
 }
 
 /**
@@ -77,7 +84,7 @@ function createAppClaim(deps) {
     enabled: deps.enabled !== false, stateRoot: dir, pid, ownStart, startTimes, project: null, launchCwd, explicitPort: null,
     listen: (entry) => listen({ ...entry, name: focus.appPipeNameFor(pid), clean }),
     claim: appOwner.claim,
-    send: (o) => send({ ...o, name: focus.appPipeNameFor(o.pid), type: 'open' }),
+    send: sendFor({ send, home: deps.home }),
     ask: (owner) => who({ name: focus.appPipeNameFor(owner.pid) }),
     takeOver: appOwner.takeOver, release: appOwner.release, forwardedCwd: () => undefined,
     message: () => ({ cwd: launchCwd, install: installDir, probe, env: envOf(env) }),
@@ -88,4 +95,4 @@ function createAppClaim(deps) {
   });
 }
 
-module.exports = { createAppClaim, cleanOpenFor, envOf, APP_ACK_MS, ENV_NAMES };
+module.exports = { createAppClaim, cleanOpenFor, sendFor, envOf, APP_ACK_MS, ENV_NAMES };

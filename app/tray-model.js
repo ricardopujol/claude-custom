@@ -100,8 +100,8 @@ function startsHidden(settings) {
 const tabsText = n => (n === 1 ? '1 tab' : `${n} tabs`);
 
 /**
- * view: { windows: [{ root, label, tabs, needs, waitingKey }], windowless, hidden, startMinimised }
- * actions: { focusWindow(root, waitingKey), openBackground(open), stopBackground(row), hideAll, showAll, setStartMinimised(on), quit }
+ * view: { home, windows: [{ root, label, tabs, needs, waitingKey }], windowless, hidden, startMinimised }
+ * actions: { showHome() (with view.home), focusWindow(root, waitingKey), openBackground(open), stopBackground(row), hideAll, showAll, setStartMinimised(on), quit }
  * One row per window in open order (design §6, option A); a disabled "Sessions with no window" head row over those sessions; one Show/Hide
  * row; Start minimised; Quit Jiandu. "Stop that session" goes to stopBackground, the ▾ menu's own Stop: it asks first, every time.
  * PR 4 adds Open project ▸ after the window rows.
@@ -109,6 +109,11 @@ const tabsText = n => (n === 1 ? '1 tab' : `${n} tabs`);
 function trayTemplate(view, actions) {
   const v = view || {};
   const template = [];
+  // Jiandu Home (documentation/DESIGN_PROJECT_HUB.md H3): "Home" above the window rows opens Home, or brings it forward.
+  if (v.home === true) {
+    template.push({ label: 'Home', click: () => actions.showHome() });
+    template.push({ type: 'separator' });
+  }
   for (const w of Array.isArray(v.windows) ? v.windows : []) {
     const needs = isCount(w.needs) ? w.needs : 0;
     const tabs = isCount(w.tabs) ? w.tabs : 0;

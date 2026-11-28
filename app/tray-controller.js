@@ -101,7 +101,9 @@ function createTrayController(deps) {
     const target = clickTarget(cues, deps.lastUsed());
     if (target.kind === 'tab') deps.actions.focusWindow(target.root, target.key);
     else if (target.root !== null) deps.actions.focusWindow(target.root, null);
+    else if (hasHome()) deps.actions.showHome();          // Jiandu Home: no project window to go to, so Home
   }
+  const hasHome = () => typeof deps.actions.showHome === 'function';
 
   // The menu's template, built from the live state. Separate from popup() so a probe can read and click it without a real menu.
   async function template() {
@@ -112,7 +114,7 @@ function createTrayController(deps) {
     update();
     const settings = deps.getSettings() || {};
     return trayTemplate({
-      windows: rows, hidden: deps.isHidden(),
+      home: hasHome(), windows: rows, hidden: deps.isHidden(),
       startMinimised: settings.startMinimised === true, windowless: windowlessItems(background),
     }, deps.actions);
   }

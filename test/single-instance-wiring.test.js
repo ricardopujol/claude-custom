@@ -32,7 +32,15 @@ test('whenReady: the bad-port exit, then the app claim, and a launch handed over
 test('whenReady: services, menu, IPC, indexing, tray, then the launch window, its refusals, quitIfEmpty, and only then the app claim is ready', () => {
   inOrder(readyBody, ['await startResources(seams)', 'Menu.setApplicationMenu(null)', 'registerIpc()', 'startIndexing(seams)', 'startTray()',
     "await startProject(LAUNCH_CWD, { launch: true, show: 'setting' })", 'launchWindow.attachOnlyRefusal', "launchWindow.mode === 'single'",
-    'if (quitIfEmpty()) return;', 'appClaim.markReady()', 'launchWindow.startPoll()', 'runScreenshotPath()', 'startProbeServer({']);
+    'if (quitIfEmpty()) return;', 'appClaim.markReady()', 'launchWindow.startPoll()', 'runScreenshotPath()', 'startProbe();']);
+  assert.match(MAIN, /function startProbe\(\) \{\s*if \(!PROBE_PORT\) return;\s*startProbeServer\(\{/);
+});
+
+test('Jiandu Home: a --home launch shows Home after the tray and the restore decision, opens NO launch window, then the record, ready, restores, probe', () => {
+  inOrder(readyBody, ['startTray()', 'registerHomeIpc()', 'const restorePlan = await appLifecycle.decideRestore(HOME_LAUNCH ? null :', 'if (HOME_LAUNCH) {',
+    'showHome({ hidden });', 'appLifecycle.beginRecord();', 'appClaim.markReady();', 'appLifecycle.runRestores(restorePlan)', 'startProbe();', 'return;',
+    "await startProject(LAUNCH_CWD, { launch: true, show: 'setting' })"]);
+  assert.match(MAIN, /const HOME_LAUNCH = process\.env\.CLAUDE_CUSTOM_HOME === '1';\s*delete process\.env\.CLAUDE_CUSTOM_HOME;/);
 });
 
 test('a launch whose project is another process\'s window, or whose start ended with no window, goes through quitIfEmpty (never a swallowed launch)', () => {
@@ -56,7 +64,8 @@ test('the .catch stops the app claim; before-quit stops it', () => {
 
 test('the app claim is made from the config table, acts through openProject (shown), and is the only open entry besides the tray/menu/probe/restore', () => {
   assert.match(MAIN, /const APP_LOCK = appLockConfig\(\{ env: process\.env, installDir: INSTALL_DIR, explicitPort: EXPLICIT_PORT, seams: readSeams\(process\.env\) \}\);/);
-  assert.match(MAIN, /const appClaim = createAppClaim\(\{[\s\S]{0,800}enabled: APP_LOCK\.on,[\s\S]{0,800}act: \(msg\) => openProject\(\{ cwd: msg\.cwd, env: msg\.env, show: 'shown' \}\)/);
+  // Jiandu Home: a launch of type 'home' (host/app-claim.js) shows Home; every other launch opens its folder
+  assert.match(MAIN, /const appClaim = createAppClaim\(\{[\s\S]{0,800}enabled: APP_LOCK\.on,[\s\S]{0,800}home: HOME_LAUNCH,\s*act: \(msg\) => \(msg\.home === true \? showHome\(\) : openProject\(\{ cwd: msg\.cwd, env: msg\.env, show: 'shown' \}\)\)/);
   assert.match(MAIN, /function openProject\(o\) \{ return openQueue\.push\(o\); \}/);
   assert.match(MAIN, /const openQueue = createOpenQueue\(\{ open: \(o\) => opener\.openProject\(o\)/);
 });
@@ -120,7 +129,12 @@ test('step 12: the restore decision after the tray and before the launch window;
   assert.match(MAIN, /function windowsChanged\(\) \{[\s\S]{0,200}appLifecycle\.syncRecord\(\);/);
   assert.match(MAIN, /app\.on\('will-quit', \(\) => \{ markRecordClean\(\); \}\);/);
   assert.match(MAIN, /sessionEnded: \(\) => markRecordClean\(\),/);
-  assert.match(MAIN, /makeWriter: \(\{ owner, owns \}\) => createOpenWindowsWriter\(\{ file: OPEN_WINDOWS_FILE, owner, owns \}\),/);
+  assert.match(MAIN, /makeWriter: \(\{ owner, owns \}\) => createOpenWindowsWriter\(\{ file: OPEN_WINDOWS_FILE, owner, owns, homeOpen: \(\) => homeWindow\.isOpen\(\),\s*homeHidden: \(\) => homeWindow\.isHidden\(\) \}\),/);
+  // Jiandu Home (H5, H9): an open Home keeps the process; a restore whose record had it shows it (hidden only with a tray: PR #263
+  // Miguel G1); it frees the last project window
+  assert.match(MAIN, /homeOpen: \(\) => homeWindow\.isOpen\(\),\s*showHome: \(o\) => showHome\(\{ hidden: !!o && o\.hidden === true && !!trayController && trayController\.state\(\)\.exists \}\),/);
+  assert.match(MAIN, /othersStay: \(\) => homeWindow\.isOpen\(\),/);
+  assert.match(MAIN, /function windowsChanged\(\) \{[\s\S]{0,300}if \(homeWindow\.isOpen\(\)\) homeController\.sync\(\);/);
 });
 
 test('PR #258 Dexter 7 / Miguel I2: window-all-closed goes through the app lifecycle (an open in flight is waited for)', () => {

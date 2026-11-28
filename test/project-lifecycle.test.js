@@ -152,3 +152,24 @@ test('closing: a window of several is disposed and everything held for it droppe
     assert.strictEqual(t.events.filter(([k]) => k === 'stopRecord').length, 3);
   }
 });
+
+test('Jiandu Home: projectClosed asks othersStay(): with Home open the last project window is dropped and disposed, and onChanged runs', async () => {
+  const registry = createProjectRegistry();
+  const events = [];
+  let stays = true;
+  const lc = createProjectLifecycle({
+    registry, rootOf: (c) => c, makeWindow: (cwd) => fakeWindow(cwd, { registry }),
+    makeRecord: () => {}, stopRecord: (pw) => events.push(['stopRecord', pw.root]), makeUnits: () => {}, dropUnits: () => {},
+    dropWatch: () => {}, getAppStart: () => ({}), othersStay: () => stays, onChanged: () => events.push(['changed']), log: () => {},
+  });
+  const { pw } = await lc.startProject('A');
+  events.length = 0;
+  lc.projectClosed(pw);
+  assert.strictEqual(registry.size(), 0);
+  assert.deepStrictEqual(events, [['stopRecord', 'A'], ['changed']]);
+  assert.ok(pw.log.some((e) => e[0] === 'dispose'));
+  stays = false;
+  const second = await lc.startProject('B');
+  lc.projectClosed(second.pw);
+  assert.strictEqual(registry.size(), 1, 'no Home: the last window is left for window-all-closed, as before');
+});

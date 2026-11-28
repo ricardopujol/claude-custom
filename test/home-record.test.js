@@ -13,12 +13,18 @@ const { createStore } = require('../host/store');
 const { createHomeRecord, STORE_KEY, MAX_PROJECTS, MAX_LIST } = require('../app/home-record');
 
 const keyOf = (p) => (typeof p === 'string' && p ? p.replace(/[\\/]+$/, '').toLowerCase() : null);
+// The same fake as test/home-model.test.js: `<x>\dev` and `<x>\feat-*` (and anything inside them) fold to the container `<x>`.
+const projectOf = (p) => {
+  if (typeof p !== 'string' || !p) return null;
+  const m = /^(.*?)\\(dev|feat-[^\\]+)(\\.*)?$/i.exec(p);
+  return m ? { kind: 'container', root: m[1], dev: `${m[1]}\\dev` } : { kind: 'flat', root: p, dev: p };
+};
 function setup({ start = 1000 } = {}) {
   const dir = tmpDir('home-record-');
   const store = createStore({ dir });
   let t = start;
   const lines = [];
-  const home = createHomeRecord({ store, keyOf, now: () => t, log: (l) => lines.push(l) });
+  const home = createHomeRecord({ store, keyOf, projectOf, now: () => t, log: (l) => lines.push(l) });
   return { dir, store, home, lines, file: path.join(dir, `${STORE_KEY}.json`), tick: (n = 1) => { t += n; } };
 }
 const EMPTY = { projects: [], pins: [], removed: [] };
@@ -202,6 +208,71 @@ test('Dexter 3 (open question, default built): a pin takes the project out of th
   s.home.remove('C:\\q');
   s.home.pin('C:\\q', false);
   assert.deepStrictEqual(s.home.read().removed, ['C:\\q'], 'an unpin leaves the removed set as it is');
+});
+
+test('Dexter R2-1: the record folds by rootOf as the model does: a lane-spelled pin is unpinned from its card, a lane-spelled removal clears', () => {
+  const { homeCards } = require('../app/home-model');
+  const s = setup();
+  fs.writeFileSync(s.file, JSON.stringify({ version: 1, projects: [{ root: 'C:\\p', lastOpened: 5 }], pins: ['C:\\p\\feat-a'], removed: ['C:\\q\\dev'] }));
+  const cards = () => homeCards({ record: s.home.read(), recents: [], windows: [], windowless: [], projectOf, exists: () => true, keyOf,
+    labelOf: (r) => r.split('\\').pop() }).cards;
+  assert.deepStrictEqual(cards().map((c) => [c.key, c.pinned]), [['c:\\p', true]]);
+  s.home.pin('C:\\p', false);
+  assert.deepStrictEqual(cards().map((c) => [c.key, c.pinned]), [['c:\\p', false]]);
+  assert.deepStrictEqual(s.home.read().pins, []);
+  s.home.opened('C:\\q');
+  assert.deepStrictEqual(s.home.read().removed, [], 'an open of the root clears a removal spelled as its lane');
+  s.home.remove('C:\\q\\feat-b');
+  s.home.pin('C:\\q', true);
+  assert.deepStrictEqual(s.home.read().removed, [], 'a pin of the root clears it too');
+});
+
+test('Dexter R2-1: a lane path sent to the record is stored as its project root, once', () => {
+  const s = setup();
+  s.home.opened('C:\\p\\dev');
+  s.home.opened('C:\\p\\feat-a\\src');
+  s.home.pin('C:\\p\\feat-a', true);
+  s.home.remove('C:\\r\\dev');
+  assert.deepStrictEqual(s.home.read(), { projects: [{ root: 'C:\\p', lastOpened: 1000 }], pins: ['C:\\p'], removed: ['C:\\r'] });
+});
+
+test('readFresh: null only when the file could not be read just now (EBUSY / EPERM), so Home keeps its last good record (Dexter 5)', () => {
+  let state = { status: 'unreadable', value: null, error: new Error('EBUSY') };
+  const store = { readState: () => state, write: () => {}, withLock: (n, fn) => fn() };
+  const home = createHomeRecord({ store, keyOf, projectOf });
+  assert.strictEqual(home.readFresh(), null);
+  assert.deepStrictEqual(home.read(), EMPTY, 'read() still answers empty');
+  state = { status: 'corrupt', value: null };
+  assert.deepStrictEqual(home.readFresh(), EMPTY, 'a damaged file is a real answer: empty');
+  state = { status: 'missing', value: null };
+  assert.deepStrictEqual(home.readFresh(), EMPTY);
+  state = { status: 'ok', value: { version: 1, projects: [], pins: ['C:\\a'], removed: [] } };
+  assert.deepStrictEqual(home.readFresh(), { projects: [], pins: ['C:\\a'], removed: [] });
+  store.readState = () => { throw new Error('EPERM'); };
+  assert.strictEqual(home.readFresh(), null);
+});
+
+test('PR #263 Dexter 6 / Miguel G4: readFresh reads the file ONCE; ok then unreadable cannot become an empty record', () => {
+  let calls = 0;
+  const states = [
+    { status: 'ok', value: { version: 1, projects: [], pins: ['C:\\a'], removed: [] } },
+    { status: 'unreadable', value: null, error: new Error('EBUSY') },
+  ];
+  const store = { readState: () => states[Math.min(calls++, states.length - 1)], write: () => {}, withLock: (n, fn) => fn() };
+  const home = createHomeRecord({ store, keyOf, projectOf });
+  assert.deepStrictEqual(home.readFresh(), { projects: [], pins: ['C:\\a'], removed: [] }, 'the answer is the read it checked');
+  assert.strictEqual(calls, 1, 'one read');
+  assert.strictEqual(home.readFresh(), null, 'the next read is unreadable: null, never EMPTY');
+});
+
+test('PR #263 Dexter 6: a damaged file is still logged once by readFresh', () => {
+  const lines = [];
+  const store = { readState: () => ({ status: 'corrupt', value: null }), write: () => {}, withLock: (n, fn) => fn() };
+  const home = createHomeRecord({ store, keyOf, projectOf, log: (l) => lines.push(l) });
+  home.readFresh();
+  home.readFresh();
+  assert.strictEqual(lines.length, 1);
+  assert.match(lines[0], /corrupt/);
 });
 
 test('a store whose lock cannot be taken answers null and logs, never throws', () => {
