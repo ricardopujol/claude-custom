@@ -1681,7 +1681,9 @@ function homeProbeApi() {
     async state() {
       const w = homeWindow.win();
       const dom = w ? await page(`({ title: document.title, cards: [...document.querySelectorAll('.card')].map((c) => ({ key: c.dataset.key,
-        cls: c.className, state: (c.querySelector('.state') || {}).textContent || '' })), summary: document.getElementById('summary').textContent,
+        cls: c.className, state: (c.querySelector('.state') || {}).textContent || '',
+        ask: (c.querySelector('.confirm .question') || {}).textContent || null, note: (c.querySelector('.card-note') || {}).textContent || null,
+        form: !!c.querySelector('.lane-form') })), summary: document.getElementById('summary').textContent,
         empty: (document.querySelector('.empty') || {}).textContent || null, notice: document.getElementById('notice').textContent,
         filter: document.getElementById('filter').value, url: location.href, homeDisplay: typeof window.homeDisplay })`) : null;
       return { open: homeWindow.isOpen(), visible: homeWindow.isVisible(), focused: !!w && w.isFocused(), bounds: w ? w.getBounds() : null, dom };
@@ -1698,6 +1700,13 @@ function homeProbeApi() {
       return r === true ? { ok: true } : { ok: false, error: 'Home is not open' };
     },
     async show() { showHome(); return { ok: true }; },
+    // H-PR3: a value typed into a card's New lane form field, with the event a person's typing raises
+    async field(key, field, value) {
+      const r = await page(`(() => { const c = [...document.querySelectorAll('.card')].find((x) => x.dataset.key === ${JSON.stringify(key)});
+        const f = c && c.querySelector('[data-field=' + JSON.stringify(${JSON.stringify(field)}) + ']'); if (!f) return false; f.value = ${JSON.stringify(value)};
+        f.dispatchEvent(new Event(f.tagName === 'SELECT' ? 'change' : 'input', { bubbles: true })); return true; })()`);
+      return r === true ? { ok: true } : { ok: false, error: 'no such field' };
+    },
     // the page sets location (a renderer navigation, as a dropped link makes one); Miguel B1's guard must leave home.html in place
     async navigate(url) {
       const r = await page(`(() => { location.href = ${JSON.stringify(url)}; return true; })()`);

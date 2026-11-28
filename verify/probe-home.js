@@ -18,6 +18,11 @@
  *   3b a tab that needs you (a real Stop hook down the host's pipe, its window blurred) shows on its card with no window event (Miguel Y1)
  *   3c a filter, then Home closed and shown again: every card, and an empty box (Dexter 1)
  *   6b Remove on a closed card: the card goes, the page says so after main answered, the record has it removed (Miguel G6)
+ *   H-PR3:
+ *   4b Stop its sessions on A (its session outlived its window): the card asks first; Cancel stops nothing; Stop ends A's host and
+ *      the card says "Stopped 1 session."
+ *   6c New lane on B: a form on the card, a name typed; the stand-in new-worktree.ps1 makes B\feat-probe-lane, B's window opens on it
+ *      and the card says so; B's window then closes from Home
  *
  * SAFE. Scratch projects in a temp folder (never dev\), the hosts' `claude` is cmd.exe (CLAUDE_CUSTOM_BIN), Claude Code's history is an empty
  * temp folder (CLAUDE_CUSTOM_GIT_PROJECTS_DIR), the UI state (the Home record, app.json, the crash record) is the probe's own folder, and
@@ -73,7 +78,38 @@ const freePort = () => new Promise((resolve, reject) => {
 
 const PASSED_ENV = ['CLAUDE_CUSTOM_BIN', 'CLAUDE_CUSTOM_CWD', 'CLAUDE_CUSTOM_TABS_PROBE', 'CLAUDE_CUSTOM_TABS_PROBE_TOKEN', 'CLAUDE_CUSTOM_REGISTRY',
   'CLAUDE_CUSTOM_PORTRAITS', 'CLAUDE_CUSTOM_UPLOADS', 'CLAUDE_CUSTOM_UI_STATE_DIR', 'CLAUDE_CUSTOM_ONE_WINDOW_PROBE', 'CLAUDE_CUSTOM_SINGLE_INSTANCE_PROBE',
-  'CLAUDE_CUSTOM_HOME', 'CLAUDE_CUSTOM_GIT_PROJECTS_DIR'];
+  'CLAUDE_CUSTOM_HOME', 'CLAUDE_CUSTOM_GIT_PROJECTS_DIR', 'CLAUDE_CUSTOM_WORKTREE_SCRIPTS'];
+
+// H-PR3 New lane: agent-creator's worktree scripts stood in, with the same parameters, exit codes and output shapes (as
+// verify/probe-issue-intake.js). They only touch the probe's own scratch projects.
+const scriptsDir = path.join(tmp, 'worktree-scripts');
+fs.mkdirSync(scriptsDir, { recursive: true });
+const STAND_INS = {
+  'new-worktree.ps1': [
+    'param([Parameter(Mandatory)][string]$Project, [Parameter(Mandatory)][string]$Branch, [string]$Base = "develop")',
+    'if ($Branch -notmatch "^(feat|fix|spike|chore|docs|refactor|test)/.+") {',
+    '  [Console]::Error.WriteLine("$Branch has no prefix: use feat/, fix/, spike/, chore/, docs/, refactor/ or test/.")',
+    '  exit 1',
+    '}',
+    '$dir = Join-Path $Project ($Branch -replace "/", "-")',
+    '$dev = Join-Path $Project "dev"',
+    '& git -C $dev worktree add -q $dir -b $Branch develop',
+    'if ($LASTEXITCODE -ne 0) { [Console]::Error.WriteLine("git worktree add failed for $Branch"); exit 1 }',
+    '[Console]::Out.WriteLine((@{ path = $dir; branch = $Branch } | ConvertTo-Json -Compress))',
+    'exit 0',
+  ],
+  'setup-worktree.ps1': [
+    'param([Parameter(Mandatory)][string]$Path, [int]$CommandTimeoutSeconds = 1800)',
+    '[Console]::Out.WriteLine((@{ path = $Path; manifest = $true; copied = @(); kept = @(); ran = @(); log = $null } | ConvertTo-Json -Compress))',
+    'exit 0',
+  ],
+  'remove-worktree.ps1': [
+    'param([Parameter(Mandatory)][string]$Path)',
+    '[Console]::Out.WriteLine("removed: $Path")',
+    'exit 0',
+  ],
+};
+for (const [name, lines] of Object.entries(STAND_INS)) fs.writeFileSync(path.join(scriptsDir, name), lines.join('\r\n') + '\r\n');
 
 async function launchHome() {
   const port = await freePort();
@@ -90,6 +126,7 @@ async function launchHome() {
     CLAUDE_CUSTOM_UPLOADS: path.join(tmp, 'uploads'),
     CLAUDE_CUSTOM_UI_STATE_DIR: uiState,
     CLAUDE_CUSTOM_GIT_PROJECTS_DIR: historyDir,
+    CLAUDE_CUSTOM_WORKTREE_SCRIPTS: scriptsDir,
     CLAUDE_CUSTOM_ONE_WINDOW_PROBE: '1',
     CLAUDE_CUSTOM_SINGLE_INSTANCE_PROBE: '1',
   };
@@ -127,10 +164,13 @@ function hostsOfThisRun() {
   const out = [];
   let files = [];
   try { files = fs.readdirSync(path.join(HARNESS_DIR, 'hosts')).filter(f => f.endsWith('.json')); } catch { return out; }
-  const inside = path.resolve(tmp).toLowerCase() + path.sep;
+  // by the real path: tmp is an 8.3 short name (RICARD~1) and a host made by the worktree script has the long spelling
+  const realOf = (p) => { try { return fs.realpathSync.native(p); } catch { return path.resolve(p); } };
+  const inside = realOf(tmp).toLowerCase() + path.sep;
   for (const f of files) {
     const id = readIdentity({ dir: HARNESS_DIR, port: Number(f.replace(/\.json$/, '')) });
-    if (id && path.resolve(id.cwd).toLowerCase().startsWith(inside)) out.push(id);
+    if (id && (path.resolve(id.cwd).toLowerCase().startsWith(path.resolve(tmp).toLowerCase() + path.sep)
+      || realOf(id.cwd).toLowerCase().startsWith(inside))) out.push(id);
   }
   return out;
 }
@@ -235,9 +275,10 @@ async function main() {
       strip: ((await command(app, { cmd: 'state', window: aRoot })) || {}).stripDom }));
 
   // 3c (Dexter 1): A's window keeps the process while Home is closed
-  await command(app, { cmd: 'homeType', text: 'zz' });
+  const typedZz = await command(app, { cmd: 'homeType', text: 'zz' });
   const h3c = await waitFor(async () => { const h = await homeOf(app); return h && h.dom && h.dom.empty ? h : null; }, 10000, 200);
-  check('3c: a filter that matches nothing says so', !!h3c && /No project matches "zz"/.test(h3c.dom.empty), JSON.stringify(h3c && h3c.dom));
+  check('3c: a filter that matches nothing says so', !!h3c && /No project matches "zz"/.test(h3c.dom.empty),
+    JSON.stringify({ typed: typedZz, dom: h3c ? h3c.dom : ((await homeOf(app)) || {}).dom }));
   await command(app, { cmd: 'homeClose' });
   const shut = await waitFor(async () => { const h = await command(app, { cmd: 'home' }); return h && h.ok && h.open === false ? h : null; }, 10000, 200);
   check('3c: ...Home closed, and the process stays (A\'s window)', !!shut && !app.exited, JSON.stringify(shut));
@@ -257,6 +298,35 @@ async function main() {
   const c4 = h4 && h4.dom ? h4.dom.cards.find((x) => x.key === A.key) : null;
   check('4: ...and the card is closed again', !!c4 && c4.state === 'closed', JSON.stringify(c4));
 
+  // 4b (H-PR3, H8): A's session outlived its window. Home shown again reads the windowless sessions: A has one.
+  const aHostPid = aHost && Number.isInteger(aHost.pid) ? aHost.pid : null;
+  const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };   // kill-ok(signal 0): only asks whether the pid lives
+  // The host lists itself windowless a moment after its window went, so Home is shown again (a forced read) until it does.
+  const cardA = async () => { const h = await homeOf(app); return h && h.dom ? h.dom.cards.find((x) => x.key === A.key) || null : null; };
+  const w4b = await waitFor(async () => {
+    await command(app, { cmd: 'homeShow' });
+    await sleep(1500);
+    const c = await cardA();
+    return c && c.state === '1 session, no window' ? c : null;
+  }, 60000, 1000);
+  check('4b: A\'s session runs with no window, and its card says so', !!w4b, JSON.stringify(await cardA()));
+  await command(app, { cmd: 'homeClick', key: A.key, act: 'stop-sessions' });
+  const asked = await waitFor(async () => { const c = await cardA(); return c && c.ask ? c : null; }, 5000, 200);
+  check('4b: Stop its sessions asks on the card first (H8, no popup)', !!asked && asked.ask === 'Stop 1 session in alpha?', JSON.stringify(asked || (await cardA())));
+  await command(app, { cmd: 'homeClick', key: A.key, act: 'stop-cancel' });
+  await sleep(2000);
+  const kept = await cardA();
+  check('4b: ...Cancel stops nothing: no question, the session and its host still there',
+    !!kept && !kept.ask && kept.state === '1 session, no window' && aHostPid !== null && alive(aHostPid), JSON.stringify(kept));
+  await command(app, { cmd: 'homeClick', key: A.key, act: 'stop-sessions' });
+  await waitFor(async () => { const c = await cardA(); return c && c.ask ? c : null; }, 5000, 200);
+  const stop = await command(app, { cmd: 'homeClick', key: A.key, act: 'stop-confirm' });
+  check('4b: a real click on Stop', !!stop && stop.ok === true, JSON.stringify(stop));
+  const stopped = await waitFor(async () => { const c = await cardA(); return c && c.note === 'Stopped 1 session.' && c.state === 'closed' ? c : null; }, 90000, 500);
+  check('4b: ...the card says how many stopped, and is closed', !!stopped, JSON.stringify(await cardA()));
+  const hostEnded = await waitFor(() => (aHostPid !== null && !alive(aHostPid) ? true : null), 20000, 500);
+  check('4b: ...and A\'s host ended', hostEnded === true, `pid ${aHostPid}`);
+
   // 5
   await command(app, { cmd: 'homeType', text: 'bet' });
   const h5 = await waitFor(async () => { const h = await homeOf(app); return h && h.dom && h.dom.cards.length === 1 ? h : null; }, 10000, 200);
@@ -271,6 +341,26 @@ async function main() {
   check('6: Pin puts the card first, marked pinned', !!h6 && /\bpinned\b/.test(h6.dom.cards[0].cls), JSON.stringify(h6 && h6.dom.cards));
   const rec = readJson(path.join(uiState, 'home-projects.json'));
   check('6: ...and the pin is in the record', !!rec && Array.isArray(rec.pins) && rec.pins.some((p) => normPath(p) === B.key), JSON.stringify(rec));
+
+  // 6c (H-PR3 New lane): on B, closed and with no window: the form on the card, then the strip's + in B's window
+  const cardB = async () => { const h = await homeOf(app); return h && h.dom ? h.dom.cards.find((x) => x.key === B.key) || null : null; };
+  await command(app, { cmd: 'homeClick', key: B.key, act: 'new-lane' });
+  const formUp = await waitFor(async () => { const c = await cardB(); return c && c.form ? c : null; }, 5000, 200);
+  check('6c: New lane opens a form on the card', !!formUp, JSON.stringify(await cardB()));
+  const typed = await command(app, { cmd: 'homeField', key: B.key, field: 'name', value: 'probe-lane' });
+  check('6c: ...a name typed into it (the type prefix stays feat/)', !!typed && typed.ok === true, JSON.stringify(typed));
+  await command(app, { cmd: 'homeClick', key: B.key, act: 'lane-create' });
+  const laneDir = path.join(B.container, 'feat-probe-lane');
+  const made = await waitFor(async () => { const c = await cardB(); return c && c.note === 'feat/probe-lane opened in its window.' ? c : null; }, 120000, 500);
+  check('6c: ...the card says the lane opened in its window', !!made, JSON.stringify(await cardB()));
+  check('6c: ...the worktree is there, made by the worktree script', fs.existsSync(laneDir), laneDir);
+  const w6c = await windowsOf(app);
+  const bWin = w6c && Array.isArray(w6c.windows) ? w6c.windows.find((w) => normPath(w.root) === B.key) : null;
+  check('6c: ...B\'s window opened, with the new lane selected', !!bWin && typeof bWin.selectedKey === 'string' && normPath(bWin.selectedKey) === normPath(laneDir),
+    JSON.stringify(w6c));
+  await command(app, { cmd: 'homeClick', key: B.key, act: 'close-window' });
+  const closedB = await waitFor(async () => { const w = await windowsOf(app); return w && w.windows.length === 0 ? w : null; }, 60000, 500);
+  check('6c: ...and B\'s window closes from Home again', !!closedB, JSON.stringify(await windowsOf(app)));
 
   // 6b (Miguel G6 / Y3): A is closed again, so it offers Remove
   const rm = await command(app, { cmd: 'homeClick', key: A.key, act: 'remove' });
