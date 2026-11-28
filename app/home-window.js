@@ -66,7 +66,7 @@ function createHomeWindow({ BrowserWindow, screen, store, preload, page, forProb
     const w = win;
     // Miguel B1 (PR #204's rule for every page with a bridge): Home is loaded once with loadFile and never navigates. A link or a file
     // dropped on it would load that page in this webContents WITH the `home` bridge, so every navigation is refused and no window opens.
-    guardNavigation(w.webContents, log);
+    guardNavigation(w.webContents, log, { who: 'Jiandu Home' });
     w.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     w.on('close', (e) => {
       saveBounds();
