@@ -4,29 +4,36 @@
  * fact that needs the disk (projectOf, exists, keyOf = normPath) is handed in.
  *
  *   homeCards({ record, recents, windows, windowless, filter, projectOf, exists, keyOf, labelOf }) -> { cards, summary }
+ *   filterCards(cards, text) -> the cards whose label or any root spelling holds the text (any case), in the same order
  *
  *   record      app/home-record.js read(): { projects: [{ root, lastOpened }], pins: [root], removed: [root] }
- *   recents     host/recent.js rows [{ path, approximate, lastUsed }] (Claude Code's history), or null
+ *   recents     host/recent.js rows [{ path, approximate, lastUsed }] (Claude Code's history), or null (not read yet)
  *   windows     this process's project windows: [{ root, label, tabs, needs, lanes: [{ key, label, path, needs }] }]
  *   windowless  sessions with no window: [{ cwd }]
  *
- * One card per project: every path is folded to its project root by projectOf (a path it cannot place is its own root), and roots
- * are compared by keyOf. The card's root is spelled as its first source spells it (a window, then the record, then the rest).
+ * One card per project. Its sources: a window, a record entry, a PIN (PR #262 Dexter 1: a pin made by hand keeps its card even
+ * when the project left Claude Code's recents, or before they are read), a windowless session, a recent. Every path (pins and the
+ * removed set included: Miguel G1) is folded to its project root by projectOf (a path it cannot place is its own root), and roots
+ * are compared by keyOf. The card's root is spelled as its first source spells it (a window, then the record, then the rest);
+ * `roots` holds every spelling the sources gave (the junction: `C:\Users\Ricardo Pujol` and `C:\Users\ricar` are one folder), and
+ * the filter matches any of them, so a window opening never changes the match (Dexter 6).
  *
+ *   lanes    an open card: its window's lanes. Any other: the worktree folders of a container that the recents ran in. A recent in
+ *            a subfolder counts for the worktree that holds it (Dexter 2); a flat repo has no lanes; a lane whose folder is gone
+ *            does not show.
  *   state    'open' (a window here) | 'windowless' (sessions, no window) | 'closed'
  *   actions  open: go-to, close-window · windowless: open, stop-sessions · closed: open; then pin | unpin, show-in-explorer,
  *            new-lane; and remove only on a card that is not live (a live project always shows: Remove would not hold)
  *
  * Left out: a root whose folder is gone, and a removed root, unless the project is live (a window must stay reachable from Home).
- * Every number is strict (`typeof`): `Number(null)` is 0, and an absence is never shown as a zero.
+ * Every number is strict (app/home-values.js): `Number(null)` is 0, and an absence is never shown as a zero.
  */
 
-/** A time is a strict positive finite number, or no time at all (`Number(null)` is 0: never coerce). */
-const timeOf = (v) => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : null);
-const countOf = (v) => (typeof v === 'number' && Number.isInteger(v) && v >= 0 ? v : null);
+const path = require('path');
+const { timeOf, countOf, isPath } = require('./home-values');
+
 const later = (a, b) => (a === null ? b : b === null ? a : Math.max(a, b));
 const listOf = (v) => (Array.isArray(v) ? v : []);
-const isPath = (p) => typeof p === 'string' && p !== '';
 
 function actionsOf(state, pinned) {
   const lead = state === 'open' ? ['go-to', 'close-window'] : state === 'windowless' ? ['open', 'stop-sessions'] : ['open'];
@@ -34,12 +41,13 @@ function actionsOf(state, pinned) {
 }
 
 function homeCards({ record, recents, windows, windowless, filter, projectOf, exists, keyOf, labelOf } = {}) {
-  const rootOf = (p) => {
+  const placeOf = (p) => {
     try {
       const pr = projectOf(p);
-      return pr && isPath(pr.root) ? pr.root : p;
-    } catch { return p; }
+      return pr && isPath(pr.root) ? pr : null;
+    } catch { return null; }
   };
+  const rootOf = (p) => { const pr = placeOf(p); return pr ? pr.root : p; };
   const there = (p) => { try { return exists(p) === true; } catch { return false; } };
   const byKey = new Map();
   const entry = (root) => {
@@ -47,12 +55,25 @@ function homeCards({ record, recents, windows, windowless, filter, projectOf, ex
     if (key === null) return null;
     let e = byKey.get(key);
     if (!e) {
-      e = { key, root, lastUsed: null, lanes: new Map(), window: null, sessions: 0 };
+      e = { key, root, roots: new Map(), lastUsed: null, lanes: new Map(), window: null, sessions: 0 };
       byKey.set(key, e);
     }
+    if (!e.roots.has(root)) e.roots.set(root, true);
     return e;
   };
-  const keySet = (list) => new Set(listOf(list).filter(isPath).map((p) => keyOf(p)).filter((k) => k !== null));
+  // The worktree folder of a container that holds `p`: climbed up as spelled until the next folder up IS the root. Null for the
+  // root itself, a flat repo, a path projectOf cannot place, and a path that never reaches the root.
+  const laneOf = (p, rootKey) => {
+    const pr = placeOf(p);
+    if (!pr || pr.kind !== 'container') return null;
+    for (let cur = path.resolve(p); ;) {
+      const up = path.dirname(cur);
+      if (up === cur) return null;
+      if (keyOf(up) === rootKey) return cur;
+      cur = up;
+    }
+  };
+  const keySet = (list) => new Set(listOf(list).filter(isPath).map((p) => keyOf(rootOf(p))).filter((k) => k !== null));
 
   for (const w of listOf(windows)) {
     if (!w || !isPath(w.root)) continue;
@@ -65,6 +86,7 @@ function homeCards({ record, recents, windows, windowless, filter, projectOf, ex
     const e = entry(rootOf(p.root));
     if (e) e.lastUsed = later(e.lastUsed, timeOf(p.lastOpened));
   }
+  for (const p of listOf(rec.pins)) if (isPath(p)) entry(rootOf(p));
   for (const s of listOf(windowless)) {
     if (!s || !isPath(s.cwd)) continue;
     const e = entry(rootOf(s.cwd));
@@ -75,9 +97,10 @@ function homeCards({ record, recents, windows, windowless, filter, projectOf, ex
     const e = entry(rootOf(r.path));
     if (!e) continue;
     e.lastUsed = later(e.lastUsed, timeOf(r.lastUsed));
-    const laneKey = keyOf(r.path);
+    const lanePath = laneOf(r.path, e.key);
+    const laneKey = lanePath === null ? null : keyOf(lanePath);
     if (laneKey !== null && laneKey !== e.key && !e.lanes.has(laneKey)) {
-      e.lanes.set(laneKey, { key: laneKey, label: labelOf(r.path), path: r.path, needs: false });
+      e.lanes.set(laneKey, { key: laneKey, label: labelOf(lanePath), path: lanePath, needs: false });
     }
   }
 
@@ -89,11 +112,12 @@ function homeCards({ record, recents, windows, windowless, filter, projectOf, ex
     if (state === 'closed' && (removed.has(e.key) || !there(e.root))) continue;
     const pinned = pins.has(e.key);
     const w = e.window;
-    const lanes = w === null ? [...e.lanes.values()] : listOf(w.lanes).filter((l) => l && isPath(l.path)).map((l) => ({
-      key: keyOf(l.path), label: typeof l.label === 'string' && l.label ? l.label : labelOf(l.path), path: l.path, needs: l.needs === true,
-    }));
+    const lanes = w === null ? [...e.lanes.values()].filter((l) => there(l.path))
+      : listOf(w.lanes).filter((l) => l && isPath(l.path)).map((l) => ({
+        key: keyOf(l.path), label: typeof l.label === 'string' && l.label ? l.label : labelOf(l.path), path: l.path, needs: l.needs === true,
+      }));
     cards.push({
-      key: e.key, root: e.root, label: labelOf(e.root), pinned, state,
+      key: e.key, root: e.root, roots: [...e.roots.keys()], label: labelOf(e.root), pinned, state,
       tabs: w === null ? null : countOf(w.tabs),
       needs: w === null ? 0 : (countOf(w.needs) || 0),
       sessions: state === 'windowless' ? e.sessions : null,
@@ -101,15 +125,25 @@ function homeCards({ record, recents, windows, windowless, filter, projectOf, ex
     });
   }
   cards.sort(byOrder);
-  const text = typeof filter === 'string' ? filter.trim().toLowerCase() : '';
-  const shown = text === '' ? cards
-    : cards.filter((c) => c.label.toLowerCase().includes(text) || c.root.toLowerCase().includes(text));
+  const shown = filterCards(cards, filter);
   const summary = {
     open: cards.filter((c) => c.state === 'open').length,
     needs: cards.reduce((n, c) => n + c.needs, 0),
     total: cards.length, shown: shown.length,
   };
   return { cards: shown, summary };
+}
+
+/**
+ * Pure, and run on a list already built (Miguel G3: a keystroke in the filter box needs no projectOf, exists or keyOf). A card is
+ * kept when its label, or ANY spelling of its root the sources gave (`roots`, else `root`), holds the trimmed text, any case.
+ */
+function filterCards(cards, text) {
+  const list = listOf(cards);
+  const t = typeof text === 'string' ? text.trim().toLowerCase() : '';
+  if (t === '') return list.slice();
+  const holds = (s) => typeof s === 'string' && s.toLowerCase().includes(t);
+  return list.filter((c) => c && (holds(c.label) || (Array.isArray(c.roots) ? c.roots : [c.root]).some(holds)));
 }
 
 /**
@@ -126,4 +160,4 @@ function byOrder(a, b) {
   return a.key < b.key ? -1 : a.key > b.key ? 1 : 0;
 }
 
-module.exports = { homeCards };
+module.exports = { homeCards, filterCards };

@@ -6,16 +6,18 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const fc = require('fast-check');
-const { homeCards } = require('../app/home-model');
+const { homeCards, filterCards } = require('../app/home-model');
 
-// Fake paths are backslash paths. `<x>\dev` and `<x>\feat-*` fold to `<x>` (a container); anything else under `C:\` is a flat repo
-// at its own path; a path under `C:\none\` is a folder projectOf cannot place (null).
+// Fake paths are backslash paths. `<x>\dev` and `<x>\feat-*` (and anything inside them) fold to `<x>` (a container); a path in
+// `C:\flat` folds to the flat repo `C:\flat`; anything else is a flat repo at its own path; a path under `C:\none\` is a folder
+// projectOf cannot place (null).
 const keyOf = (p) => (typeof p === 'string' && p ? p.replace(/[\\/]+$/, '').toLowerCase() : null);
 const labelOf = (root) => String(root).replace(/[\\/]+$/, '').split(/[\\/]/).pop();
 const projectOf = (p) => {
   if (typeof p !== 'string' || !p) return null;
   if (/^c:\\none\\/i.test(p)) return null;
-  const m = /^(.*)\\(dev|feat-[^\\]+)(\\.*)?$/i.exec(p);
+  if (/^c:\\flat(\\|$)/i.test(p)) return { kind: 'flat', root: p.slice(0, 'C:\\flat'.length), dev: p.slice(0, 'C:\\flat'.length) };
+  const m = /^(.*?)\\(dev|feat-[^\\]+)(\\.*)?$/i.exec(p);
   return m ? { kind: 'container', root: m[1], dev: `${m[1]}\\dev` } : { kind: 'flat', root: p, dev: p };
 };
 const deps = (over = {}) => ({ projectOf, exists: () => true, keyOf, labelOf, ...over });
@@ -189,6 +191,80 @@ test('the filter keeps the cards whose label or root holds the text, any case; t
   assert.strictEqual(run({ record, filter: '' }).summary.shown, 3);
 });
 
+// --- PR #262 review fixes -------------------------------------------------------------------------------------------------------
+
+test('Dexter 1: a pin is a card source: a pinned root with no record entry and no recent still shows, recents read or not', () => {
+  const record = { projects: [], pins: ['C:\\x'], removed: [] };
+  for (const recents of [[], null]) {
+    const r = run({ record, recents });
+    assert.deepStrictEqual(keys(r), ['c:\\x'], `recents ${JSON.stringify(recents)}`);
+    assert.strictEqual(r.cards[0].pinned, true);
+    assert.strictEqual(r.cards[0].state, 'closed');
+    assert.strictEqual(r.cards[0].lastUsed, null);
+  }
+});
+
+test('Dexter 1: a pinned root whose folder is gone stays out, as any closed root does', () => {
+  const r = run({ record: { projects: [], pins: ['C:\\gone'], removed: [] }, exists: (p) => !/gone/.test(p) });
+  assert.deepStrictEqual(keys(r), []);
+});
+
+test('Dexter 2: a recent in a subfolder of a worktree is that worktree\'s lane, never a lane of its own', () => {
+  const [c] = run({ recents: [rec('C:\\p\\dev', 2), rec('C:\\p\\dev\\src', 1), rec('C:\\p\\feat-a\\x\\y', 3)] }).cards;
+  assert.deepStrictEqual(c.lanes.map((l) => [l.label, l.path]), [['dev', 'C:\\p\\dev'], ['feat-a', 'C:\\p\\feat-a']]);
+});
+
+test('Dexter 2: a recent in a subfolder of a flat repo makes no lane', () => {
+  const [c] = run({ recents: [rec('C:\\flat\\sub', 2)] }).cards;
+  assert.strictEqual(c.root, 'C:\\flat');
+  assert.deepStrictEqual(c.lanes, []);
+});
+
+test('Dexter 2: a lane whose folder is gone does not show (its project still does)', () => {
+  const exists = (p) => !/feat-gone/.test(p);
+  const [c] = run({ exists, recents: [rec('C:\\p\\feat-gone\\old-sub', 3), rec('C:\\p\\dev', 1)] }).cards;
+  assert.deepStrictEqual(c.lanes.map((l) => l.label), ['dev']);
+});
+
+test('Miguel Y2: the record\'s roots are folded too: a record entry in a lane and a recent in another lane are ONE card', () => {
+  const record = { projects: [{ root: 'C:\\p\\dev', lastOpened: 9 }], pins: [], removed: [] };
+  const r = run({ record, recents: [rec('C:\\p\\feat-a', 3)] });
+  assert.deepStrictEqual(keys(r), ['c:\\p']);
+  assert.strictEqual(r.cards[0].lastUsed, 9);
+});
+
+test('Miguel G1: pins and the removed set are folded by rootOf: a lane path pins and removes its project', () => {
+  const pinned = run({ record: { projects: [{ root: 'C:\\p', lastOpened: 1 }], pins: ['C:\\p\\feat-a'], removed: [] } });
+  assert.deepStrictEqual(pinned.cards.map((c) => [c.key, c.pinned]), [['c:\\p', true]]);
+  const removed = run({ record: { projects: [{ root: 'C:\\p', lastOpened: 1 }], pins: [], removed: ['C:\\p\\dev'] } });
+  assert.deepStrictEqual(keys(removed), []);
+});
+
+test('Dexter 6 / Miguel G3: the filter matches every spelling the sources gave the root, so a window opening never changes the match', () => {
+  const record = { projects: [{ root: 'C:\\Users\\Ricardo Pujol\\VibeCode\\viral', lastOpened: 5 }], pins: [], removed: [] };
+  // the junction: one folder, two spellings, one key (the real keyOf is normPath, which follows the junction)
+  const junctionKey = (p) => (typeof p === 'string' && p ? keyOf(p.replace(/\\ricar\\/i, '\\Ricardo Pujol\\')) : null);
+  const closed = run({ record, keyOf: junctionKey, filter: 'pujol' });
+  const open = run({ record, keyOf: junctionKey, filter: 'pujol', windows: [win('C:\\Users\\ricar\\VibeCode\\viral')] });
+  assert.strictEqual(closed.cards.length, 1);
+  assert.strictEqual(open.cards.length, 1);
+  assert.strictEqual(open.cards[0].root, 'C:\\Users\\ricar\\VibeCode\\viral');
+  assert.strictEqual(run({ record, keyOf: junctionKey, filter: 'ricar\\', windows: [win('C:\\Users\\ricar\\VibeCode\\viral')] }).cards.length, 1);
+});
+
+test('Miguel G3: filterCards is pure and runs on a built list: same order, a card kept when its label or any root spelling holds the text', () => {
+  const cards = [
+    { key: 'k1', label: 'viral', root: 'C:\\a\\viral', roots: ['C:\\a\\viral', 'C:\\b\\viral'] },
+    { key: 'k2', label: 'music', root: 'C:\\b\\music', roots: ['C:\\b\\music'] },
+    { key: 'k3', label: 'Notes', root: 'C:\\c\\notes', roots: ['C:\\c\\notes'] },
+  ];
+  assert.deepStrictEqual(filterCards(cards, ' b\\ ').map((c) => c.key), ['k1', 'k2']);
+  assert.deepStrictEqual(filterCards(cards, 'NOTES').map((c) => c.key), ['k3']);
+  assert.deepStrictEqual(filterCards(cards, '').map((c) => c.key), ['k1', 'k2', 'k3']);
+  assert.deepStrictEqual(filterCards(cards, null).map((c) => c.key), ['k1', 'k2', 'k3']);
+  assert.deepStrictEqual(filterCards(null, 'x'), []);
+});
+
 // --- properties (design §4.1) ---------------------------------------------------------------------------------------------------
 // A small alphabet of roots so collisions happen: each is spelled in either case, with or without a trailing separator, and as a
 // lane (dev / feat-x) of a container or as itself. `C:\none\…` cannot be placed by projectOf.
@@ -251,7 +327,7 @@ test('property: every live project has a card; no closed removed or gone root ha
     const shown = new Set(keys(r));
     const live = new Set([...input.windows.map((w) => keyOf(w.root)), ...input.windowless.map((s) => rootKey(s.cwd))]);
     for (const k of live) assert.ok(shown.has(k), `live ${k} has no card`);
-    const removed = new Set(input.record.removed.map(keyOf));
+    const removed = new Set(input.record.removed.map(rootKey));
     for (const c of r.cards) {
       if (live.has(c.key)) continue;
       assert.strictEqual(c.state, 'closed');
@@ -270,7 +346,33 @@ test('property: every number on a card is a strict number or null, never NaN, an
       assert.ok(c.lastUsed === null || c.lastUsed > 0);
     }
     assert.strictEqual(r.summary.total, r.cards.length);
+    assert.strictEqual(r.summary.shown, r.cards.length);
+    assert.strictEqual(r.summary.open, r.cards.filter((c) => c.state === 'open').length);
     assert.strictEqual(r.summary.needs, r.cards.reduce((n, c) => n + c.needs, 0));
+  }));
+});
+
+test('property (Dexter 1): every pinned root whose folder exists and that is not removed shows exactly once', () => {
+  fc.assert(fc.property(arbInput, (input) => {
+    const ks = keys(homeOf(input));
+    const removed = new Set(input.record.removed.map(rootKey));
+    for (const p of input.record.pins) {
+      const k = rootKey(p);
+      const pr = projectOf(p);
+      if (removed.has(k) || !exists(pr ? pr.root : p)) continue;
+      assert.strictEqual(ks.filter((x) => x === k).length, 1, `pin ${p}`);
+    }
+  }));
+});
+
+test('property (Miguel Y2): every card key is the folded root of some input path', () => {
+  fc.assert(fc.property(arbInput, (input) => {
+    const from = new Set([
+      ...input.windows.map((w) => keyOf(w.root)), ...input.record.projects.map((p) => rootKey(p.root)),
+      ...input.record.pins.map(rootKey), ...input.windowless.map((s) => rootKey(s.cwd)),
+      ...input.recents.filter((r) => r.approximate !== true).map((r) => rootKey(r.path)),
+    ]);
+    for (const c of homeOf(input).cards) assert.ok(from.has(c.key), `${c.key} has no source`);
   }));
 });
 
