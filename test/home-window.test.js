@@ -141,6 +141,18 @@ test('PR #263 Dexter 2: Home hears the Windows session end as a project window d
   assert.strictEqual(ended, 1);
 });
 
+test('PR #263 Dexter 1: onClosed runs when Home closes for good, never when it only hides to the tray', () => {
+  let closed = 0;
+  const t = rig({ onClosed: () => { closed++; } });
+  t.hw.show();
+  t.settings.hides = true;
+  FakeWin.made[0].close();
+  assert.strictEqual(closed, 0, 'hidden: the page and its filter stay');
+  t.settings.hides = false;
+  FakeWin.made[0].close();
+  assert.strictEqual(closed, 1);
+});
+
 test('saved bounds off every screen are not used: the default size, centred by Electron', () => {
   const t = rig();
   t.saved[STORE_KEY] = { bounds: { x: 4000, y: 100, width: 1000, height: 700 } };

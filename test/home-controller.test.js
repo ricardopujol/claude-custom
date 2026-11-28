@@ -6,7 +6,7 @@
  */
 const test = require('node:test');
 const assert = require('node:assert');
-const { createHomeController, pagePayload, EMPTY_TEXT, H_PR2_ACTIONS } = require('../app/home-controller');
+const { createHomeController, pagePayload, EMPTY_TEXT, WIRED_ACTIONS } = require('../app/home-controller');
 
 const keyOf = (p) => (typeof p === 'string' && p ? p.replace(/[\\/]+$/, '').toLowerCase() : null);
 const labelOf = (root) => String(root).replace(/[\\/]+$/, '').split(/[\\/]/).pop();
@@ -65,7 +65,7 @@ test('the page gets only the actions H-PR2 wires: Stop its sessions and New lane
   return t.c.refresh({ force: true }).then(() => {
     const a = t.last().cards.find((c) => c.key === 'c:\\a');
     assert.deepStrictEqual(a.actions, ['open', 'pin', 'show-in-explorer']);
-    assert.ok(!H_PR2_ACTIONS.includes('stop-sessions') && !H_PR2_ACTIONS.includes('new-lane'));
+    assert.ok(!WIRED_ACTIONS.includes('stop-sessions') && !WIRED_ACTIONS.includes('new-lane'));
   });
 });
 
@@ -167,19 +167,115 @@ test('an effect that throws answers ok: false with its message; the controller g
   assert.deepStrictEqual(t.c.act({ action: 'filter', text: '' }), { ok: true });
 });
 
-test('refresh reads the recents at most once a minute unless forced, and the windowless sessions each time; then it pushes', async () => {
+test('refresh reads the recents and the windowless sessions at most once a minute unless forced (Miguel G2: no powershell every 30 s); then it pushes', async () => {
   const t = rig();
   t.s.recents = [{ path: 'C:\\z\\dev', approximate: false, lastUsed: 99 }];
   await t.c.refresh({ force: true });
   assert.strictEqual(t.s.recentsReads, 1);
   assert.deepStrictEqual(t.last().cards.map((c) => c.key), ['c:\\z', 'c:\\a', 'c:\\b']);
   t.s.time += 30_000;
+  const n = t.pushed.length;
   await t.c.refresh();
   assert.strictEqual(t.s.recentsReads, 1, 'fresh enough');
+  assert.strictEqual(t.s.windowlessReads, 1, 'fresh enough: no powershell');
+  assert.strictEqual(t.pushed.length, n + 1, 'it still pushes');
   t.s.time += 31_000;
   await t.c.refresh();
   assert.strictEqual(t.s.recentsReads, 2);
-  assert.strictEqual(t.s.windowlessReads, 3);
+  assert.strictEqual(t.s.windowlessReads, 2);
+});
+
+test('PR #263 Miguel Y1: syncSoon (the strip push) coalesces: two pushes in one turn build once, and a card that needs you shows it', async () => {
+  const deferred = [];
+  let reads = 0;
+  const record = { projects: [{ root: 'C:\\a', lastOpened: 20 }], pins: [], removed: [] };
+  const t = rig({ defer: (fn) => deferred.push(fn), record: { readFresh: () => { reads++; return record; }, pin() {}, remove() {} } });
+  t.s.windows = [{ root: 'C:\\a', label: 'a', tabs: 2, needs: 0, lanes: [] }];
+  t.c.syncSoon();
+  t.s.windows = [{ root: 'C:\\a', label: 'a', tabs: 2, needs: 1, lanes: [] }];
+  t.c.syncSoon();
+  assert.strictEqual(deferred.length, 1, 'one sync queued');
+  assert.strictEqual(reads, 0, 'nothing built yet');
+  deferred.shift()();
+  assert.strictEqual(reads, 1);
+  assert.strictEqual(t.last().cards[0].needs, 1);
+  assert.deepStrictEqual(t.last().summary.needs, 1);
+  t.c.syncSoon();
+  assert.strictEqual(deferred.length, 1, 'a later push queues again');
+});
+
+test('PR #263 Miguel Y2: onSourcesChanged runs when a refresh read different lists, or was forced; never on the same lists', async () => {
+  let changed = 0;
+  const t = rig({ onSourcesChanged: () => { changed++; } });
+  t.s.recents = [{ path: 'C:\\z', approximate: false, lastUsed: 99 }];
+  await t.c.refresh({ force: true });
+  assert.strictEqual(changed, 1, 'forced');
+  t.s.time += 61_000;
+  await t.c.refresh();
+  assert.strictEqual(changed, 1, 'the same lists: the cached disk facts stay');
+  t.s.time += 61_000;
+  t.s.windowless = [{ cwd: 'C:\\w' }];
+  await t.c.refresh();
+  assert.strictEqual(changed, 2, 'a windowless session appeared');
+});
+
+test('PR #263 Miguel G3: a forced refresh asked while an unforced one is in flight is not lost: it runs after it', async () => {
+  const t = rig();
+  await t.c.refresh({ force: true });
+  t.s.time += 1000;                                 // fresh: the unforced refresh reads no recents
+  const a = t.c.refresh();
+  const b = t.c.refresh({ force: true });
+  await Promise.all([a, b]);
+  assert.strictEqual(t.s.recentsReads, 2, 'the forced read ran');
+  const c = t.c.refresh({ force: true });
+  const d = t.c.refresh({ force: true });
+  await Promise.all([c, d]);
+  assert.strictEqual(t.s.recentsReads, 3, 'a forced one in flight is shared by another forced one');
+});
+
+test('PR #263 Miguel Y3: a pin or remove the record refused answers ok: false and says so; nothing is reported done', () => {
+  const t = rig({ record: { readFresh: () => ({ projects: [{ root: 'C:\\a', lastOpened: 20 }], pins: [], removed: [] }), pin: () => null, remove: () => null } });
+  t.c.sync();
+  assert.deepStrictEqual(t.c.act({ action: 'pin', key: 'c:\\a' }), { ok: false, error: 'the record was not written' });
+  assert.deepStrictEqual(t.c.act({ action: 'remove', key: 'c:\\a' }), { ok: false, error: 'the record was not written' });
+});
+
+test('PR #263 Dexter 1: closed() resets the filter, so a Home made again shows every card under an empty filter box', () => {
+  const t = rig();
+  t.c.sync();
+  t.c.act({ action: 'filter', text: 'zz' });
+  assert.strictEqual(t.last().empty, 'No project matches "zz".');
+  t.c.closed();
+  const m = t.c.model();
+  assert.strictEqual(m.filter, '');
+  assert.deepStrictEqual(m.cards.map((c) => c.key), ['c:\\a', 'c:\\b']);
+  assert.strictEqual(m.empty, null);
+});
+
+test('PR #263 Miguel G8: a lane matches its card\'s lane by the exact path main sent; page input is never normalised', () => {
+  const seen = [];
+  const t = rig({ keyOf: (p) => { seen.push(p); return keyOf(p); } });
+  t.s.windows = [{ root: 'C:\\a', label: 'a', tabs: 1, needs: 0, lanes: [{ key: 'c:\\a\\dev', label: 'dev', path: 'C:\\a\\dev', needs: false }] }];
+  t.c.sync();
+  seen.length = 0;
+  assert.deepStrictEqual(t.c.act({ action: 'lane', key: 'c:\\a', lane: 'c:\\A\\DEV' }), { ok: false, error: 'no such lane' });
+  assert.ok(!seen.includes('c:\\A\\DEV'), 'no keyOf on the page\'s string');
+  assert.deepStrictEqual(t.c.act({ action: 'lane', key: 'c:\\a', lane: 'C:\\a\\dev' }), { ok: true });
+});
+
+test('PR #263 Dexter 8: windowFacts leaves out a registered window whose BrowserWindow is gone, so its card offers Open', () => {
+  const { windowFacts } = require('../app/home-controller');
+  const tabs = [{ key: 'k1', cwd: 'C:\\a\\dev', branch: 'dev' }, { key: 'k2', cwd: 'C:\\a\\feat-x', branch: 'feat/x' }, { key: 's', cwd: 'C:\\a', side: true }];
+  const pw = (root, win) => ({ root, label: root, win, tabShell: { snapshot: () => ({ tabs }) } });
+  const alive = { isDestroyed: () => false };
+  const dead = { isDestroyed: () => true };
+  const facts = windowFacts([pw('C:\\a', alive), pw('C:\\b', dead), pw('C:\\c', null)], () => ['k2']);
+  assert.deepStrictEqual(facts, [{ root: 'C:\\a', label: 'C:\\a', tabs: 3, needs: 1, lanes: [
+    { key: 'k1', label: 'dev', path: 'C:\\a\\dev', needs: false }, { key: 'k2', label: 'feat/x', path: 'C:\\a\\feat-x', needs: true }] }]);
+  const t = rig();
+  t.s.windows = facts;
+  t.c.sync();
+  assert.deepStrictEqual(t.last().cards.find((c) => c.key === 'c:\\b').actions.includes('open'), true);
 });
 
 test('a recents read that fails (null) keeps the last list; a windowless read that throws keeps the last one', async () => {

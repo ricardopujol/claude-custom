@@ -94,16 +94,53 @@ test('the page: home.html loads the display in a strict CSP, the display is wrap
   assert.deepStrictEqual(leaked, ['homeDisplay']);
 });
 
-test('the page wiring: a push draws the cards and the summary; a click acts; typing filters; a remove says the folder is not touched', () => {
+function livePage(answer = () => ({ ok: true })) {
   const html = fs.readFileSync(path.join(__dirname, '..', 'app', 'home.html'), 'utf8').replace(/<script[^>]*><\/script>/g, '');
   const dom = new JSDOM(html, { runScripts: 'outside-only' });
   const acts = [];
-  let onModel = null;
-  // copied through JSON: an object made in the page's realm is not deepStrictEqual to one made here
-  dom.window.home = { onModel: (fn) => { onModel = fn; }, act: (m) => { acts.push(JSON.parse(JSON.stringify(m))); } };
+  const page = { dom, acts, onModel: null };
+  // copied through JSON: an object made in the page's realm is not deepStrictEqual to one made here. act is an invoke (Miguel Y3).
+  // The bridge is set AFTER the script ran: with it there, the script also starts itself at DOMContentLoaded (the real page's path),
+  // and this test would hold two pages.
   dom.window.eval(fs.readFileSync(path.join(__dirname, '..', 'app', 'home-display.js'), 'utf8'));
+  dom.window.home = { onModel: (fn) => { page.onModel = fn; }, act: (m) => { acts.push(JSON.parse(JSON.stringify(m))); return Promise.resolve(answer(m)); } };
   dom.window.homeDisplay.start(dom.window.document, dom.window.home);
-  const doc = dom.window.document;
+  return page;
+}
+const settle = () => new Promise((r) => setImmediate(r));
+
+test('PR #263 Miguel Y3: "removed" shows only after main answers ok; a refused pin or remove says it was not done', async () => {
+  const p = livePage((m) => (m.action === 'open' ? { ok: true } : { ok: false, error: 'the record was not written' }));
+  const doc = p.dom.window.document;
+  p.onModel(payload([card({ key: 'k2', root: 'C:\\q', label: 'q', actions: ['open', 'pin', 'remove'] })]));
+  doc.querySelector('[data-act="remove"]').click();
+  assert.strictEqual(doc.getElementById('notice').textContent, '', 'nothing said before the answer');
+  await settle();
+  assert.strictEqual(doc.getElementById('notice').textContent, 'q was not removed: the record was not written.');
+  doc.querySelector('[data-act="pin"]').click();
+  await settle();
+  assert.strictEqual(doc.getElementById('notice').textContent, 'q was not pinned: the record was not written.');
+  doc.querySelector('[data-act="open"]').click();
+  await settle();
+  assert.strictEqual(doc.getElementById('notice').textContent, '');
+});
+
+test('PR #263 Dexter 1: the first payload sets the filter box to main\'s filter, so the page and main agree', () => {
+  const p = livePage();
+  const doc = p.dom.window.document;
+  p.onModel(payload([card()], { filter: 'vi' }));
+  assert.strictEqual(doc.getElementById('filter').value, 'vi');
+  doc.getElementById('filter').value = 'vir';
+  p.onModel(payload([card()], { filter: 'vi' }));
+  assert.strictEqual(doc.getElementById('filter').value, 'vir', 'a later push never fights the typing');
+});
+
+test('the page wiring: a push draws the cards and the summary; a click acts; typing filters; a remove says the folder is not touched', async () => {
+  const p = livePage();
+  const { acts } = p;
+  const onModel = (x) => p.onModel(x);
+  const doc = p.dom.window.document;
+  const dom = p.dom;
   onModel(payload([card(), card({ key: 'k2', root: 'C:\\q', label: 'q' })], { summary: { open: 1, needs: 0, total: 2, shown: 2 } }));
   assert.strictEqual(doc.querySelectorAll('.card').length, 2);
   assert.strictEqual(doc.getElementById('summary').textContent, '1 open');
@@ -117,5 +154,6 @@ test('the page wiring: a push draws the cards and the summary; a click acts; typ
   assert.deepStrictEqual(acts.pop(), { action: 'choose-folder' });
   doc.querySelector('[data-key="k2"] [data-act="remove"]').click();
   assert.deepStrictEqual(acts.pop(), { action: 'remove', key: 'k2' });
+  await settle();
   assert.strictEqual(doc.getElementById('notice').textContent, 'q removed from the list. Its folder is not touched.');
 });

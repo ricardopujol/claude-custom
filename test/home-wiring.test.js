@@ -17,8 +17,9 @@ const body = (head) => {
 test('both Home channels answer only the Home window\'s own page, and a refused act is logged', () => {
   const ipc = body('function registerHomeIpc() {');
   assert.match(ipc, /ipcMain\.on\('home:ready', \(e\) => \{ if \(homeWindow\.isSender\(e\.sender\)\) homeWindow\.send\(homeController\.model\(\)\); \}\);/);
-  assert.match(ipc, /ipcMain\.on\('home:act', \(e, msg\) => \{\s*if \(!homeWindow\.isSender\(e\.sender\)\) return;\s*const r = homeController\.act\(msg\);/);
-  assert.match(ipc, /if \(!r\.ok\) console\.log\(/);
+  // an invoke, and the page hears main's answer (PR #263 Miguel Y3)
+  assert.match(ipc, /ipcMain\.handle\('home:act', \(e, msg\) => \{\s*if \(!homeWindow\.isSender\(e\.sender\)\) return \{ ok: false, error: 'not the Home page' \};\s*const r = homeController\.act\(msg\);/);
+  assert.match(ipc, /if \(!r\.ok\) console\.log\([^\n]*\n\s*return r;/);
   assert.strictEqual((MAIN.match(/ipcMain\.(?:on|handle)\('home:/g) || []).length, 2, 'two channels, no more');
 });
 
@@ -30,7 +31,25 @@ test('Home reads 50 Claude Code projects (the brief\'s default) through the off-
 test('every open from Home takes the one open path (the queue), shown; the tray and the app pipe show Home', () => {
   assert.match(MAIN, /open: \(cwd\) => \{ openProject\(\{ cwd, show: 'shown' \}\)\.catch\(\(\) => \{\}\); \},/);
   assert.match(MAIN, /actions: \{\s*showHome: \(\) => showHome\(\),\s*focusWindow:/);
-  assert.match(MAIN, /function showHome\(\{ hidden = false \} = \{\}\) \{\s*homeWindow\.show\(\{ hidden \}\);\s*homeController\.refresh\(\)\.catch\(\(\) => \{\}\);\s*\}/);
+  assert.match(MAIN, /function showHome\(\{ hidden = false \} = \{\}\) \{\s*homeWindow\.show\(\{ hidden \}\);\s*homeController\.refresh\(\{ force: true \}\)\.catch\(\(\) => \{\}\);\s*\}/);
+});
+
+test('PR #263 Miguel Y1: every strip push syncs Home (coalesced), as it syncs the tray', () => {
+  assert.match(MAIN, /stripPushed: \(\) => \{ if \(homeWindow\.isOpen\(\)\) homeController\.syncSoon\(\); \},/);
+  const pw = require('fs').readFileSync(require('path').join(__dirname, '..', 'app', 'project-window.js'), 'utf8');
+  assert.match(pw, /if \(tray\) tray\.sync\(\);[^\n]*\n\s*stripPushed\(\);/);
+});
+
+test('PR #263 Miguel Y2: Home\'s disk facts go through the one path cache (record and model), cleared when the sources change', () => {
+  assert.match(MAIN, /const homePaths = createHomePaths\(\{ projectOf, exists: \(p\) => fs\.existsSync\(p\) \}\);/);
+  assert.match(MAIN, /createHomeRecord\(\{ store: uiStore, projectOf: homePaths\.projectOf,/);
+  assert.match(MAIN, /projectOf: homePaths\.projectOf, exists: homePaths\.exists, keyOf: normPath,/);
+  assert.match(MAIN, /onSourcesChanged: \(\) => homePaths\.clear\(\),/);
+});
+
+test('PR #263 Dexter 1 / Dexter 8: a closed Home forgets its filter; the cards hear only live project windows', () => {
+  assert.match(MAIN, /onClosed: \(\) => homeController\.closed\(\),/);
+  assert.match(MAIN, /windows: \(\) => windowFacts\(registry\.list\(\), needsYouKeys\),/);
 });
 
 test('Show in Explorer goes through app/file-link.js (#37: a folder opens; nothing handed to the OS is ever run)', () => {

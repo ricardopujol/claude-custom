@@ -32,7 +32,7 @@ const { createAppApi, startProbeServer } = require('./probe-driver');
 const { createProjectLifecycle } = require('./project-lifecycle');
 const { anyWindowHidden, needsYouKeys, windowlessItems, hidesOnClose, startsHidden } = require('./tray-model');
 const { createHomeWindow } = require('./home-window');
-const { createHomeController } = require('./home-controller');
+const { createHomeController, windowFacts } = require('./home-controller');
 const { createProjectRecords } = require('./project-records');
 const { armQuitWatchdog } = require('./quit-watchdog');
 const { createQuitLog, wireQuitLog, markWillQuitEnd } = require('./quit-log');
@@ -135,6 +135,7 @@ const taskLogsRoot = path.join(require('os').tmpdir(), 'claude');
 const { createResourcesService, parseWarnAt } = require('./resources-service');
 const { createChipStore, watchChip, KEY: CHIP_KEY } = require('../host/chip-store');
 const { createHomeRecord } = require('./home-record');
+const { createHomePaths } = require('./home-paths');
 const { createScoreStore } = require('../host/game-scores');
 const { listDeps } = require('../host/stop-deps');
 // The tray icon (BACKLOG #119 A8): the needs-you count, show/hide, start minimised, minimise on close.
@@ -162,7 +163,10 @@ const UI_KEY = 'look-global';
 const resourceChip = createChipStore(uiStore);
 const gameScores = createScoreStore(uiStore);   // #41: the wait games' bests, install-wide
 // Jiandu Home (documentation/DESIGN_PROJECT_HUB.md): the projects Jiandu opened, the pins and the removed set, install-wide.
-const homeRecord = createHomeRecord({ store: uiStore, log: (l) => console.log(l) });
+// Its disk facts per path are cached (app/home-paths.js, PR #263 Miguel Y2): a Home sync on main never stats a path it already placed,
+// and never a UNC or \\?\ path at all. Cleared when the controller's source lists change.
+const homePaths = createHomePaths({ projectOf, exists: (p) => fs.existsSync(p) });
+const homeRecord = createHomeRecord({ store: uiStore, projectOf: homePaths.projectOf, log: (l) => console.log(l) });
 const readDim = () => sanitizeDim((uiStore.read(UI_KEY, {}) || {}).unfocusedDim);
 
 // An explicit CLAUDE_CUSTOM_PORT is honoured exactly and never stepped: someone
@@ -464,25 +468,19 @@ const homeWindow = createHomeWindow({
   onChanged: () => windowsChanged(),
   // the project window's session-end rule (sessionEnded below): quitting, so a hidden Home closes, and the record clean (PR #263 Dexter 2)
   onSessionEnd: () => { quitting = true; markRecordClean(); },
+  // a Home closed for good forgets its filter: the next Home starts with every card and an empty box (PR #263 Dexter 1)
+  onClosed: () => homeController.closed(),
   log: (l) => console.log(l),
 });
-// What a project window tells Home: its tabs, how many need you, and its lanes (the tabs of its worktrees, not side or shell tabs).
-function homeWindowsFacts() {
-  return registry.list().map((p) => {
-    const tabs = p.tabShell ? p.tabShell.snapshot().tabs : [];
-    const needing = new Set(needsYouKeys(tabs));
-    const lanes = tabs.filter((t) => t && typeof t.cwd === 'string' && t.cwd && t.side !== true && t.shell !== true)
-      .map((t) => ({ key: t.key, label: typeof t.branch === 'string' && t.branch ? t.branch : path.basename(t.cwd), path: t.cwd, needs: needing.has(t.key) }));
-    return { root: p.root, label: p.label, tabs: tabs.length, needs: needing.size, lanes };
-  });
-}
 const homeController = createHomeController({
   record: homeRecord,
   readRecents: () => readRecentsOffThread({ projectsDir: readSeams(process.env).projectsDir || undefined, limit: HOME_RECENTS }),
-  windows: homeWindowsFacts,
+  // each LIVE project window's tabs, needs and lanes (app/home-controller.js windowFacts; a dead registered window is closed: Dexter 8)
+  windows: () => windowFacts(registry.list(), needsYouKeys),
   windowless: async () => windowlessItems(await appBackgroundModel()).map((it) => ({ cwd: it.row && it.row.cwd })),
-  projectOf, exists: (p) => fs.existsSync(p), keyOf: normPath, labelOf: (root) => projectLabel(root),
+  projectOf: homePaths.projectOf, exists: homePaths.exists, keyOf: normPath, labelOf: (root) => projectLabel(root),
   push: (payload) => homeWindow.send(payload),
+  onSourcesChanged: () => homePaths.clear(),
   effects: {
     // every open takes the one open path (app/open-queue.js -> app/open-project.js): today's launch rules; H4: the project comes forward
     open: (cwd) => { openProject({ cwd, show: 'shown' }).catch(() => {}); },
@@ -503,19 +501,23 @@ const homeController = createHomeController({
   },
   log: (l) => console.log(l),
 });
-// Show Home (the --home launch, the app pipe's type 'home', the tray's Home, a restore): made, or brought forward, and its lists read again.
+// Show Home (the --home launch, the app pipe's type 'home', the tray's Home, a restore): made, or brought forward, and its lists read again
+// (forced: a show is when a person looks, so the cached disk facts go too).
 function showHome({ hidden = false } = {}) {
   homeWindow.show({ hidden });
-  homeController.refresh().catch(() => {});
+  homeController.refresh({ force: true }).catch(() => {});
 }
 function registerHomeIpc() {
   ipcMain.on('home:ready', (e) => { if (homeWindow.isSender(e.sender)) homeWindow.send(homeController.model()); });
-  ipcMain.on('home:act', (e, msg) => {
-    if (!homeWindow.isSender(e.sender)) return;
+  // an invoke: the page says what happened from main's answer, never before it (PR #263 Miguel Y3)
+  ipcMain.handle('home:act', (e, msg) => {
+    if (!homeWindow.isSender(e.sender)) return { ok: false, error: 'not the Home page' };
     const r = homeController.act(msg);
     if (!r.ok) console.log(`[main] home: ${JSON.stringify(msg && msg.action)} refused: ${r.error}`);
+    return r;
   });
-  // While Home is shown its lists stay fresh (the recents at most once a minute; app/home-controller.js RECENTS_MAX_AGE_MS).
+  // While Home is shown its lists stay fresh: the recents and the windowless sessions at most once a minute (app/home-controller.js
+  // RECENTS_MAX_AGE_MS), so this beat starts no powershell of its own (Miguel G2). The live state comes with every strip push.
   setInterval(() => { if (homeWindow.isVisible()) homeController.refresh().catch(() => {}); }, 30_000).unref();
 }
 
@@ -1459,7 +1461,7 @@ function windowsChanged() {
   seenGate();
   if (trayController) trayController.sync();
   appLifecycle.syncRecord();
-  if (homeWindow.isOpen()) homeController.sync();     // Jiandu Home: a fresh model at every shell change (the tray's sync moment)
+  if (homeWindow.isOpen()) homeController.sync();     // Jiandu Home: a fresh model at every shell change (the strip push is stripPushed)
 }
 
 // What every project window is handed (app/project-window.js). The Resources service, the tray and the lean/indexing units are read live.
@@ -1481,6 +1483,8 @@ const windowServices = {
   openProject: (o) => openProject(o),
   quitCancelled: () => quitCancelled(),
   sessionEnded: () => markRecordClean(),          // Windows ends the session (log off, shut down): a shutdown is a clean quit, not a crash
+  // the strip push, the tray's other sync moment: Home's "needs you" and tab counts follow it, coalesced (PR #263 Miguel Y1)
+  stripPushed: () => { if (homeWindow.isOpen()) homeController.syncSoon(); },
 };
 
 // The project window (app/project-window.js): everything that is one project's. Made by startProject, after every app-wide constant it is

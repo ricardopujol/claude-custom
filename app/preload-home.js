@@ -11,5 +11,6 @@ ipcRenderer.on('home:model', (_e, payload) => { if (listener) listener(payload);
 
 contextBridge.exposeInMainWorld('home', {
   onModel: (fn) => { listener = typeof fn === 'function' ? fn : null; ipcRenderer.send('home:ready'); },
-  act: (msg) => ipcRenderer.send('home:act', msg),
+  // an invoke: the page says what happened from main's answer (PR #263 Miguel Y3)
+  act: (msg) => ipcRenderer.invoke('home:act', msg),
 });

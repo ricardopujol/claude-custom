@@ -100,28 +100,39 @@ function clickTarget(el) {
   return action === 'lane' ? { action, key, lane: btn.getAttribute('data-lane') } : { action, key };
 }
 
+// What a record edit says when main refused it (PR #263 Miguel Y3): "<name> was not removed: <main's reason>."
+const NOT_DONE = { 'remove': 'removed', 'pin': 'pinned', 'unpin': 'unpinned' };
+
 function start(doc, home) {
   let last = null;
+  let first = true;
   const cards = doc.getElementById('cards');
   const summary = doc.getElementById('summary');
   const notice = doc.getElementById('notice');
+  const box = doc.getElementById('filter');
   home.onModel((p) => {
     last = p;
     cards.innerHTML = cardsHtml(p);
     summary.textContent = summaryText(p && p.summary);
+    // the first payload sets the box to main's filter, so the two agree (PR #263 Dexter 1); a later one never fights the typing
+    if (first) { first = false; if (p && typeof p.filter === 'string') box.value = p.filter; }
   });
   cards.addEventListener('click', (e) => {
     const t = clickTarget(e.target);
     if (!t) return;
-    if (t.action === 'remove') {
-      const c = last && Array.isArray(last.cards) ? last.cards.find((x) => x.key === t.key) : null;
-      notice.textContent = `${c ? c.label : 'The project'} removed from the list. Its folder is not touched.`;
-    } else {
-      notice.textContent = '';
-    }
-    home.act(t);
+    const c = last && Array.isArray(last.cards) ? last.cards.find((x) => x.key === t.key) : null;
+    const name = c ? c.label : 'The project';
+    notice.textContent = '';
+    // said from main's answer, never before it (PR #263 Miguel Y3): act is an invoke
+    Promise.resolve(home.act(t)).then((r) => {
+      if (r && r.ok === true) {
+        if (t.action === 'remove') notice.textContent = `${name} removed from the list. Its folder is not touched.`;
+      } else if (NOT_DONE[t.action]) {
+        notice.textContent = `${name} was not ${NOT_DONE[t.action]}: ${r && typeof r.error === 'string' ? r.error : 'no answer'}.`;
+      }
+    }, () => { if (NOT_DONE[t.action]) notice.textContent = `${name} was not ${NOT_DONE[t.action]}: no answer.`; });
   });
-  doc.getElementById('filter').addEventListener('input', (e) => home.act({ action: 'filter', text: String(e.target.value) }));
+  box.addEventListener('input', (e) => home.act({ action: 'filter', text: String(e.target.value) }));
   doc.getElementById('choose').addEventListener('click', () => home.act({ action: 'choose-folder' }));
 }
 

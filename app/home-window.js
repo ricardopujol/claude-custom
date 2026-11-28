@@ -16,7 +16,8 @@
  * app/home-bounds.js decides whether they are used). Secure by construction: context isolation, no Node, a sandbox, its own preload
  * with two members (app/preload-home.js), every navigation refused and every window open denied (app/nav-guard.js).
  *
- * deps: BrowserWindow, screen, store (uiStore), preload, page, forProbe(opts), hidesOnClose(), onChanged(), onSessionEnd(), log.
+ * deps: BrowserWindow, screen, store (uiStore), preload, page, forProbe(opts), hidesOnClose(), onChanged(), onSessionEnd(),
+ * onClosed() (the window is gone for good, not hidden: its page state goes with it), log.
  */
 
 const { boundsToUse, boundsToSave, DEFAULT_SIZE, MIN_SIZE } = require('./home-bounds');
@@ -26,7 +27,7 @@ const STORE_KEY = 'home-window';
 const TITLE = 'Jiandu Home';
 
 function createHomeWindow({ BrowserWindow, screen, store, preload, page, forProbe = (o) => o, hidesOnClose = () => false, onChanged = () => {},
-  onSessionEnd = () => {}, log = () => {} }) {
+  onSessionEnd = () => {}, onClosed = () => {}, log = () => {} }) {
   let win = null;
   const alive = () => !!win && !win.isDestroyed();
   const changed = () => { try { onChanged(); } catch (err) { log(`[main] home: onChanged threw: ${err && err.message}`); } };
@@ -73,7 +74,11 @@ function createHomeWindow({ BrowserWindow, screen, store, preload, page, forProb
       try { hide = hidesOnClose() === true; } catch { hide = false; }
       if (hide) { e.preventDefault(); w.hide(); changed(); }
     });
-    w.on('closed', () => { if (win === w) win = null; changed(); });
+    w.on('closed', () => {
+      if (win === w) win = null;
+      try { onClosed(); } catch (err) { log(`[main] home: onClosed threw: ${err && err.message}`); }
+      changed();
+    });
     for (const ev of ['show', 'hide', 'minimize', 'restore']) w.on(ev, changed);
     // Windows ends the session (log off, shut down): a clean quit, as a project window says it (PR #263 Dexter 2). A Home-only process
     // has no project window to hear it, and a Home hidden to the tray must not stand in the session end's way.
