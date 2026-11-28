@@ -33,8 +33,20 @@ test('scripts/open-jiandu-home.vbs: runs the launcher with --home and no console
   const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'scripts', 'open-jiandu-home.vbs'), 'utf8');
   assert.match(src, /ws\.Run "node """ & launcher & """ --home", 0, False/);
   assert.match(src, /launcher = fso\.BuildPath\(here, "bin\\claude-custom\.js"\)/);
-  assert.match(src, /If Not fso\.FileExists\(launcher\) Then launcher = fso\.BuildPath\(INSTALL, "bin\\claude-custom\.js"\)/);
+  assert.match(src, /If Not fso\.FileExists\(launcher\) Then launcher = fso\.BuildPath\(install, "bin\\claude-custom\.js"\)/);
   assert.doesNotMatch(src, /BrowseForFolder/, 'no folder dialog: Home is the list');
+});
+
+test('PR #263 Miguel Y4: the launcher names no user folder (%USERPROFILE%), and a missing launcher says so in a MsgBox', () => {
+  const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'scripts', 'open-jiandu-home.vbs'), 'utf8');
+  assert.doesNotMatch(src, /C:\\Users\\/i, 'no hard-coded user folder');
+  assert.match(src, /install = ws\.ExpandEnvironmentStrings\("%USERPROFILE%\\VibeCode\\claude-custom\\dev"\)/);
+  const at = src.search(/If Not fso\.FileExists\(launcher\) Then\r?\n/);
+  assert.ok(at !== -1, 'a second check, after the fallback');
+  const rest = src.slice(at);
+  assert.match(rest, /MsgBox "Jiandu Home could not start: there is no launcher at " & launcher/);
+  assert.match(rest, /WScript\.Quit 1/);
+  assert.ok(rest.indexOf('WScript.Quit 1') < rest.indexOf('ws.Run'), 'it quits before it runs anything');
 });
 
 test('homeEnv: the launch env on the user\'s home folder, with the home flag; nothing of the harness inherited', () => {
