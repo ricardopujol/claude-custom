@@ -26,6 +26,9 @@ const STORE_KEY = 'home-projects';
 const VERSION = 1;
 const MAX_PROJECTS = 200;
 const MAX_LIST = 500;
+// The lock is waited on synchronously (host/file-lock.js, Atomics.wait) and this runs on Electron main: the default 3 s would freeze
+// every window while another process holds the file. A record missed for that is one line in the log.
+const LOCK_WAIT_MS = 500;
 
 const isObject = (o) => o !== null && typeof o === 'object' && !Array.isArray(o);
 const isPath = (p) => typeof p === 'string' && p !== '';
@@ -100,7 +103,7 @@ function createHomeRecord({ store, keyOf = normPath, now = Date.now, log = () =>
         const next = fn(r.record, key);
         store.write(STORE_KEY, { version: VERSION, ...next });
         return next;
-      });
+      }, { deadlineMs: LOCK_WAIT_MS });
     } catch (err) {
       log(`[main] ${STORE_KEY}: ${err && err.message}; not written`);
       return null;

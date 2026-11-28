@@ -148,6 +148,25 @@ test('a store whose lock cannot be taken answers null and logs, never throws', (
   assert.match(lines[0], /busy/);
 });
 
+test('main records each project window that started (the lifecycle afterStart), and a failed record never costs the window', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'app', 'main.js'), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*/gm, '');
+  assert.match(src, /const homeRecord = createHomeRecord\(\{ store: uiStore,/);
+  const fn = /function recordOpened\(pw\) \{([\s\S]*?)\n\}/.exec(src);
+  assert.ok(fn, 'main has a recordOpened(pw)');
+  assert.match(fn[1], /try \{ homeRecord\.opened\(pw\.root\); \} catch/);
+  const after = /afterStart: \(pw\) => \{([\s\S]*?)\n  \},/.exec(src);
+  assert.ok(after, 'the lifecycle has an afterStart');
+  assert.match(after[1], /recordOpened\(pw\);/);
+});
+
+test('an edit waits at most LOCK_WAIT_MS for the lock: it runs on Electron main, which a 3 s wait would freeze', () => {
+  let seen = null;
+  const store = { readState: () => ({ status: 'missing', value: null }), write: () => {}, withLock: (name, fn, opts) => { seen = { name, opts }; return fn(); } };
+  createHomeRecord({ store, keyOf, now: () => 9 }).opened('C:\\a');
+  assert.deepStrictEqual(seen, { name: 'home-projects', opts: { deadlineMs: 500 } });
+});
+
 test('createHomeRecord without a store with readState, write and withLock throws and says so', () => {
   assert.throws(() => createHomeRecord({ store: { read() {} } }), /readState, write and withLock/);
 });
