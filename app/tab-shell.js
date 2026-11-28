@@ -2803,6 +2803,11 @@ async function handleProbeCommand(line, api, expectedToken) {
       case 'homeType':
         if (typeof cmd.text !== 'string') return { ok: false, error: 'homeType needs a text' };
         return await api.homeType(cmd.text);
+      case 'homeField':
+        if (typeof cmd.key !== 'string' || !cmd.key || (cmd.field !== 'prefix' && cmd.field !== 'name') || typeof cmd.value !== 'string') {
+          return { ok: false, error: 'homeField needs a key, a field (prefix | name) and a value' };
+        }
+        return await api.homeField(cmd.key, cmd.field, cmd.value);
       case 'homeNavigate':
         if (typeof cmd.url !== 'string' || !cmd.url) return { ok: false, error: 'homeNavigate needs a url' };
         return await api.homeNavigate(cmd.url);

@@ -58,15 +58,94 @@ test('sync builds the cards from the record and pushes the page its payload', ()
   assert.strictEqual(t.last().now, 1000);
 });
 
-test('the page gets only the actions H-PR2 wires: Stop its sessions and New lane wait for H-PR3', () => {
+test('H-PR3: the page gets Stop its sessions (windowless cards only) and New lane', () => {
   const t = rig();
-  t.s.windowless = [{ cwd: 'C:\\a\\dev' }];
+  t.s.windowless = [{ cwd: 'C:\\a\\dev' }, { cwd: 'C:\\a\\feat-x' }];
   t.c.sync();
   return t.c.refresh({ force: true }).then(() => {
     const a = t.last().cards.find((c) => c.key === 'c:\\a');
-    assert.deepStrictEqual(a.actions, ['open', 'pin', 'show-in-explorer']);
-    assert.ok(!WIRED_ACTIONS.includes('stop-sessions') && !WIRED_ACTIONS.includes('new-lane'));
+    assert.deepStrictEqual(a.actions, ['open', 'stop-sessions', 'pin', 'show-in-explorer', 'new-lane']);
+    assert.strictEqual(a.sessions, 2);
+    const b = t.last().cards.find((c) => c.key === 'c:\\b');
+    assert.ok(!b.actions.includes('stop-sessions'), 'a closed card has no sessions to stop');
+    assert.ok(WIRED_ACTIONS.includes('stop-sessions') && WIRED_ACTIONS.includes('new-lane'));
   });
+});
+
+function stopRig(report) {
+  const calls = [];
+  const t = rig({ effects: {
+    open() {}, goTo() {}, closeWindow() {}, showInExplorer() {}, chooseFolder() {},
+    stopSessions: async (root) => { calls.push(['stop', root]); if (report instanceof Error) throw report; return report; },
+    newLane: async (root, branch) => { calls.push(['lane', root, branch]); return { ok: true, branch, path: `${root}\\${branch.replace('/', '-')}` }; },
+  } });
+  t.s.windowless = [{ cwd: 'C:\\a\\dev' }, { cwd: 'C:\\a\\feat-x' }];
+  return { t, calls };
+}
+
+test('H8: Stop its sessions needs the second click: an ask without confirmed: true stops nothing', async () => {
+  const { t, calls } = stopRig({ stopped: 2, kept: 0, late: 0, verified: true, texts: [] });
+  await t.c.refresh({ force: true });
+  for (const confirmed of [undefined, false, 'yes', 1]) {
+    assert.deepStrictEqual(await t.c.act({ action: 'stop-sessions', key: 'c:\\a', confirmed }), { ok: false, error: 'a stop needs its second click' });
+  }
+  assert.deepStrictEqual(calls, []);
+});
+
+test('H8: a confirmed stop runs the folder stop on the card\'s root, answers how many stopped, and reads the lists again', async () => {
+  const { t, calls } = stopRig({ stopped: 2, kept: 0, late: 0, verified: true, texts: [] });
+  await t.c.refresh({ force: true });
+  const reads = t.s.windowlessReads;
+  t.s.windowless = [];
+  assert.deepStrictEqual(await t.c.act({ action: 'stop-sessions', key: 'c:\\a', confirmed: true }), { ok: true, stopped: 2, kept: 0 });
+  assert.deepStrictEqual(calls, [['stop', 'C:\\a']]);
+  assert.strictEqual(t.s.windowlessReads, reads + 1, 'a forced refresh');
+  assert.strictEqual(t.last().cards.find((c) => c.key === 'c:\\a').state, 'closed');
+});
+
+test('H8: a stop that kept a session, could not check, or threw says so (ok: false), never a quiet success', async () => {
+  const kept = stopRig({ stopped: 1, kept: 1, late: 0, verified: true, texts: ['Couldn\'t stop that session: it has a window open.'] });
+  await kept.t.c.refresh({ force: true });
+  assert.deepStrictEqual(await kept.t.c.act({ action: 'stop-sessions', key: 'c:\\a', confirmed: true }),
+    { ok: false, stopped: 1, kept: 1, error: 'Couldn\'t stop that session: it has a window open.' });
+  const late = stopRig({ stopped: 2, kept: 0, late: 1, verified: true, texts: [] });
+  await late.t.c.refresh({ force: true });
+  assert.deepStrictEqual(await late.t.c.act({ action: 'stop-sessions', key: 'c:\\a', confirmed: true }),
+    { ok: false, stopped: 2, kept: 1, error: 'sessions kept starting while others were stopped; stop again' });
+  const unsure = stopRig({ stopped: 2, kept: 0, late: 0, verified: false, texts: [] });
+  await unsure.t.c.refresh({ force: true });
+  assert.deepStrictEqual(await unsure.t.c.act({ action: 'stop-sessions', key: 'c:\\a', confirmed: true }),
+    { ok: false, stopped: 2, kept: 0, error: 'not every session could be checked, so one may still run' });
+  const threw = stopRig(new Error('powershell failed'));
+  await threw.t.c.refresh({ force: true });
+  assert.deepStrictEqual(await threw.t.c.act({ action: 'stop-sessions', key: 'c:\\a', confirmed: true }), { ok: false, stopped: 0, kept: 0, error: 'powershell failed' });
+  for (const bad of [null, {}, { stopped: '2' }]) {
+    const r = stopRig(bad);
+    await r.t.c.refresh({ force: true });
+    assert.strictEqual((await r.t.c.act({ action: 'stop-sessions', key: 'c:\\a', confirmed: true })).ok, false, JSON.stringify(bad));
+  }
+});
+
+test('New lane: a bad branch name is refused before any git call; a good one runs the strip\'s create on the card\'s root', async () => {
+  const { t, calls } = stopRig({ stopped: 0, kept: 0, late: 0, verified: true, texts: [] });
+  t.c.sync();
+  for (const branch of [undefined, '', '  ', '-x', 'feat/a b', 'feat/"x"']) {
+    const r = await t.c.act({ action: 'new-lane', key: 'c:\\b', branch });
+    assert.strictEqual(r.ok, false, JSON.stringify(branch));
+    assert.strictEqual(typeof r.error, 'string');
+  }
+  assert.deepStrictEqual(await t.c.act({ action: 'new-lane', key: 'c:\\b', branch: ' feat/x ' }), { ok: true, branch: 'feat/x' });
+  assert.deepStrictEqual(calls, [['lane', 'C:\\b', 'feat/x']]);
+  const long = await t.c.act({ action: 'new-lane', key: 'c:\\b', branch: `feat/${'x'.repeat(200)}` });
+  assert.deepStrictEqual(long, { ok: false, error: 'a branch name is at most 120 characters' });
+});
+
+test('New lane: a create that failed answers its error word for word; a throw is an error too', async () => {
+  const t = rig({ effects: { open() {}, goTo() {}, closeWindow() {}, showInExplorer() {}, chooseFolder() {}, stopSessions: async () => null,
+    newLane: async (root, branch) => (branch === 'feat/boom' ? Promise.reject(new Error('the window did not start')) : { ok: false, error: 'demo has no prefix: use feat/.' }) } });
+  t.c.sync();
+  assert.deepStrictEqual(await t.c.act({ action: 'new-lane', key: 'c:\\b', branch: 'demo' }), { ok: false, error: 'demo has no prefix: use feat/.' });
+  assert.deepStrictEqual(await t.c.act({ action: 'new-lane', key: 'c:\\b', branch: 'feat/boom' }), { ok: false, error: 'the window did not start' });
 });
 
 test('Dexter 5: a read that fails just now keeps the last good record, so the pins and the order do not flip', () => {

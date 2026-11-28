@@ -18,7 +18,8 @@ test('both Home channels answer only the Home window\'s own page, and a refused 
   const ipc = body('function registerHomeIpc() {');
   assert.match(ipc, /ipcMain\.on\('home:ready', \(e\) => \{ if \(homeWindow\.isSender\(e\.sender\)\) homeWindow\.send\(homeController\.model\(\)\); \}\);/);
   // an invoke, and the page hears main's answer (PR #263 Miguel Y3)
-  assert.match(ipc, /ipcMain\.handle\('home:act', \(e, msg\) => \{\s*if \(!homeWindow\.isSender\(e\.sender\)\) return \{ ok: false, error: 'not the Home page' \};\s*const r = homeController\.act\(msg\);/);
+  // async: Stop its sessions and New lane answer later (H-PR3), and a refusal is logged from the answer, not from a Promise
+  assert.match(ipc, /ipcMain\.handle\('home:act', async \(e, msg\) => \{\s*if \(!homeWindow\.isSender\(e\.sender\)\) return \{ ok: false, error: 'not the Home page' \};\s*const r = await homeController\.act\(msg\);/);
   assert.match(ipc, /if \(!r\.ok\) console\.log\([^\n]*\n\s*return r;/);
   assert.strictEqual((MAIN.match(/ipcMain\.(?:on|handle)\('home:/g) || []).length, 2, 'two channels, no more');
 });
@@ -65,6 +66,13 @@ test('Miguel B1: the Home window guards its navigation and denies every window o
 
 test('PR #263 Dexter 2: Home\'s session end is the project window\'s: quitting, and the crash record clean', () => {
   assert.match(MAIN, /onSessionEnd: \(\) => \{ quitting = true; markRecordClean\(\); \},/);
+});
+
+test('H-PR3: Stop its sessions is `--stop`\'s loop with its deps; New lane is the strip\'s + in the project\'s own window', () => {
+  assert.match(MAIN, /stopSessions: async \(root\) => \{\s*const rep = await stopFolder\(\{ folder: root \}, \{ list: \(\) => listBackground\(\), stopHost: \(row\) => stopHost\(\{ row \}, hostStopDeps\(\)\) \}\);/);
+  assert.match(MAIN, /return \{ stopped: ended, kept: rep\.kept, late: rep\.late, verified: rep\.verified === true,/);
+  assert.match(MAIN, /newLane: async \(root, branch\) => \{\s*const o = await openProject\(\{ cwd: root, show: 'shown' \}\);/);
+  assert.match(MAIN, /const shell = w && w\.tabShell;[\s\S]{0,300}return shell\.createWorktree\(branch\);/);
 });
 
 test('Home\'s close follows the project window\'s rule (H5): it hides only with minimise-on-close, a tray, and no quit under way', () => {

@@ -45,6 +45,15 @@
     .lane { font-size: 11px; padding: 1px 7px; border-radius: 10px; }
     .lane.needs { border-color: var(--accent); color: var(--accent); }
     .actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; }
+    /* H-PR3: the card's own question (H8, no popup), its New lane form, and its last note */
+    .confirm, .lane-form { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 2px; }
+    .confirm .question { flex: 1 1 100%; color: var(--accent); }
+    button.danger { border-color: var(--bad); color: var(--bad); }
+    .lane-form select, .lane-form input { background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 4px;
+      padding: 4px 6px; font: inherit; }
+    .lane-form input { flex: 1 1 120px; min-width: 0; }
+    .lane-form select:focus, .lane-form input:focus { outline: none; border-color: var(--accent); }
+    .card-note { color: var(--dim); font-size: 12px; }
     .empty { color: var(--dim); padding: 40px 0; text-align: center; grid-column: 1 / -1; }
     footer { color: var(--dim); font-size: 11px; padding: 6px 16px; border-top: 1px solid var(--border); flex: 0 0 auto; }
   </style>
