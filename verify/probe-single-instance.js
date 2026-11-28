@@ -12,7 +12,8 @@
  *   3  a relaunch from A's feat-a folder exits 0; A selects feat/a; still two windows
  *   4  a launch WITHOUT the single-instance flag on C runs its own process and leaves <uiState>\app.json untouched
  *   5  two launches at once on D and E against the running owner: both exit 0, four windows, one pid. Then, from nothing (a fresh state
- *      folder), two launches started together on F and G end as one process with both windows
+ *      folder), two launches started together on F and G end as one process with both windows; that fresh folder is another install
+ *      (its app lock is its own), so it runs its own process beside A's owner, each with its own app.json (DESIGN §6)
  *   6  tray (CLAUDE_CUSTOM_TRAY_PROBE=1): one tray; tooltip `Jiandu · 2 windows · N sessions`; a row per window; a row click on a hidden
  *      window shows it. (A cue raised in one window is NOT run: a probe host has no session that can raise one.)
  *   7  unsaved text in A and B (reader-unsaved), graceful quit: exactly one quit question naming both (the probe answers discard), exit 0,
@@ -38,7 +39,7 @@ const path = require('path');
 const ROOT = path.join(__dirname, '..');
 const HARNESS_DIR = path.join(ROOT, '.harness');
 const { createHygieneRegistry } = require('./lib/process-hygiene');
-const { readIdentity } = require(path.join(ROOT, 'host', 'host-identity'));
+const { hostsUnder } = require('./lib/run-hosts');
 const { startTimes } = require(path.join(ROOT, 'host', 'proc-start'));
 const { tmpDir } = require(path.join(ROOT, 'test', 'tmp-dir'));
 
@@ -131,20 +132,18 @@ function command(app, cmd, timeoutMs = 30000) {
 }
 
 const seenPids = require(path.join(ROOT, 'verify', 'lib', 'seen-pids')).createSeenPids();
-function hostsOfThisRun() {
-  const out = [];
-  let files = [];
-  try { files = fs.readdirSync(path.join(HARNESS_DIR, 'hosts')).filter(f => f.endsWith('.json')); } catch { return out; }
-  const inside = path.resolve(tmp).toLowerCase() + path.sep;
-  for (const f of files) {
-    const id = readIdentity({ dir: HARNESS_DIR, port: Number(f.replace(/\.json$/, '')) });
-    if (id && path.resolve(id.cwd).toLowerCase().startsWith(inside)) out.push(id);
-  }
-  return out;
-}
+// The host files carry the start time the host wrote; readIdentity drops it, which left this run's hosts running (verify/lib/run-hosts.js).
+const hostsOfThisRun = () => hostsUnder(HARNESS_DIR, tmp);
 function killEverything() {
   for (const id of hostsOfThisRun()) seenPids.add(id.pid, id.processStartedAt);
   seenPids.endAll();
+}
+// After the cleanup: a host of this run whose pid still runs with the start time it wrote is a leak.
+async function hostsStillRunning() {
+  const ids = hostsOfThisRun().filter((h) => h.processStartedAt !== null && isRunning(h.pid));
+  if (ids.length === 0) return [];
+  const starts = await startTimes(ids.map((h) => h.pid));
+  return ids.filter((h) => starts && starts.get(h.pid) === h.processStartedAt);
 }
 hygiene.addCleanup(killEverything);
 
@@ -262,6 +261,14 @@ async function cases1to5() {
   if (keepers.length === 1) {
     const wk = await waitFor(async () => { const w = await windowsOf(keepers[0]); return w && w.windows.length === 2 ? w : null; }, 150000);
     check('5: ...and the one process has both windows', !!wk, JSON.stringify(wk && wk.windows.map((w) => path.basename(w.root))));
+    // DESIGN_SINGLE_INSTANCE.md §6 "a build from another install runs its own process": an install's app lock is its state folder
+    // (host/app-lock-config.js), so the fresh folder IS another install. A's owner is still running on its own folder, and neither
+    // took the other's launch: two processes, each holding its own app.json.
+    const a5 = readJson(appJson);
+    const f5 = readJson(path.join(ui2, 'app.json'));
+    check('5: another install (its own state folder) runs its own process while A\'s owner runs, each holding its own app.json',
+      !app1.exited && !keepers[0].exited && keepers[0].child.pid !== app1.child.pid && !!a5 && a5.pid === app1.child.pid && !!f5 && f5.pid === keepers[0].child.pid,
+      JSON.stringify({ a: a5 && a5.pid, fresh: f5 && f5.pid, owner: app1.child.pid, keeper: keepers[0].child.pid }));
   }
   return [app1, app2, app3, app4, d5, e5, ...pair];
 }
@@ -437,8 +444,11 @@ async function main() {
 
 main()
   .catch((err) => { console.log('FAIL  the probe threw: ' + ((err && err.stack) || err)); failures++; })
-  .finally(() => {
+  .finally(async () => {
     killEverything();
+    let left = [];
+    try { await sleep(2000); left = await hostsStillRunning(); } catch (err) { left = [{ pid: `unknown (${err && err.message})` }]; }
+    check('every host this probe\'s projects started has ended (pid + the start time it wrote)', left.length === 0, left.map((h) => `${h.pid} ${h.cwd || ''}`).join(', '));
     console.log(failures === 0 ? 'ALL PASS' : `${failures} FAILED`);
     process.exit(failures === 0 ? 0 : 1);
   });
