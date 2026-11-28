@@ -252,6 +252,29 @@ test('readFresh: null only when the file could not be read just now (EBUSY / EPE
   assert.strictEqual(home.readFresh(), null);
 });
 
+test('PR #263 Dexter 6 / Miguel G4: readFresh reads the file ONCE; ok then unreadable cannot become an empty record', () => {
+  let calls = 0;
+  const states = [
+    { status: 'ok', value: { version: 1, projects: [], pins: ['C:\\a'], removed: [] } },
+    { status: 'unreadable', value: null, error: new Error('EBUSY') },
+  ];
+  const store = { readState: () => states[Math.min(calls++, states.length - 1)], write: () => {}, withLock: (n, fn) => fn() };
+  const home = createHomeRecord({ store, keyOf, projectOf });
+  assert.deepStrictEqual(home.readFresh(), { projects: [], pins: ['C:\\a'], removed: [] }, 'the answer is the read it checked');
+  assert.strictEqual(calls, 1, 'one read');
+  assert.strictEqual(home.readFresh(), null, 'the next read is unreadable: null, never EMPTY');
+});
+
+test('PR #263 Dexter 6: a damaged file is still logged once by readFresh', () => {
+  const lines = [];
+  const store = { readState: () => ({ status: 'corrupt', value: null }), write: () => {}, withLock: (n, fn) => fn() };
+  const home = createHomeRecord({ store, keyOf, projectOf, log: (l) => lines.push(l) });
+  home.readFresh();
+  home.readFresh();
+  assert.strictEqual(lines.length, 1);
+  assert.match(lines[0], /corrupt/);
+});
+
 test('a store whose lock cannot be taken answers null and logs, never throws', () => {
   const store = { readState: () => ({ status: 'missing', value: null }), write: () => {}, withLock: () => { throw new Error('busy'); } };
   const lines = [];

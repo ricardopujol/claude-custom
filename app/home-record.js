@@ -90,6 +90,12 @@ function createHomeRecord({ store, keyOf = normPath, projectOf = realProjectOf, 
   function load() {
     let st;
     try { st = store.readState(STORE_KEY); } catch (err) { return { error: `unreadable (${err && err.message})` }; }
+    return loadFrom(st);
+  }
+
+  /** load() on a readState already read (readFresh checks and answers from ONE read: PR #263 Dexter 6). */
+  function loadFrom(st) {
+    if (!isObject(st)) return { error: 'unreadable (no state)' };
     if (st.status === 'missing') return { record: EMPTY() };
     if (st.status !== 'ok') return { error: st.status };
     if (!isObject(st.value)) return { error: 'not a record' };
@@ -101,8 +107,9 @@ function createHomeRecord({ store, keyOf = normPath, projectOf = realProjectOf, 
 
   // The damage last said in the log (Miguel G2): read() runs on every Home push, so it is said once, and again only after a good read.
   let saidDamage = null;
-  function read() {
-    const r = load();
+  function read() { return answer(load()); }
+
+  function answer(r) {
     if (!r.error) { saidDamage = null; return r.record; }
     if (!r.error.startsWith('unreadable') && r.error !== saidDamage) {
       saidDamage = r.error;
@@ -111,12 +118,13 @@ function createHomeRecord({ store, keyOf = normPath, projectOf = realProjectOf, 
     return EMPTY();
   }
 
-  /** read(), but null when the file could not be read just now (EBUSY / EPERM): the caller keeps its last good record (Dexter 5). */
+  /** read(), but null when the file could not be read just now (EBUSY / EPERM): the caller keeps its last good record (Dexter 5).
+   *  ONE read: the answer comes from the state it checked, so a second read failing cannot hand back an empty record (PR #263 Dexter 6). */
   function readFresh() {
     let st;
     try { st = store.readState(STORE_KEY); } catch { return null; }
-    if (st && st.status === 'unreadable') return null;
-    return read();
+    if (!isObject(st) || st.status === 'unreadable') return null;
+    return answer(loadFrom(st));
   }
 
   /** One edit on a fresh locked read: fn(record, key) -> the next record. Null when it was refused or failed. */
