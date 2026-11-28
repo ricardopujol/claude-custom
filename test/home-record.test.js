@@ -6,17 +6,15 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
+const { tmpDir } = require('./tmp-dir');
+const { mainOnly } = require('./main-source');
 const { createStore } = require('../host/store');
 const { createHomeRecord, STORE_KEY, MAX_PROJECTS, MAX_LIST } = require('../app/home-record');
 
 const keyOf = (p) => (typeof p === 'string' && p ? p.replace(/[\\/]+$/, '').toLowerCase() : null);
-const made = [];
-test.after(() => { for (const d of made) fs.rmSync(d, { recursive: true, force: true }); });
 function setup({ start = 1000 } = {}) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'home-record-'));
-  made.push(dir);
+  const dir = tmpDir('home-record-');
   const store = createStore({ dir });
   let t = start;
   const lines = [];
@@ -149,8 +147,7 @@ test('a store whose lock cannot be taken answers null and logs, never throws', (
 });
 
 test('main records each project window that started (the lifecycle afterStart), and a failed record never costs the window', () => {
-  const src = fs.readFileSync(path.join(__dirname, '..', 'app', 'main.js'), 'utf8')
-    .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*/gm, '');
+  const src = mainOnly({ strip: true });
   assert.match(src, /const homeRecord = createHomeRecord\(\{ store: uiStore,/);
   const fn = /function recordOpened\(pw\) \{([\s\S]*?)\n\}/.exec(src);
   assert.ok(fn, 'main has a recordOpened(pw)');
