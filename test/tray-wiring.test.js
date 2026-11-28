@@ -61,7 +61,8 @@ test('start minimised: the window is created without being shown, only when star
 });
 
 test('the tray\'s "hidden" is any window hidden, as hideAll and showAll act on every window (PR #256 Dexter 6)', () => {
-  assert.match(MAIN, /isHidden: \(\) => anyWindowHidden\(registry\.list\(\)\.map\(\(p\) => p\.win\)\),/);
+  // Jiandu Home is one of those windows (PR #263 Dexter 7, the open question's default)
+  assert.match(MAIN, /isHidden: \(\) => anyWindowHidden\(\[\.\.\.registry\.list\(\)\.map\(\(p\) => p\.win\), \.\.\.\(homeWindow\.isOpen\(\) \? \[homeWindow\.win\(\)\] : \[\]\)\]\),/);
 });
 
 test('the tray follows the shell and goes with the app', () => {
@@ -81,8 +82,8 @@ test('the menu actions: Stop is the ▾ menu\'s own (it asks), Quit is app.quit,
   assert.match(actions, /background: \(\) => appBackgroundModel\(\),/);
   assert.doesNotMatch(actions, /stopHost\(/);
   assert.match(actions, /quit: \(\) => app\.quit\(\),/);
-  assert.match(actions, /hideAll: \(\) => registry\.forEach\(\(p\) => \{ const w = p\.win; if \(w && !w\.isDestroyed\(\)\) w\.hide\(\); \}\)/);
-  assert.match(actions, /showAll: \(\) => registry\.forEach\(\(p\) => p\.focusWindow\(\)\)/);
+  assert.match(actions, /hideAll: \(\) => \{ registry\.forEach\(\(p\) => \{ const w = p\.win; if \(w && !w\.isDestroyed\(\)\) w\.hide\(\); \}\); const h = homeWindow\.win\(\); if \(h\) h\.hide\(\); \}/);
+  assert.match(actions, /showAll: \(\) => \{ if \(homeWindow\.isOpen\(\)\) homeWindow\.show\(\); registry\.forEach\(\(p\) => p\.focusWindow\(\)\); \}/);
   // Open on a session with no window: a window in this process (DESIGN_TABS_SESSIONS.md 3.4), through main's one open
   assert.match(actions, /openBackground: \(o\) => \(o && typeof o\.cwd === 'string' \? openProject\(\{ cwd: o\.cwd, port: o\.port, show: 'shown' \}\) : undefined\),/);
   assert.match(actions, /setStartMinimised: on => \{ writeTraySetting\(uiStore, 'startMinimised', on === true\); \}/);

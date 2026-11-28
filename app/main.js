@@ -425,7 +425,8 @@ function startTray() {
     windows: () => registry.list().map((p) => ({ root: p.root, label: p.label, tabs: p.tabShell ? p.tabShell.snapshot().tabs : [] })),
     lastUsed: () => { const w = registry.lastUsed(); return w ? w.root : null; },
     // ANY window hidden: hideAll / showAll act on every window, so the menu must offer "Show all" while one of them is hidden (PR #256 Dexter 6)
-    isHidden: () => anyWindowHidden(registry.list().map((p) => p.win)),
+    // Jiandu Home counts as a window here (PR #263 Dexter 7; an open question, the default built): Show all / Hide all act on it too
+    isHidden: () => anyWindowHidden([...registry.list().map((p) => p.win), ...(homeWindow.isOpen() ? [homeWindow.win()] : [])]),
     background: () => appBackgroundModel(),
     now: () => Date.now(),
     log: (...a) => console.log(...a),
@@ -445,8 +446,9 @@ function startTray() {
         w.focusWindow();
         w.backgroundActions.stop(row).catch(() => {});
       },
-      hideAll: () => registry.forEach((p) => { const w = p.win; if (w && !w.isDestroyed()) w.hide(); }),
-      showAll: () => registry.forEach((p) => p.focusWindow()),
+      hideAll: () => { registry.forEach((p) => { const w = p.win; if (w && !w.isDestroyed()) w.hide(); }); const h = homeWindow.win(); if (h) h.hide(); },
+      // Home first, so a project window ends in front
+      showAll: () => { if (homeWindow.isOpen()) homeWindow.show(); registry.forEach((p) => p.focusWindow()); },
       setStartMinimised: on => { writeTraySetting(uiStore, 'startMinimised', on === true); },
       // Unsaved reader text asks Save / Discard / Cancel on the window, so that window has to be visible to be answered.
       // The one quit question (app/quit-gate.js, before-quit) sits on a dirty window, shown first: the tray only asks to quit.
