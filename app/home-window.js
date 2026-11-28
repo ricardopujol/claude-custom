@@ -12,10 +12,11 @@
  *
  * Not a project window: the registry never holds it, but Electron's window-all-closed counts it, which gives H5 with no new rule (Home
  * closes; with no window left Jiandu quits). With minimise-on-close (hidesOnClose(), app/tray-model.js) a close hides it to the tray.
- * Its size and place are kept in uiStore under STORE_KEY (saved on every close and hide; app/home-bounds.js decides whether they are
- * used). Secure by construction: context isolation, no Node, a sandbox, its own preload with two members (app/preload-home.js).
+ * Its size and place are kept in uiStore under STORE_KEY (saved on every close and hide: the normal bounds and a `maximized` flag;
+ * app/home-bounds.js decides whether they are used). Secure by construction: context isolation, no Node, a sandbox, its own preload
+ * with two members (app/preload-home.js), every navigation refused and every window open denied (app/nav-guard.js).
  *
- * deps: BrowserWindow, screen, store (uiStore), preload, page, forProbe(opts), hidesOnClose(), onChanged(), log.
+ * deps: BrowserWindow, screen, store (uiStore), preload, page, forProbe(opts), hidesOnClose(), onChanged(), onSessionEnd(), log.
  */
 
 const { boundsToUse, boundsToSave, DEFAULT_SIZE, MIN_SIZE } = require('./home-bounds');
@@ -24,7 +25,8 @@ const { guardNavigation } = require('./nav-guard');
 const STORE_KEY = 'home-window';
 const TITLE = 'Jiandu Home';
 
-function createHomeWindow({ BrowserWindow, screen, store, preload, page, forProbe = (o) => o, hidesOnClose = () => false, onChanged = () => {}, log = () => {} }) {
+function createHomeWindow({ BrowserWindow, screen, store, preload, page, forProbe = (o) => o, hidesOnClose = () => false, onChanged = () => {},
+  onSessionEnd = () => {}, log = () => {} }) {
   let win = null;
   const alive = () => !!win && !win.isDestroyed();
   const changed = () => { try { onChanged(); } catch (err) { log(`[main] home: onChanged threw: ${err && err.message}`); } };
@@ -34,19 +36,22 @@ function createHomeWindow({ BrowserWindow, screen, store, preload, page, forProb
     try { areas = screen.getAllDisplays().map((d) => d.workArea); } catch { areas = []; }
     let rec = null;
     try { rec = store.read(STORE_KEY, {}); } catch { rec = null; }
-    return boundsToUse(rec && rec.bounds, areas);
+    return { bounds: boundsToUse(rec && rec.bounds, areas), maximized: !!rec && rec.maximized === true };
   }
 
+  // A maximised Home keeps its NORMAL bounds and the flag (PR #263 Dexter 5): getBounds() of a maximised window is the screen.
   function saveBounds() {
     if (!alive()) return;
-    const b = boundsToSave(win.getBounds());
+    let maximized = false;
+    try { maximized = typeof win.isMaximized === 'function' && win.isMaximized() === true; } catch { maximized = false; }
+    const b = boundsToSave(maximized && typeof win.getNormalBounds === 'function' ? win.getNormalBounds() : win.getBounds());
     if (!b) return;
-    try { store.update(STORE_KEY, {}, (prev) => ({ ...(prev && typeof prev === 'object' && !Array.isArray(prev) ? prev : {}), bounds: b })); }
+    try { store.update(STORE_KEY, {}, (prev) => ({ ...(prev && typeof prev === 'object' && !Array.isArray(prev) ? prev : {}), bounds: b, maximized })); }
     catch (err) { log(`[main] home: could not keep its size and place: ${err && err.message}`); }
   }
 
   function make(hidden) {
-    const b = savedBounds();
+    const { bounds: b, maximized } = savedBounds();
     win = new BrowserWindow(forProbe({
       ...(b ? { x: b.x, y: b.y, width: b.width, height: b.height } : { width: DEFAULT_SIZE.width, height: DEFAULT_SIZE.height }),
       minWidth: MIN_SIZE.width,
@@ -70,6 +75,11 @@ function createHomeWindow({ BrowserWindow, screen, store, preload, page, forProb
     });
     w.on('closed', () => { if (win === w) win = null; changed(); });
     for (const ev of ['show', 'hide', 'minimize', 'restore']) w.on(ev, changed);
+    // Windows ends the session (log off, shut down): a clean quit, as a project window says it (PR #263 Dexter 2). A Home-only process
+    // has no project window to hear it, and a Home hidden to the tray must not stand in the session end's way.
+    w.on('session-end', () => { try { onSessionEnd(); } catch (err) { log(`[main] home: session-end threw: ${err && err.message}`); } });
+    // maximize() shows a window, so a Home made hidden (Start minimised) maximises at its first show
+    if (maximized) { if (hidden === true) w.once('show', () => { if (!w.isDestroyed()) w.maximize(); }); else w.maximize(); }
     w.loadFile(page);
   }
 

@@ -28,6 +28,9 @@ class FakeWin extends EventEmitter {
     this.webContents = wc;
   }
   loadFile(f) { this.loaded = f; }
+  isMaximized() { return this.maximized === true; }
+  maximize() { this.maximized = true; this.visible = true; }
+  getNormalBounds() { return { ...(this.normal || this.bounds) }; }
   isDestroyed() { return this.destroyed; }
   isVisible() { return this.visible; }
   isMinimized() { return this.minimized; }
@@ -94,10 +97,48 @@ test('the size and place are kept: saved on close, used at the next show (the br
   t.hw.show();
   FakeWin.made[0].bounds = { x: 200, y: 100, width: 1000, height: 700 };
   FakeWin.made[0].close();
-  assert.deepStrictEqual(t.saved[STORE_KEY], { bounds: { x: 200, y: 100, width: 1000, height: 700 } });
+  assert.deepStrictEqual(t.saved[STORE_KEY], { bounds: { x: 200, y: 100, width: 1000, height: 700 }, maximized: false });
   t.hw.show();
   const o = FakeWin.made[1].opts;
   assert.deepStrictEqual([o.x, o.y, o.width, o.height], [200, 100, 1000, 700]);
+});
+
+test('PR #263 Dexter 5: a Home closed maximised keeps its normal size and place, and opens maximised again', () => {
+  const t = rig();
+  t.hw.show();
+  const w = FakeWin.made[0];
+  w.maximized = true;
+  w.normal = { x: 100, y: 100, width: 900, height: 600 };
+  w.bounds = { x: -8, y: -8, width: 1936, height: 1056 };     // Electron's maximised framed window on Windows
+  w.close();
+  assert.deepStrictEqual(t.saved[STORE_KEY], { bounds: { x: 100, y: 100, width: 900, height: 600 }, maximized: true });
+  t.hw.show();
+  const o = FakeWin.made[1].opts;
+  assert.deepStrictEqual([o.x, o.y, o.width, o.height], [100, 100, 900, 600]);
+  assert.strictEqual(FakeWin.made[1].maximized, true, 'maximised again');
+  FakeWin.made[1].maximized = false;
+  FakeWin.made[1].close();
+  assert.strictEqual(t.saved[STORE_KEY].maximized, false);
+});
+
+test('PR #263 Dexter 5: a maximised Home made hidden (Start minimised) maximises at its first show, not before', () => {
+  const t = rig();
+  t.saved[STORE_KEY] = { bounds: { x: 100, y: 100, width: 900, height: 600 }, maximized: true };
+  t.hw.show({ hidden: true });
+  const w = FakeWin.made[0];
+  assert.strictEqual(w.maximized, undefined, 'maximize() would show it');
+  assert.strictEqual(w.visible, false);
+  t.hw.show();
+  w.emit('show');
+  assert.strictEqual(w.maximized, true);
+});
+
+test('PR #263 Dexter 2: Home hears the Windows session end as a project window does (a log off is a clean quit)', () => {
+  let ended = 0;
+  const t = rig({ onSessionEnd: () => { ended++; } });
+  t.hw.show();
+  FakeWin.made[0].emit('session-end');
+  assert.strictEqual(ended, 1);
 });
 
 test('saved bounds off every screen are not used: the default size, centred by Electron', () => {

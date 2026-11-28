@@ -39,6 +39,12 @@ test('anything that is not four strict whole numbers is no bounds (Number(null) 
   assert.strictEqual(boundsToUse({ x: 0, y: 0, width: 900, height: 600 }, null), null, 'no screens: no bounds');
 });
 
+test('PR #263 Dexter 5: Electron\'s -8 px maximised edge is allowed: moved onto the screen, not refused', () => {
+  assert.deepStrictEqual(boundsToUse({ x: -8, y: -8, width: 1936, height: 1056 }, [AREA]), { x: 0, y: 0, width: 1920, height: 1040 });
+  assert.deepStrictEqual(boundsToUse({ x: 1912, y: -8, width: 1000, height: 700 }, [AREA, RIGHT]), { x: 1920, y: 0, width: 1000, height: 700 });
+  assert.strictEqual(boundsToUse({ x: 100, y: -9, width: 900, height: 600 }, [AREA]), null, 'past the edge is still off the screen');
+});
+
 test('boundsToSave keeps the four numbers and nothing else', () => {
   assert.deepStrictEqual(boundsToSave({ x: 5, y: 6, width: 900, height: 600, extra: 1 }), { x: 5, y: 6, width: 900, height: 600 });
   assert.deepStrictEqual(DEFAULT_SIZE, { width: 980, height: 680 });

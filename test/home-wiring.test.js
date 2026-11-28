@@ -44,6 +44,10 @@ test('Miguel B1: the Home window guards its navigation and denies every window o
   assert.match(src, /w\.webContents\.setWindowOpenHandler\(\(\) => \(\{ action: 'deny' \}\)\);/);
 });
 
+test('PR #263 Dexter 2: Home\'s session end is the project window\'s: quitting, and the crash record clean', () => {
+  assert.match(MAIN, /onSessionEnd: \(\) => \{ quitting = true; markRecordClean\(\); \},/);
+});
+
 test('Home\'s close follows the project window\'s rule (H5): it hides only with minimise-on-close, a tray, and no quit under way', () => {
   assert.match(MAIN, /hidesOnClose: \(\) => hidesOnClose\(\{ settings: readTraySettings\(uiStore\), trayExists: !!trayController && trayController\.state\(\)\.exists, quitting \}\),/);
 });

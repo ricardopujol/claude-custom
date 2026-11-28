@@ -462,6 +462,8 @@ const homeWindow = createHomeWindow({
   preload: path.join(__dirname, 'preload-home.js'), page: path.join(__dirname, 'home.html'), forProbe,
   hidesOnClose: () => hidesOnClose({ settings: readTraySettings(uiStore), trayExists: !!trayController && trayController.state().exists, quitting }),
   onChanged: () => windowsChanged(),
+  // the project window's session-end rule (sessionEnded below): quitting, so a hidden Home closes, and the record clean (PR #263 Dexter 2)
+  onSessionEnd: () => { quitting = true; markRecordClean(); },
   log: (l) => console.log(l),
 });
 // What a project window tells Home: its tabs, how many need you, and its lanes (the tabs of its worktrees, not side or shell tabs).
