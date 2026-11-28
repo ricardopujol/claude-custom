@@ -228,7 +228,7 @@ main()
   .then((apps) => { all = apps; })
   .catch((err) => { console.log('FAIL  the probe threw: ' + ((err && err.stack) || err)); failures++; })
   .finally(async () => {
-    for (const a of all) if (a && !a.exited) { try { process.kill(a.child.pid); } catch { /* gone */ } }
+    for (const a of all) if (a && !a.exited) { try { process.kill(a.child.pid); } catch { /* gone */ } }   // kill-ok(held-handle): this probe's own Electron child, its handle still held (it has not exited)
     killEverything();
     console.log(failures === 0 ? 'ALL PASS' : `${failures} FAILED`);
     process.exit(failures === 0 ? 0 : 1);

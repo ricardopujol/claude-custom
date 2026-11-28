@@ -42,7 +42,7 @@ test('a probe window has no tray (a killed Electron leaves a ghost icon) unless 
 
 test('close hides to the tray only through hidesOnClose, ahead of the unsaved-text guard, and a quit closes', () => {
   const close = MAIN.slice(MAIN.indexOf("win.on('close'"), MAIN.indexOf("win.on('closed'"));
-  const hide = close.indexOf('hidesOnClose(');
+  const hide = close.indexOf('if (hidesOnClose(');      // `if (`: Jiandu Home's window (app/main.js) calls hidesOnClose too
   assert.ok(hide !== -1);
   assert.ok(hide < close.indexOf('closeGuarded ||'), 'the hide decision comes first: hiding loses nothing, so no question');
   assert.match(close, /const tray = getTray\(\);\s*if \(hidesOnClose\(\{ settings: readTraySettings\(uiStore\), trayExists: !!tray && tray\.state\(\)\.exists, quitting: isQuitting\(\) \}\)\)/);

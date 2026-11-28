@@ -33,6 +33,10 @@ test('every open from Home takes the one open path (the queue), shown; the tray 
   assert.match(MAIN, /function showHome\(\{ hidden = false \} = \{\}\) \{\s*homeWindow\.show\(\{ hidden \}\);\s*homeController\.refresh\(\)\.catch\(\(\) => \{\}\);\s*\}/);
 });
 
+test('Show in Explorer goes through app/file-link.js (#37: a folder opens; nothing handed to the OS is ever run)', () => {
+  assert.match(MAIN, /showInExplorer: \(root\) => \{\s*fileLink\.open\(root, root, fileFs, shell\)\.then\(/);
+});
+
 test('Home\'s close follows the project window\'s rule (H5): it hides only with minimise-on-close, a tray, and no quit under way', () => {
   assert.match(MAIN, /hidesOnClose: \(\) => hidesOnClose\(\{ settings: readTraySettings\(uiStore\), trayExists: !!trayController && trayController\.state\(\)\.exists, quitting \}\),/);
 });

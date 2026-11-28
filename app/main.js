@@ -486,7 +486,11 @@ const homeController = createHomeController({
     open: (cwd) => { openProject({ cwd, show: 'shown' }).catch(() => {}); },
     goTo: (root) => { const w = registry.get(root); if (w) w.focusWindow(); },
     closeWindow: (root) => { const w = registry.get(root); const bw = w && w.win; if (bw && !bw.isDestroyed()) bw.close(); },
-    showInExplorer: (root) => { shell.openPath(root).then((err) => { if (err) console.log(`[main] home: Show in Explorer: ${err}`); }); },
+    // through app/file-link.js, as every path handed to the OS is (#37: a folder opens in Explorer, nothing is ever run)
+    showInExplorer: (root) => {
+      fileLink.open(root, root, fileFs, shell).then((r) => { if (!r || r.ok !== true) console.log(`[main] home: Show in Explorer: ${r && r.why}`); },
+        (err) => console.log(`[main] home: Show in Explorer: ${err && err.message}`));
+    },
     chooseFolder: () => {
       const parent = homeWindow.win();
       const ask = { title: 'Choose a folder', properties: ['openDirectory'] };
