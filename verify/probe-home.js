@@ -209,11 +209,16 @@ const readJson = (f) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); }
 
 const homeOf = async (app) => { const r = await command(app, { cmd: 'home' }); return r && r.ok ? r : null; };
 const windowsOf = async (app) => { const r = await command(app, { cmd: 'windows' }); return r && r.ok !== false ? r : null; };
-const keysOf = (h) => (h && h.dom ? h.dom.cards.map((c) => c.key) : []);
+// This run's projects only: a host another lane's probe left running shows on Home as a windowless card of its own.
+const runKeys = new Set();
+const ours = (h) => (h && h.dom ? h.dom.cards.filter((c) => runKeys.has(c.key)) : []);
+const keysOf = (h) => ours(h).map((c) => c.key);
 
 async function main() {
   const A = makeProject('alpha');
   const B = makeProject('beta');
+  runKeys.add(A.key);
+  runKeys.add(B.key);
   const now = Date.now();
   fs.writeFileSync(path.join(uiState, 'home-projects.json'), JSON.stringify({
     version: 1, projects: [{ root: A.container, lastOpened: now - 1000 }, { root: B.container, lastOpened: now - 2000 }], pins: [], removed: [],
@@ -221,7 +226,7 @@ async function main() {
 
   // 1
   const app = await launchHome();
-  const h1 = await waitFor(async () => { const h = await homeOf(app); return h && h.open && h.dom && h.dom.cards.length === 2 ? h : null; }, 60000, 500);
+  const h1 = await waitFor(async () => { const h = await homeOf(app); return h && h.open && h.dom && ours(h).length === 2 ? h : null; }, 60000, 500);
   check('1: a --home launch shows Home', !!h1, app.out.slice(-600));
   check('1: ...the real page: its title, and the display\'s one global name (the IIFE loaded in a real window)',
     !!h1 && h1.dom.title === 'Jiandu Home' && h1.dom.homeDisplay === 'object', JSON.stringify(h1 && h1.dom));
@@ -235,7 +240,7 @@ async function main() {
   await sleep(1500);
   const h1b = await homeOf(app);
   check('1b: the page tried to leave (a dropped link) and was refused: still home.html, its bridge and its cards',
-    !!nav && nav.ok === true && !!h1b && !!h1b.dom && h1b.dom.title === 'Jiandu Home' && /home\.html$/.test(h1b.dom.url) && h1b.dom.cards.length === 2,
+    !!nav && nav.ok === true && !!h1b && !!h1b.dom && h1b.dom.title === 'Jiandu Home' && /home\.html$/.test(h1b.dom.url) && ours(h1b).length === 2,
     JSON.stringify({ nav, dom: h1b && h1b.dom && { title: h1b.dom.title, url: h1b.dom.url, cards: h1b.dom.cards.length } }));
   check('1b: ...and main logged the refusal', /tried to navigate \(will-(?:frame-)?navigate\) and was refused/.test(app.out), app.out.slice(-400));
   const lock = await command(app, { cmd: 'appLock' });
@@ -285,7 +290,7 @@ async function main() {
   const shut = await waitFor(async () => { const h = await command(app, { cmd: 'home' }); return h && h.ok && h.open === false ? h : null; }, 10000, 200);
   check('3c: ...Home closed, and the process stays (A\'s window)', !!shut && !app.exited, JSON.stringify(shut));
   await command(app, { cmd: 'homeShow' });
-  const h3d = await waitFor(async () => { const h = await homeOf(app); return h && h.open && h.dom && h.dom.cards.length === 2 ? h : null; }, 20000, 300);
+  const h3d = await waitFor(async () => { const h = await homeOf(app); return h && h.open && h.dom && ours(h).length === 2 ? h : null; }, 20000, 300);
   check('3c: ...shown again: every card, and an empty filter box (main and the page agree)', !!h3d && h3d.dom.filter === '' && !h3d.dom.empty,
     JSON.stringify(h3d ? { filter: h3d.dom.filter, empty: h3d.dom.empty } : ((await homeOf(app)) || {}).dom));
 
@@ -331,10 +336,10 @@ async function main() {
 
   // 5
   await command(app, { cmd: 'homeType', text: 'bet' });
-  const h5 = await waitFor(async () => { const h = await homeOf(app); return h && h.dom && h.dom.cards.length === 1 ? h : null; }, 10000, 200);
+  const h5 = await waitFor(async () => { const h = await homeOf(app); return h && h.dom && ours(h).length === 1 ? h : null; }, 10000, 200);
   check('5: typing in the filter keeps the matching card', JSON.stringify(keysOf(h5)) === JSON.stringify([B.key]), JSON.stringify(keysOf(h5)));
   await command(app, { cmd: 'homeType', text: '' });
-  const h5b = await waitFor(async () => { const h = await homeOf(app); return h && h.dom && h.dom.cards.length === 2 ? h : null; }, 10000, 200);
+  const h5b = await waitFor(async () => { const h = await homeOf(app); return h && h.dom && ours(h).length === 2 ? h : null; }, 10000, 200);
   check('5: ...clearing it brings both back', !!h5b);
 
   // 6

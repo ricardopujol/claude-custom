@@ -30,10 +30,10 @@ const { menuModel } = require('../app/background-menu');
 const { windowlessItems } = require('../app/tray-model');
 
 function rig({ rows = [], stopAnswer = () => ({ outcome: 'stopped', text: 'Stopped.' }), time = 1000 } = {}) {
-  const s = { rows, time, stopped: [], opened: [], reads: 0, verified: true, tabs: new Map() };
+  const s = { rows, time, stopped: [], opened: [], reads: 0, verified: true, doubts: [], tabs: new Map() };
   const shells = new Map();
   const a = createHomeActions({
-    readList: async () => { s.reads++; return { rows: s.rows, verified: s.verified }; },
+    readList: async () => { s.reads++; return { rows: s.rows, verified: s.verified, doubts: s.doubts }; },
     itemsOf: (list) => menuModel(list, { now: s.time, tabsByPort: s.tabs, projectRoot: null }).items,
     windowlessOf: (items) => windowlessItems({ items }),
     stopHost: async (r) => { s.stopped.push(r.pid); const ans = stopAnswer(r); if (ans instanceof Error) throw ans; return ans; },
@@ -124,9 +124,25 @@ test('R2-1 A: H\'s window count could not be read (windows: null) on the fresh r
 });
 
 test('R2-1 B: the fresh read is not verified (an empty unverified list): nothing is stopped, and it says the stop could not be checked', async () => {
-  const { t, r } = await askThenStop((x) => { x.s.rows = []; x.s.verified = false; });
+  // host/background-hosts.js when startTimes() is null: no rows, and a doubt for every claim (H's own cwd among them)
+  const { t, r } = await askThenStop((x) => { x.s.rows = []; x.s.verified = false; x.s.doubts = [{ install: 'C:\\cc\\dev', cwd: 'C:\\viral\\dev' }]; });
   assert.deepStrictEqual(t.s.stopped, []);
   assert.deepStrictEqual(r, { ok: false, asked: 1, stopped: 0, kept: 1, texts: ['the sessions could not be checked, so none was stopped'] });
+  const bare = await askThenStop((x) => { x.s.rows = []; x.s.verified = false; x.s.doubts = []; });
+  assert.strictEqual(bare.r.ok, false, 'unverified with no doubt named is no check either');
+  assert.deepStrictEqual(bare.t.s.stopped, []);
+});
+
+test('R2-1 B\': an unverified read whose every doubt is about ANOTHER card still checks this one (stop-folder\'s rule, by card); a doubt here or with no folder does not', async () => {
+  const other = await askThenStop((x) => { x.s.verified = false; x.s.doubts = [{ install: 'C:\\cc\\dev', cwd: 'C:\\elsewhere\\dev', file: 'f' }]; });
+  assert.deepStrictEqual(other.r, { ok: true, asked: 1, stopped: 1, kept: 0, texts: [] }, 'a stale file elsewhere never blocks this card');
+  for (const doubt of [{ install: 'C:\\cc\\dev', cwd: 'C:\\viral\\feat-z' }, { install: 'C:\\cc\\dev', cwd: null, file: 'f' }, { install: null, cwd: null }]) {
+    const { t, r } = await askThenStop((x) => { x.s.verified = false; x.s.doubts = [doubt]; });
+    assert.deepStrictEqual(t.s.stopped, [], JSON.stringify(doubt));
+    assert.deepStrictEqual(r, { ok: false, asked: 1, stopped: 0, kept: 1, texts: ['the sessions could not be checked, so none was stopped'] });
+  }
+  const noList = await askThenStop((x) => { x.s.verified = false; x.s.doubts = undefined; });
+  assert.strictEqual(noList.r.ok, false, 'unverified with no doubts list: not checked');
 });
 
 test('R2-1 C: H got its own window since the question: kept, "now has a window", no stop sent', async () => {

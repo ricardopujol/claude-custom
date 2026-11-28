@@ -69,6 +69,15 @@ function createHomeActions(deps) {
   const asks = new Map();         // token -> { key, ids, expires }
   const running = new Set();      // keys with a stop in flight
 
+  // A read that checked this card: verified, or every doubt names a folder on ANOTHER card (host/stop-folder.js doubtsAbout's rule, by
+  // card: one stale identity file elsewhere must not block every stop). A doubt with no folder could be about anything, this card too.
+  const checkedFor = (key, list) => {
+    if (!list || typeof list !== 'object' || !Array.isArray(list.rows)) return false;
+    if (list.verified === true) return true;
+    if (!Array.isArray(list.doubts) || list.doubts.length === 0) return false;     // unverified with no doubt named: nothing to go on
+    return list.doubts.every((d) => !!d && typeof d.cwd === 'string' && d.cwd !== '' && sessionKeyOf(d.cwd, { projectOf, keyOf }) !== key);
+  };
+
   const dropAsksOf = (key) => { for (const [t, a] of asks) if (a.key === key) asks.delete(t); };
 
   async function ask(key) {
@@ -96,7 +105,7 @@ function createHomeActions(deps) {
       // the fresh read. Only a VERIFIED one may say a session is gone (PR #265 Dexter R2-1): an unverified or failed read stops nothing
       let list;
       try { list = await readList(); } catch (err) { return none(`the sessions could not be read, so none was stopped: ${errText(err)}`); }
-      if (!list || list.verified !== true || !Array.isArray(list.rows)) return none('the sessions could not be checked, so none was stopped');
+      if (!checkedFor(key, list)) return none('the sessions could not be checked, so none was stopped');
       const items = itemsOf(list).filter((it) => it && hasId(it.row));
       const mine = new Map(selectRows(key, windowlessOf(items).map((it) => it.row), { projectOf, keyOf }).map((r) => [rowId(r), r]));
       const anyState = new Map(items.map((it) => [rowId(it.row), it]));
