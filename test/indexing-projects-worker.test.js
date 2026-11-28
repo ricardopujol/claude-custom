@@ -47,6 +47,14 @@ test('S21 projects: at most 20 recent projects come back', async () => {
   assert.strictEqual(recents.length, 20);
 });
 
+test('Jiandu Home: a caller may ask for more (Home reads 50); a limit that is not a whole number from 1 keeps 20', async () => {
+  const cwds = Array.from({ length: 25 }, (_, i) => `C:\\code\\p${String(i).padStart(2, '0')}`);
+  const root = projectsDirWith(cwds);
+  assert.strictEqual((await readRecentsOffThread({ projectsDir: root, limit: 50 })).length, 25);
+  assert.strictEqual((await readRecentsOffThread({ projectsDir: root, limit: 22 })).length, 22);
+  for (const limit of [0, -1, 2.5, '30', null]) assert.strictEqual((await readRecentsOffThread({ projectsDir: root, limit })).length, 20, String(limit));
+});
+
 test('S21 projects: with no projectsDir given the worker uses the default folder (CLAUDE_CONFIG_DIR\'s projects), not an empty one', async () => {
   const cfg = tmpDir('cc-ip-cfg-');
   const dir = path.join(cfg, 'projects', projectDirName('C:\\code\\fromdefault'));

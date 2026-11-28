@@ -9,6 +9,7 @@
  *                        A corrupt, malformed or newer file is said in one log line (PR #262 Miguel G2), once until a good read; a
  *                        file that could not be read just now (EBUSY / EPERM) is not, as it is transient (H-PR2 keeps the last
  *                        good record across one: Dexter 5).
+ *   readFresh()       -> read(), or null when the file could not be read just now (H-PR2's Home keeps its last good record then).
  *   opened(root)      -> the record after it, or null. lastOpened = now(); the root leaves the removed set (design §6 default: an
  *                        open puts a removed project back).
  *   pin(root, on)     -> the record after it, or null. `on` must be a real boolean. A pin takes the root out of the removed set
@@ -110,6 +111,14 @@ function createHomeRecord({ store, keyOf = normPath, projectOf = realProjectOf, 
     return EMPTY();
   }
 
+  /** read(), but null when the file could not be read just now (EBUSY / EPERM): the caller keeps its last good record (Dexter 5). */
+  function readFresh() {
+    let st;
+    try { st = store.readState(STORE_KEY); } catch { return null; }
+    if (st && st.status === 'unreadable') return null;
+    return read();
+  }
+
   /** One edit on a fresh locked read: fn(record, key) -> the next record. Null when it was refused or failed. */
   function edit(root, fn) {
     const key = isPath(root) ? keyFor(root) : null;
@@ -174,7 +183,7 @@ function createHomeRecord({ store, keyOf = normPath, projectOf = realProjectOf, 
     });
   }
 
-  return { read, opened, pin, remove };
+  return { read, readFresh, opened, pin, remove };
 }
 
 module.exports = { createHomeRecord, STORE_KEY, VERSION, MAX_PROJECTS, MAX_LIST };

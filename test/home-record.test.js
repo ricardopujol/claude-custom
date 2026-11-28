@@ -236,6 +236,22 @@ test('Dexter R2-1: a lane path sent to the record is stored as its project root,
   assert.deepStrictEqual(s.home.read(), { projects: [{ root: 'C:\\p', lastOpened: 1000 }], pins: ['C:\\p'], removed: ['C:\\r'] });
 });
 
+test('readFresh: null only when the file could not be read just now (EBUSY / EPERM), so Home keeps its last good record (Dexter 5)', () => {
+  let state = { status: 'unreadable', value: null, error: new Error('EBUSY') };
+  const store = { readState: () => state, write: () => {}, withLock: (n, fn) => fn() };
+  const home = createHomeRecord({ store, keyOf, projectOf });
+  assert.strictEqual(home.readFresh(), null);
+  assert.deepStrictEqual(home.read(), EMPTY, 'read() still answers empty');
+  state = { status: 'corrupt', value: null };
+  assert.deepStrictEqual(home.readFresh(), EMPTY, 'a damaged file is a real answer: empty');
+  state = { status: 'missing', value: null };
+  assert.deepStrictEqual(home.readFresh(), EMPTY);
+  state = { status: 'ok', value: { version: 1, projects: [], pins: ['C:\\a'], removed: [] } };
+  assert.deepStrictEqual(home.readFresh(), { projects: [], pins: ['C:\\a'], removed: [] });
+  store.readState = () => { throw new Error('EPERM'); };
+  assert.strictEqual(home.readFresh(), null);
+});
+
 test('a store whose lock cannot be taken answers null and logs, never throws', () => {
   const store = { readState: () => ({ status: 'missing', value: null }), write: () => {}, withLock: () => { throw new Error('busy'); } };
   const lines = [];
