@@ -129,9 +129,10 @@ test('step 12: the restore decision after the tray and before the launch window;
   assert.match(MAIN, /function windowsChanged\(\) \{[\s\S]{0,200}appLifecycle\.syncRecord\(\);/);
   assert.match(MAIN, /app\.on\('will-quit', \(\) => \{ markRecordClean\(\); \}\);/);
   assert.match(MAIN, /sessionEnded: \(\) => markRecordClean\(\),/);
-  assert.match(MAIN, /makeWriter: \(\{ owner, owns \}\) => createOpenWindowsWriter\(\{ file: OPEN_WINDOWS_FILE, owner, owns, homeOpen: \(\) => homeWindow\.isOpen\(\) \}\),/);
-  // Jiandu Home (H5, H9): an open Home keeps the process; a restore whose record had it shows it; it frees the last project window
-  assert.match(MAIN, /homeOpen: \(\) => homeWindow\.isOpen\(\),\s*showHome: \(\) => showHome\(\),/);
+  assert.match(MAIN, /makeWriter: \(\{ owner, owns \}\) => createOpenWindowsWriter\(\{ file: OPEN_WINDOWS_FILE, owner, owns, homeOpen: \(\) => homeWindow\.isOpen\(\),\s*homeHidden: \(\) => homeWindow\.isHidden\(\) \}\),/);
+  // Jiandu Home (H5, H9): an open Home keeps the process; a restore whose record had it shows it (hidden only with a tray: PR #263
+  // Miguel G1); it frees the last project window
+  assert.match(MAIN, /homeOpen: \(\) => homeWindow\.isOpen\(\),\s*showHome: \(o\) => showHome\(\{ hidden: !!o && o\.hidden === true && !!trayController && trayController\.state\(\)\.exists \}\),/);
   assert.match(MAIN, /othersStay: \(\) => homeWindow\.isOpen\(\),/);
   assert.match(MAIN, /function windowsChanged\(\) \{[\s\S]{0,300}if \(homeWindow\.isOpen\(\)\) homeController\.sync\(\);/);
 });

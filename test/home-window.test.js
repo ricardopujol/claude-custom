@@ -165,3 +165,16 @@ test('isVisible: open, shown and not minimised', () => {
   FakeWin.made[0].hide();
   assert.strictEqual(t.hw.isVisible(), false);
 });
+
+test('Miguel G1: isHidden is open and hidden to the tray; minimised or closed is not hidden', () => {
+  const t = rig();
+  assert.strictEqual(t.hw.isHidden(), false, 'no window');
+  t.hw.show();
+  assert.strictEqual(t.hw.isHidden(), false);
+  FakeWin.made[0].minimized = true;
+  assert.strictEqual(t.hw.isHidden(), false, 'minimised is not hidden');
+  FakeWin.made[0].hide();
+  assert.strictEqual(t.hw.isHidden(), true);
+  FakeWin.made[0].close();
+  assert.strictEqual(t.hw.isHidden(), false, 'closed');
+});

@@ -3,6 +3,7 @@
  * The crash-restore record (single-instance PR 3, step 12): `<UI state dir>\open-windows.json`
  *   = { owner: { pid, start }, at, clean, restoring, windows: [{ root, cwd, hidden }], home }
  *   `home` (Jiandu Home, H9): Home was open (the writer's homeOpen()); a restore answers `home: true` to bring it back.
+ *   `homeHidden` (PR #263 Miguel G1): that open Home was hidden to the tray (homeHidden()); the restore brings it back hidden.
  *
  * It is DERIVED state, written on change, and only by the process the app lock's `app.json` names (owns()): a process that was displaced
  * (hung, then taken over: plan risk 2) writes nothing. A quit writes it clean (will-quit, and a Windows session end), so only a process
@@ -59,7 +60,7 @@ function restoreDecision({ record, proof, bootAt, launchRoot, exists, samePath }
     restore.push(w);
   }
   // Jiandu Home (H9): Home comes back if it was open, like any other window (only a real true)
-  return { restore, skipped, reason: 'restore', home: record.home === true };
+  return { restore, skipped, reason: 'restore', home: record.home === true, homeHidden: record.home === true && record.homeHidden === true };
 }
 
 /** The record on file, parsed, or null (no file, not JSON). */
@@ -67,11 +68,13 @@ function readRecord(file) {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; }
 }
 
-function createOpenWindowsWriter({ file, owner, owns, homeOpen = () => false, now = Date.now, write = writeFileAtomic, onWrite = () => {} }) {
+function createOpenWindowsWriter({ file, owner, owns, homeOpen = () => false, homeHidden = () => false, now = Date.now, write = writeFileAtomic, onWrite = () => {} }) {
   let restoring = true;            // until begin/endRestore say otherwise, sync waits
   let windows = [];
   let home = false;                // Jiandu Home (H9): open now, read from homeOpen() at every write and sync
   const homeNow = () => { try { return homeOpen() === true; } catch { return false; } };
+  let homeHid = false;             // that open Home is hidden to the tray (Miguel G1)
+  const hidNow = () => { try { return homeNow() && homeHidden() === true; } catch { return false; } };
   let lastText = null;
   let sealed = false;              // a clean mark is final (PR #258 Dexter 10): no sync undoes it; only reopen() does (a cancelled quit)
 
@@ -83,7 +86,11 @@ function createOpenWindowsWriter({ file, owner, owns, homeOpen = () => false, no
     onWrite(doc);
     return true;
   }
-  const docOf = (clean) => { home = homeNow(); return { owner: { pid: owner.pid, start: owner.start }, at: now(), clean, restoring, windows, home }; };
+  const docOf = (clean) => {
+    home = homeNow();
+    homeHid = hidNow();
+    return { owner: { pid: owner.pid, start: owner.start }, at: now(), clean, restoring, windows, home, homeHidden: homeHid };
+  };
 
   function begin({ restoring: r = false, keep = [] } = {}) {
     restoring = r === true;
@@ -94,7 +101,7 @@ function createOpenWindowsWriter({ file, owner, owns, homeOpen = () => false, no
   function sync(list) {
     if (restoring || sealed) return;
     const next = cleanWindows(list);
-    if (JSON.stringify(next) === JSON.stringify(windows) && homeNow() === home && lastText !== null) return;
+    if (JSON.stringify(next) === JSON.stringify(windows) && homeNow() === home && hidNow() === homeHid && lastText !== null) return;
     windows = next;
     try { put(docOf(false)); } catch { /* the next change writes it */ }
   }

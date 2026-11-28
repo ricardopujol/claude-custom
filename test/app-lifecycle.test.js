@@ -254,3 +254,39 @@ test('Jiandu Home (H9): a restore whose record had Home open shows Home; one wit
   }
   assert.deepStrictEqual(shown, [true]);
 });
+
+test('PR #263 Dexter 3: the quit that waits for an open in flight counts Home: Home open again before the open ends keeps the process', () => {
+  let home = false;
+  const t = rig({ homeOpen: () => home });
+  t.setBusy(true);
+  t.lc.onWindowAllClosed();
+  home = true;                          // a second launch (type 'home') or the tray's Home, before the open ends
+  t.setBusy(false);                     // the open ended with no project window
+  assert.deepStrictEqual(t.calls.filter((c) => c[0] === 'quit'), []);
+});
+
+test('PR #263 Dexter 4: a restore that brings back only Home leaves the launch window in front', async () => {
+  const order = [];
+  const lw = fakeWin('L');
+  lw.focusWindow = () => order.push('focus launch');
+  const decide = () => ({ restore: [], skipped: [], reason: 'restore', home: true });
+  const t = rig({ decide, showHome: () => order.push('showHome'), getLaunchWindow: () => lw });
+  t.setRecord({ owner: { pid: 7, start: 'S7' }, clean: false, windows: [], home: true });
+  const plan = await t.lc.decideRestore('L');
+  t.lc.beginRecord();
+  await t.lc.runRestores(plan);
+  assert.deepStrictEqual(order, ['showHome', 'focus launch']);
+});
+
+test('PR #263 Miguel G1: a restore obeys a Home that was hidden, and never re-shows a Home this launch already made (Start minimised)', async () => {
+  const decide = (record) => ({ restore: [], skipped: [], reason: 'restore', home: true, homeHidden: record.homeHidden === true });
+  for (const [homeHidden, open, want] of [[true, false, [{ hidden: true }]], [false, false, [{ hidden: false }]], [false, true, []]]) {
+    const shown = [];
+    const t = rig({ decide, homeOpen: () => open, showHome: (o) => shown.push(o) });
+    t.setRecord({ owner: { pid: 7, start: 'S7' }, clean: false, windows: [], home: true, homeHidden });
+    const plan = await t.lc.decideRestore(null);
+    t.lc.beginRecord();
+    await t.lc.runRestores(plan);
+    assert.deepStrictEqual(shown, want, `hidden ${homeHidden}, already open ${open}`);
+  }
+});

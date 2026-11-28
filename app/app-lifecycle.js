@@ -27,8 +27,9 @@
  * deps: registry, openQueue { busy(), onIdle(fn) }, appClaim { stop, resume, reclaim }, lockOn, pid, ownStart(), readLockOwner(),
  *       readRecord(), proveOwner(owner), decide(record, proof, launchRoot) -> restoreDecision's answer, makeWriter({ owner, owns }),
  *       openProject(o), quit(), getLaunchWindow(), quitGate { reset(), asking() }, setQuitting(v), isQuitting(), log;
- *       optional (Jiandu Home): homeOpen() (an open Home keeps the process: quitIfEmpty says no), showHome() (a restore whose record had
- *       Home open shows it first, H9).
+ *       optional (Jiandu Home): homeOpen() (an open Home keeps the process: quitIfEmpty and the wait for an open in flight say no),
+ *       showHome({ hidden }) (a restore whose record had Home open shows it first, H9, hidden when it was hidden; never when this launch
+ *       already made one; the launch window still ends in front).
  */
 
 const { cleanWindows } = require('../host/open-windows');
@@ -61,7 +62,8 @@ function createAppLifecycle(deps) {
   function onWindowAllClosed() {
     if (!openQueue.busy()) { quit(); return; }
     log('[main] the last window closed while a project was opening: waiting for it before quitting');
-    openQueue.onIdle(() => { if (!registry.list().some(live)) quit(); });
+    // the same rule as quitIfEmpty (PR #263 Dexter 3): a Home opened again while the open ran keeps the process
+    openQueue.onIdle(() => { if (!registry.list().some(live) && !homeOpen()) quit(); });
   }
 
   async function decideRestore(launchRoot) {
@@ -78,7 +80,8 @@ function createAppLifecycle(deps) {
     const d = decide(record, proof, launchRoot);
     log(`[main] restore       : ${d.reason}${d.restore.length ? ` (${d.restore.length} window${d.restore.length === 1 ? '' : 's'})` : ''}`);
     for (const s of d.skipped || []) log(`[main] restore skipped ${JSON.stringify(s.root)}: ${s.reason}`);
-    state.plan = { restore: d.restore, keep: d.restore.length && record ? cleanWindows(record.windows) : [], home: d.home === true };
+    state.plan = { restore: d.restore, keep: d.restore.length && record ? cleanWindows(record.windows) : [], home: d.home === true,
+      homeHidden: d.homeHidden === true };
     return d.restore;
   }
 
@@ -90,11 +93,18 @@ function createAppLifecycle(deps) {
   }
 
   async function runRestores(list) {
-    if (state.plan.home && typeof deps.showHome === 'function') { try { deps.showHome(); } catch (err) { log(`[main] restore: Home did not show: ${err && err.message}`); } }
+    // Home comes back as it was (hidden to the tray, or shown: Miguel G1), and a Home this launch already made (a --home launch, maybe
+    // under Start minimised) is left as the launch made it
+    let homeShown = false;
+    if (state.plan.home && typeof deps.showHome === 'function' && !homeOpen()) {
+      try { deps.showHome({ hidden: state.plan.homeHidden === true }); homeShown = state.plan.homeHidden !== true; }
+      catch (err) { log(`[main] restore: Home did not show: ${err && err.message}`); }
+    }
     try { await Promise.all(list.map((w) => openProject({ cwd: w.cwd, show: w.hidden ? 'hidden' : 'shown' }))); } catch { /* each open logs its own */ }
     if (state.writer) state.writer.endRestore(currentWindows());
+    // the launch window ends in front, a shown Home included (PR #263 Dexter 4)
     const lw = getLaunchWindow();
-    if (list.length && lw && lw.win && !lw.win.isDestroyed() && lw.win.isVisible()) lw.focusWindow();
+    if ((list.length || homeShown) && lw && lw.win && !lw.win.isDestroyed() && lw.win.isVisible()) lw.focusWindow();
   }
 
   const markRecordClean = () => { if (state.writer) state.writer.markClean(); };

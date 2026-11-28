@@ -6,6 +6,7 @@
  *   show({ hidden })   make it (hidden: Start minimised to tray), or bring the one there is forward: shown, restored, focused
  *   isOpen()           a Home window exists (shown, hidden or minimised): it keeps the process (app/app-lifecycle.js homeOpen)
  *   isVisible()        open, shown and not minimised
+ *   isHidden()         open and hidden to the tray (not minimised): the crash record keeps it (PR #263 Miguel G1)
  *   send(payload)      push the page its model ('home:model'); nothing when Home is closed
  *   isSender(wc)       the Home window's own webContents, and nothing else (the IPC gate)
  *
@@ -93,6 +94,7 @@ function createHomeWindow({ BrowserWindow, screen, store, preload, page, forProb
     send,
     isOpen: () => alive(),
     isVisible: () => alive() && win.isVisible() && !(typeof win.isMinimized === 'function' && win.isMinimized()),
+    isHidden: () => alive() && !win.isVisible(),
     isSender: (wc) => alive() && !!wc && wc === win.webContents,
     win: () => (alive() ? win : null),
   };

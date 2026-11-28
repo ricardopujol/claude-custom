@@ -1397,10 +1397,12 @@ const appLifecycle = createAppLifecycle({
   proveOwner: (owner) => proveOwner(owner, { startTimes: patientStartTimes }),
   decide: (record, proof, launchRoot) => restoreDecision({ record, proof, bootAt: Date.now() - os.uptime() * 1000, launchRoot,
     exists: (p) => fs.existsSync(p), samePath }),
-  makeWriter: ({ owner, owns }) => createOpenWindowsWriter({ file: OPEN_WINDOWS_FILE, owner, owns, homeOpen: () => homeWindow.isOpen() }),
-  // Jiandu Home: an open Home keeps the process (H5), and a crash restore brings it back when it was open (H9)
+  makeWriter: ({ owner, owns }) => createOpenWindowsWriter({ file: OPEN_WINDOWS_FILE, owner, owns, homeOpen: () => homeWindow.isOpen(),
+    homeHidden: () => homeWindow.isHidden() }),
+  // Jiandu Home: an open Home keeps the process (H5), and a crash restore brings it back when it was open (H9), hidden when it was
+  // hidden to the tray and a tray is there to reach it (PR #263 Miguel G1)
   homeOpen: () => homeWindow.isOpen(),
-  showHome: () => showHome(),
+  showHome: (o) => showHome({ hidden: !!o && o.hidden === true && !!trayController && trayController.state().exists }),
   openProject: (o) => openProject(o),
   quit: () => app.quit(),
   getLaunchWindow: () => launchWindow,
