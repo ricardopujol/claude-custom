@@ -523,6 +523,12 @@ test('Jiandu Home\'s card model, record and value checks are mutated, and their 
   for (const t of ['test/home-model.test.js', 'test/home-record.test.js']) assert.ok(cmd.includes(t), `${t} is in the command`);
 });
 
+test('Jiandu Home H-PR2: the controller (every act validated) and the size-and-place rules are mutated, with their tests in the run', () => {
+  for (const module of ['app/home-controller.js', 'app/home-bounds.js']) assert.ok(conf.mutate.includes(module), `${module} is in mutate`);
+  const cmd = conf.commandRunner.command.split(/\s+/);
+  for (const t of ['test/home-controller.test.js', 'test/home-bounds.test.js', 'test/home-launch.test.js']) assert.ok(cmd.includes(t), `${t} is in the command`);
+});
+
 test('the pty environment builder is mutated, and its tests are in the run (#74 F2, PR #246 Miguel Y6)', () => {
   // It decides what every session the host starts inherits (PYTHON_BASIC_REPL, no provider or mod token in a shell tab). Not listing it is silent.
   for (const module of ['host/pty-env.js']) assert.ok(conf.mutate.includes(module), `${module} is in mutate`);
