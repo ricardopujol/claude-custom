@@ -49,7 +49,7 @@
  *   'home-projects'                written by Electron MAIN, app/home-record.js (Jiandu Home, documentation/DESIGN_PROJECT_HUB.md):
  *                                  the projects Jiandu opened, the pins and the removed set, install-wide. Pins are made by hand,
  *                                  so it opts in to withLock and readState: a file it could not read is never written over.
- *   'look-global'                 written by Electron MAIN, app/main.js UI_KEY,
+ *   'look-global'                  written by Electron MAIN, app/main.js UI_KEY,
  *                                  not by the host (see below).
  *
  * The list above was re-derived by grepping host/ and app/ for every store key
