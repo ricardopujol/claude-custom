@@ -15,7 +15,7 @@
  *   appLock               { owns, file, pid } the app lock this process holds (single-instance PR 3)
  *   openWindows           { record } the crash-restore record as parsed, or null
  *   home / homeClick { key, act } / homeType { text } / homeShow / homeClose   Jiandu Home: its state and DOM, a real click, typing,
- *                         showing it, and its own close
+ *                         showing it, and its own close; homeNavigate { url } the page tries to leave (the guard must refuse)
  * A window command added by PR 3: reader-unsaved { key, path } reports unsaved reader text for a tab without a real edit.
  *
  * Pure but for `net`: the registry, the windows' apis and startProject are handed in, so the routing is tested under plain node.
@@ -27,7 +27,8 @@ const { handleProbeCommand, probeAuthError, probeLineReader } = require('./tab-s
 
 const TOKEN_MIN = 16;
 // The process's own commands; every other command names a window (or the launch window).
-const APP_COMMANDS = new Set(['windows', 'openProject', 'webContents', 'appLock', 'openWindows', 'home', 'homeClick', 'homeType', 'homeShow', 'homeClose']);
+const APP_COMMANDS = new Set(['windows', 'openProject', 'webContents', 'appLock', 'openWindows', 'home', 'homeClick', 'homeType', 'homeShow', 'homeClose',
+  'homeNavigate']);
 
 /**
  * The real path of `p`: junctions, symlinks and 8.3 short names resolved. A folder not made yet (ENOENT) is the real path of its nearest
@@ -88,6 +89,8 @@ function createAppApi({ probePort, token, tempRoot, registry, launchWindow, open
     async homeType(text) { return home ? home.type(text) : noHome; },
     async homeShow() { return home ? home.show() : noHome; },
     async homeClose() { return home ? home.close() : noHome; },
+    // PR #263 Miguel B1: the page itself tries to go to `url` (as a dropped link would); the guard must refuse it
+    async homeNavigate(url) { return home ? home.navigate(url) : noHome; },
     // single-instance PR 3: the app lock this process holds ({ owns, file, pid }) and the crash-restore record (parsed, or null)
     async appLock() { return { ok: true, ...(appLock() || { owns: false, file: null, pid: process.pid }) }; },
     async openWindows() { return { ok: true, record: openWindows() }; },

@@ -2803,6 +2803,9 @@ async function handleProbeCommand(line, api, expectedToken) {
       case 'homeType':
         if (typeof cmd.text !== 'string') return { ok: false, error: 'homeType needs a text' };
         return await api.homeType(cmd.text);
+      case 'homeNavigate':
+        if (typeof cmd.url !== 'string' || !cmd.url) return { ok: false, error: 'homeNavigate needs a url' };
+        return await api.homeNavigate(cmd.url);
       case 'reader-unsaved':
         if (typeof cmd.key !== 'string' || !cmd.key || typeof cmd.path !== 'string' || !cmd.path) return { ok: false, error: 'reader-unsaved needs a key and a path' };
         return await api.readerUnsaved(cmd.key, cmd.path);

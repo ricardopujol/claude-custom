@@ -1661,7 +1661,7 @@ function homeProbeApi() {
       const dom = w ? await page(`({ title: document.title, cards: [...document.querySelectorAll('.card')].map((c) => ({ key: c.dataset.key,
         cls: c.className, state: (c.querySelector('.state') || {}).textContent || '' })), summary: document.getElementById('summary').textContent,
         empty: (document.querySelector('.empty') || {}).textContent || null, notice: document.getElementById('notice').textContent,
-        homeDisplay: typeof window.homeDisplay })`) : null;
+        filter: document.getElementById('filter').value, url: location.href, homeDisplay: typeof window.homeDisplay })`) : null;
       return { open: homeWindow.isOpen(), visible: homeWindow.isVisible(), focused: !!w && w.isFocused(), bounds: w ? w.getBounds() : null, dom };
     },
     // a real click on the card's button (`act` is its data-act), as a person would make it
@@ -1676,6 +1676,11 @@ function homeProbeApi() {
       return r === true ? { ok: true } : { ok: false, error: 'Home is not open' };
     },
     async show() { showHome(); return { ok: true }; },
+    // the page sets location (a renderer navigation, as a dropped link makes one); Miguel B1's guard must leave home.html in place
+    async navigate(url) {
+      const r = await page(`(() => { location.href = ${JSON.stringify(url)}; return true; })()`);
+      return r === true ? { ok: true } : { ok: false, error: 'Home is not open' };
+    },
     // Home's own close, as its close button makes it (H5: with no window left, Jiandu quits)
     async close() { const w = homeWindow.win(); if (!w) return { ok: false, error: 'Home is not open' }; w.close(); return { ok: true }; },
   };
