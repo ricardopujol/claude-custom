@@ -46,6 +46,9 @@
  *   'wait-games'                   written by Electron MAIN, app/main.js (the games' score store, host/game-scores.js,
  *                                  BACKLOG #41): the best of each wait game, install-wide. It opts in to withLock for a
  *                                  raise, since another window may be raising the same file.
+ *   'home-projects'                written by Electron MAIN, app/home-record.js (Jiandu Home, documentation/DESIGN_PROJECT_HUB.md):
+ *                                  the projects Jiandu opened, the pins and the removed set, install-wide. Pins are made by hand,
+ *                                  so it opts in to withLock and readState: a file it could not read is never written over.
  *   'look-global'                  written by Electron MAIN, app/main.js UI_KEY,
  *                                  not by the host (see below).
  *

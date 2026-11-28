@@ -132,6 +132,7 @@ const os = require('os');
 const taskLogsRoot = path.join(require('os').tmpdir(), 'claude');
 const { createResourcesService, parseWarnAt } = require('./resources-service');
 const { createChipStore, watchChip, KEY: CHIP_KEY } = require('../host/chip-store');
+const { createHomeRecord } = require('./home-record');
 const { createScoreStore } = require('../host/game-scores');
 const { listDeps } = require('../host/stop-deps');
 // The tray icon (BACKLOG #119 A8): the needs-you count, show/hide, start minimised, minimise on close.
@@ -158,6 +159,8 @@ const usageCounters = createUsageCounters({ store: uiStore, off: countingOff(pro
 const UI_KEY = 'look-global';
 const resourceChip = createChipStore(uiStore);
 const gameScores = createScoreStore(uiStore);   // #41: the wait games' bests, install-wide
+// Jiandu Home (documentation/DESIGN_PROJECT_HUB.md): the projects Jiandu opened, the pins and the removed set, install-wide.
+const homeRecord = createHomeRecord({ store: uiStore, log: (l) => console.log(l) });
 const readDim = () => sanitizeDim((uiStore.read(UI_KEY, {}) || {}).unfocusedDim);
 
 // An explicit CLAUDE_CUSTOM_PORT is honoured exactly and never stepped: someone
@@ -1432,11 +1435,17 @@ const lifecycle = createProjectLifecycle({
   afterStart: (pw) => {
     const w = pw.win;
     if (trayController && !trayController.state().exists && w && !w.isDestroyed() && !w.isVisible()) pw.focusWindow();
+    recordOpened(pw);
   },
   // the count and the tooltip speak for the first window that is left, and the Resources sampler asks again who is looking
   onChanged: () => windowsChanged(),
 });
 const startProject = lifecycle.startProject;
+// Jiandu Home's record (app/home-record.js): a project window that started is a project Jiandu opened. A record that could not be
+// written (a busy or damaged file) logs one line and never costs the window.
+function recordOpened(pw) {
+  try { homeRecord.opened(pw.root); } catch (err) { console.log(`[main] home-projects: ${err && err.message}`); }
+}
 
 app.whenReady().then(async () => {
   console.log('[main] launched on   :', LAUNCH_CWD);

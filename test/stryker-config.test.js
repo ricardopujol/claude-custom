@@ -516,6 +516,13 @@ test('the boot-retry decision and chain module is mutated, and its tests are in 
   assert.ok(!conf.commandRunner.command.split(/\s+/).includes('test/boot-retry-wiring.test.js'));
 });
 
+test('Jiandu Home\'s card model, record and value checks are mutated, and their tests are in the run (PR #262 Miguel Y1)', () => {
+  // The H7 order, the H2 "left out" rule, the cap and the never-write-over rule: the logic the night audit is for. Not listing them is silent.
+  for (const module of ['app/home-model.js', 'app/home-record.js', 'app/home-values.js']) assert.ok(conf.mutate.includes(module), `${module} is in mutate`);
+  const cmd = conf.commandRunner.command.split(/\s+/);
+  for (const t of ['test/home-model.test.js', 'test/home-record.test.js']) assert.ok(cmd.includes(t), `${t} is in the command`);
+});
+
 test('the pty environment builder is mutated, and its tests are in the run (#74 F2, PR #246 Miguel Y6)', () => {
   // It decides what every session the host starts inherits (PYTHON_BASIC_REPL, no provider or mod token in a shell tab). Not listing it is silent.
   for (const module of ['host/pty-env.js']) assert.ok(conf.mutate.includes(module), `${module} is in mutate`);
