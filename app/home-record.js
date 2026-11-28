@@ -1,0 +1,156 @@
+'use strict';
+/**
+ * Jiandu's own record of the projects it opened, with the pins and the removed set (documentation/DESIGN_PROJECT_HUB.md §3, H2, H7;
+ * plan documentation/PLAN_PROJECT_HUB.md H-PR1). Install-wide, in main's uiStore under STORE_KEY:
+ *
+ *   { version: 1, projects: [{ root, lastOpened }], pins: [root], removed: [root] }
+ *
+ *   read()            -> { projects, pins, removed }, sanitized. Never throws: a missing, corrupt, unreadable or newer file is empty.
+ *   opened(root)      -> the record after it, or null. lastOpened = now(); the root leaves the removed set (design §6 default: an
+ *                        open puts a removed project back).
+ *   pin(root, on)     -> the record after it, or null. `on` must be a real boolean.
+ *   remove(root)      -> the record after it, or null. The root joins the removed set; its pin and its entry go. Nothing on disk
+ *                        outside this file changes.
+ *
+ * Pins are made by hand, so like the wand and the medals every edit runs on a fresh readState inside the store's cross-process lock
+ * and writes only over 'ok' or 'missing': a corrupt or unreadable file, or a newer version, is never written over (the edit answers
+ * null and logs one line). Roots are compared by keyOf (normPath: case, separators, junctions) and stored as first spelled.
+ * Caps: projects MAX_PROJECTS (the oldest unpinned entry goes first), pins and removed MAX_LIST (the oldest goes first).
+ *
+ * Main-process only (required, never a page <script>).
+ */
+
+const { normPath } = require('../host/project-layout');
+
+const STORE_KEY = 'home-projects';
+const VERSION = 1;
+const MAX_PROJECTS = 200;
+const MAX_LIST = 500;
+
+const isObject = (o) => o !== null && typeof o === 'object' && !Array.isArray(o);
+const isPath = (p) => typeof p === 'string' && p !== '';
+/** A time is a strict positive finite number, or null (`Number(null)` is 0: never coerce). */
+const timeOf = (v) => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : null);
+const EMPTY = () => ({ projects: [], pins: [], removed: [] });
+
+function createHomeRecord({ store, keyOf = normPath, now = Date.now, log = () => {} } = {}) {
+  if (!store || typeof store.readState !== 'function' || typeof store.write !== 'function' || typeof store.withLock !== 'function') {
+    throw new Error('createHomeRecord: a store with readState, write and withLock is required');
+  }
+  const keyFor = (p) => { try { return keyOf(p); } catch { return null; } };
+
+  /** A list of roots: paths only, once each by key (the first spelling), the newest MAX_LIST kept. */
+  function rootList(v) {
+    const seen = new Set();
+    const out = [];
+    for (const p of Array.isArray(v) ? v : []) {
+      const k = isPath(p) ? keyFor(p) : null;
+      if (k === null || seen.has(k)) continue;
+      seen.add(k);
+      out.push(p);
+    }
+    return out.slice(-MAX_LIST);
+  }
+
+  function projectList(v) {
+    const byKey = new Map();
+    for (const p of Array.isArray(v) ? v : []) {
+      if (!isObject(p) || !isPath(p.root)) continue;
+      const k = keyFor(p.root);
+      if (k === null) continue;
+      const t = timeOf(p.lastOpened);
+      const had = byKey.get(k);
+      if (!had) byKey.set(k, { root: p.root, lastOpened: t });
+      else if (t !== null && (had.lastOpened === null || t > had.lastOpened)) had.lastOpened = t;
+    }
+    return [...byKey.values()];
+  }
+
+  const sanitize = (raw) => ({ projects: projectList(raw.projects), pins: rootList(raw.pins), removed: rootList(raw.removed) });
+
+  /** { record } for a file that may be written over (a missing one is empty), or { error }. */
+  function load() {
+    let st;
+    try { st = store.readState(STORE_KEY); } catch (err) { return { error: `unreadable (${err && err.message})` }; }
+    if (st.status === 'missing') return { record: EMPTY() };
+    if (st.status !== 'ok') return { error: st.status };
+    if (!isObject(st.value)) return { error: 'not a record' };
+    const v = st.value.version;
+    if (v !== undefined && !(typeof v === 'number' && Number.isInteger(v) && v >= 1)) return { error: 'a bad version' };
+    if (typeof v === 'number' && v > VERSION) return { error: `version ${v}, newer than this build's ${VERSION}` };
+    return { record: sanitize(st.value) };
+  }
+
+  function read() {
+    const r = load();
+    return r.error ? EMPTY() : r.record;
+  }
+
+  /** One edit on a fresh locked read: fn(record, key) -> the next record. Null when it was refused or failed. */
+  function edit(root, fn) {
+    const key = isPath(root) ? keyFor(root) : null;
+    if (key === null) return null;
+    try {
+      return store.withLock(STORE_KEY, () => {
+        const r = load();
+        if (r.error) {
+          log(`[main] ${STORE_KEY}: the file is ${r.error}; not written`);
+          return null;
+        }
+        const next = fn(r.record, key);
+        store.write(STORE_KEY, { version: VERSION, ...next });
+        return next;
+      });
+    } catch (err) {
+      log(`[main] ${STORE_KEY}: ${err && err.message}; not written`);
+      return null;
+    }
+  }
+
+  const without = (list, key) => list.filter((p) => keyFor(p) !== key);
+  const withoutEntry = (list, key) => list.filter((p) => keyFor(p.root) !== key);
+
+  function opened(root) {
+    return edit(root, (rec, key) => {
+      const t = timeOf(now());
+      const had = rec.projects.find((p) => keyFor(p.root) === key);
+      let projects = had
+        ? rec.projects.map((p) => (p === had ? { root: p.root, lastOpened: t } : p))
+        : [...rec.projects, { root, lastOpened: t }];
+      if (projects.length > MAX_PROJECTS) projects = capProjects(projects, new Set(rec.pins.map(keyFor)));
+      return { projects, pins: rec.pins, removed: without(rec.removed, key) };
+    });
+  }
+
+  /** Drop the oldest unpinned entries (no time is oldest) until the list fits. */
+  function capProjects(projects, pinned) {
+    const order = projects.map((p, i) => ({ p, i })).filter(({ p }) => !pinned.has(keyFor(p.root)))
+      .sort((a, b) => (a.p.lastOpened || 0) - (b.p.lastOpened || 0) || a.i - b.i);
+    const drop = new Set(order.slice(0, projects.length - MAX_PROJECTS).map(({ p }) => p));
+    return projects.filter((p) => !drop.has(p));
+  }
+
+  function pin(root, on) {
+    if (typeof on !== 'boolean') return null;
+    return edit(root, (rec, key) => {
+      const has = rec.pins.some((p) => keyFor(p) === key);
+      const pins = on ? (has ? rec.pins : [...rec.pins, root].slice(-MAX_LIST)) : without(rec.pins, key);
+      return { projects: rec.projects, pins, removed: rec.removed };
+    });
+  }
+
+  function remove(root) {
+    return edit(root, (rec, key) => {
+      const has = rec.removed.some((p) => keyFor(p) === key);
+      return {
+        projects: withoutEntry(rec.projects, key),
+        pins: without(rec.pins, key),
+        removed: has ? rec.removed : [...rec.removed, root].slice(-MAX_LIST),
+      };
+    });
+  }
+
+  return { read, opened, pin, remove };
+}
+
+module.exports = { createHomeRecord, STORE_KEY, VERSION, MAX_PROJECTS, MAX_LIST };
