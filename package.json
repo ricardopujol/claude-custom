@@ -51,5 +51,10 @@
     "jsdom": "29.1.1",
     "marked": "18.1.1",
     "mermaid": "12.2.0"
+  },
+  "allowScripts": {
+    "electron": true,
+    "esbuild": true,
+    "node-pty": true
   }
 }
