@@ -16,7 +16,8 @@
  *   openWindows           { record } the crash-restore record as parsed, or null
  *   home / homeClick { key, act } / homeType { text } / homeShow / homeClose   Jiandu Home: its state and DOM, a real click, typing,
  *                         showing it, and its own close; homeNavigate { url } the page tries to leave (the guard must refuse);
- *                         homeField { key, field, value } types into a card's New lane form (H-PR3)
+ *                         homeField { key, field, value } types into a card's New lane form (H-PR3);
+ *                         homeDblClick { key, act } a real double click (input events, not el.click()) on a card's button
  * A window command added by PR 3: reader-unsaved { key, path } reports unsaved reader text for a tab without a real edit.
  *
  * Pure but for `net`: the registry, the windows' apis and startProject are handed in, so the routing is tested under plain node.
@@ -29,7 +30,7 @@ const { handleProbeCommand, probeAuthError, probeLineReader } = require('./tab-s
 const TOKEN_MIN = 16;
 // The process's own commands; every other command names a window (or the launch window).
 const APP_COMMANDS = new Set(['windows', 'openProject', 'webContents', 'appLock', 'openWindows', 'home', 'homeClick', 'homeType', 'homeShow', 'homeClose',
-  'homeNavigate', 'homeField']);
+  'homeNavigate', 'homeField', 'homeDblClick']);
 
 /**
  * The real path of `p`: junctions, symlinks and 8.3 short names resolved. A folder not made yet (ENOENT) is the real path of its nearest
@@ -94,6 +95,8 @@ function createAppApi({ probePort, token, tempRoot, registry, launchWindow, open
     async homeNavigate(url) { return home ? home.navigate(url) : noHome; },
     // H-PR3: a card's New lane form, typed into as a person would (the type prefix or the name)
     async homeField(key, field, value) { return home ? home.field(key, field, value) : noHome; },
+    // PR #265 Dexter: a REAL double click (OS-level mouse input into the page) on a card's button
+    async homeDblClick(key, act) { return home ? home.dblClick(key, act) : noHome; },
     // single-instance PR 3: the app lock this process holds ({ owns, file, pid }) and the crash-restore record (parsed, or null)
     async appLock() { return { ok: true, ...(appLock() || { owns: false, file: null, pid: process.pid }) }; },
     async openWindows() { return { ok: true, record: openWindows() }; },

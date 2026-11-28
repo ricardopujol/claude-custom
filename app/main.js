@@ -1695,6 +1695,24 @@ function homeProbeApi() {
       return r === true ? { ok: true } : { ok: false, error: 'Home is not open' };
     },
     async show() { showHome(); return { ok: true }; },
+    // PR #265 Dexter: a real double click on a card's button: mouse input at its centre, the second press 80 ms after the first, as
+    // a person's double click arrives; whatever is under the pointer then gets the second click
+    async dblClick(key, act) {
+      const w = homeWindow.win();
+      if (!w) return { ok: false, error: 'Home is not open' };
+      const at = await page(`(() => { const c = [...document.querySelectorAll('.card')].find((x) => x.dataset.key === ${JSON.stringify(key)});
+        const b = c && c.querySelector('[data-act=' + JSON.stringify(${JSON.stringify(act)}) + ']'); if (!b) return null;
+        b.scrollIntoView({ block: 'center' }); const r = b.getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; })()`);
+      if (!at) return { ok: false, error: 'no such button' };
+      const press = (clickCount) => {
+        w.webContents.sendInputEvent({ type: 'mouseDown', x: at.x, y: at.y, button: 'left', clickCount });
+        w.webContents.sendInputEvent({ type: 'mouseUp', x: at.x, y: at.y, button: 'left', clickCount });
+      };
+      press(1);
+      await new Promise((r) => setTimeout(r, 80));
+      press(2);
+      return { ok: true, at };
+    },
     // H-PR3: a value typed into a card's New lane form field, with the event a person's typing raises
     async field(key, field, value) {
       const r = await page(`(() => { const c = [...document.querySelectorAll('.card')].find((x) => x.dataset.key === ${JSON.stringify(key)});

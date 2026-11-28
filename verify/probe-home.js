@@ -23,6 +23,7 @@
  *      the card says "Stopped 1 session."
  *   6c New lane on B: a form on the card, a name typed; the stand-in new-worktree.ps1 makes B\feat-probe-lane, B's window opens on it
  *      and the card says so; B's window then closes from Home
+ *   6d (PR #265) a real double click (mouse input) on B's Stop its sessions: only the question shows, nothing stops
  *
  * SAFE. Scratch projects in a temp folder (never dev\), the hosts' `claude` is cmd.exe (CLAUDE_CUSTOM_BIN), Claude Code's history is an empty
  * temp folder (CLAUDE_CUSTOM_GIT_PROJECTS_DIR), the UI state (the Home record, app.json, the crash record) is the probe's own folder, and
@@ -276,7 +277,8 @@ async function main() {
 
   // 3c (Dexter 1): A's window keeps the process while Home is closed
   const typedZz = await command(app, { cmd: 'homeType', text: 'zz' });
-  const h3c = await waitFor(async () => { const h = await homeOf(app); return h && h.dom && h.dom.empty ? h : null; }, 10000, 200);
+  // 30 s (PR #265 Miguel G7): right after 3b, main is busy with A's host start and the windowless reads
+  const h3c = await waitFor(async () => { const h = await homeOf(app); return h && h.dom && h.dom.empty ? h : null; }, 30000, 200);
   check('3c: a filter that matches nothing says so', !!h3c && /No project matches "zz"/.test(h3c.dom.empty),
     JSON.stringify({ typed: typedZz, dom: h3c ? h3c.dom : ((await homeOf(app)) || {}).dom }));
   await command(app, { cmd: 'homeClose' });
@@ -361,6 +363,26 @@ async function main() {
   await command(app, { cmd: 'homeClick', key: B.key, act: 'close-window' });
   const closedB = await waitFor(async () => { const w = await windowsOf(app); return w && w.windows.length === 0 ? w : null; }, 60000, 500);
   check('6c: ...and B\'s window closes from Home again', !!closedB, JSON.stringify(await windowsOf(app)));
+
+  // 6d (PR #265 Dexter's note): a REAL double click on B's "Stop its sessions" (B's dev and lane sessions outlived its window). The
+  // first click asks main; the second lands on whatever is under the pointer. Nothing may stop: only the question shows.
+  const bHosts = () => hostsOfThisRun().filter((id) => /[\\/]beta([\\/]|$)/i.test(id.cwd));     // this run's only beta is B
+  const w6d = await waitFor(async () => {
+    await command(app, { cmd: 'homeShow' });
+    await sleep(1500);
+    const c = await cardB();
+    return c && /sessions?, no window$/.test(c.state) ? c : null;
+  }, 60000, 1000);
+  check('6d: B\'s sessions run with no window, and its card says so', !!w6d, JSON.stringify(await cardB()));
+  const before6d = bHosts().map((id) => id.pid);
+  const dbl = await command(app, { cmd: 'homeDblClick', key: B.key, act: 'stop-sessions' });
+  check('6d: a real double click on Stop its sessions', !!dbl && dbl.ok === true, JSON.stringify(dbl));
+  const asked6d = await waitFor(async () => { const c = await cardB(); return c && c.ask ? c : null; }, 15000, 250);
+  await sleep(3000);
+  const after6d = await cardB();
+  check('6d: ...only the question shows; nothing stopped', !!asked6d && !!after6d && !!after6d.ask && !/Stopp/.test(after6d.note || '')
+    && before6d.length > 0 && before6d.every(alive), JSON.stringify({ card: after6d, hosts: before6d.map((p) => [p, alive(p)]) }));
+  await command(app, { cmd: 'homeClick', key: B.key, act: 'stop-cancel' });
 
   // 6b (Miguel G6 / Y3): A is closed again, so it offers Remove
   const rm = await command(app, { cmd: 'homeClick', key: A.key, act: 'remove' });

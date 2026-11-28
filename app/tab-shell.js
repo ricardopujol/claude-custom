@@ -2805,6 +2805,9 @@ async function handleProbeCommand(line, api, expectedToken) {
       case 'homeType':
         if (typeof cmd.text !== 'string') return { ok: false, error: 'homeType needs a text' };
         return await api.homeType(cmd.text);
+      case 'homeDblClick':
+        if (typeof cmd.key !== 'string' || !cmd.key || typeof cmd.act !== 'string' || !cmd.act) return { ok: false, error: 'homeDblClick needs a key and an act' };
+        return await api.homeDblClick(cmd.key, cmd.act);
       case 'homeField':
         if (typeof cmd.key !== 'string' || !cmd.key || (cmd.field !== 'prefix' && cmd.field !== 'name') || typeof cmd.value !== 'string') {
           return { ok: false, error: 'homeField needs a key, a field (prefix | name) and a value' };
