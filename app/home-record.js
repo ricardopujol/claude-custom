@@ -6,21 +6,30 @@
  *   { version: 1, projects: [{ root, lastOpened }], pins: [root], removed: [root] }
  *
  *   read()            -> { projects, pins, removed }, sanitized. Never throws: a missing, corrupt, unreadable or newer file is empty.
+ *                        A corrupt, malformed or newer file is said in one log line (PR #262 Miguel G2), once until a good read; a
+ *                        file that could not be read just now (EBUSY / EPERM) is not, as it is transient (H-PR2 keeps the last
+ *                        good record across one: Dexter 5).
  *   opened(root)      -> the record after it, or null. lastOpened = now(); the root leaves the removed set (design §6 default: an
  *                        open puts a removed project back).
- *   pin(root, on)     -> the record after it, or null. `on` must be a real boolean.
+ *   pin(root, on)     -> the record after it, or null. `on` must be a real boolean. A pin takes the root out of the removed set
+ *                        (Dexter 3, an open question: the default built), so a pinned card stays when its sessions end.
  *   remove(root)      -> the record after it, or null. The root joins the removed set; its pin and its entry go. Nothing on disk
  *                        outside this file changes.
  *
  * Pins are made by hand, so like the wand and the medals every edit runs on a fresh readState inside the store's cross-process lock
  * and writes only over 'ok' or 'missing': a corrupt or unreadable file, or a newer version, is never written over (the edit answers
  * null and logs one line). Roots are compared by keyOf (normPath: case, separators, junctions) and stored as first spelled.
- * Caps: projects MAX_PROJECTS (the oldest unpinned entry goes first), pins and removed MAX_LIST (the oldest goes first).
+ *
+ * Caps (Dexter 4, Miguel G5). The UNPINNED entries of `projects` are capped: past MAX_PROJECTS, an open drops the oldest unpinned
+ * entries (no time is oldest) until the list fits, and never the root it just opened. A pinned entry is never dropped, so with
+ * more than MAX_PROJECTS pins the list holds every pinned entry plus the one just opened. Pins and removed hold MAX_LIST each (the
+ * oldest goes first), which bounds that too.
  *
  * Main-process only (required, never a page <script>).
  */
 
 const { normPath } = require('../host/project-layout');
+const { timeOf, isPath } = require('./home-values');
 
 const STORE_KEY = 'home-projects';
 const VERSION = 1;
@@ -31,9 +40,6 @@ const MAX_LIST = 500;
 const LOCK_WAIT_MS = 500;
 
 const isObject = (o) => o !== null && typeof o === 'object' && !Array.isArray(o);
-const isPath = (p) => typeof p === 'string' && p !== '';
-/** A time is a strict positive finite number, or null (`Number(null)` is 0: never coerce). */
-const timeOf = (v) => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : null);
 const EMPTY = () => ({ projects: [], pins: [], removed: [] });
 
 function createHomeRecord({ store, keyOf = normPath, now = Date.now, log = () => {} } = {}) {
@@ -84,9 +90,16 @@ function createHomeRecord({ store, keyOf = normPath, now = Date.now, log = () =>
     return { record: sanitize(st.value) };
   }
 
+  // The damage last said in the log (Miguel G2): read() runs on every Home push, so it is said once, and again only after a good read.
+  let saidDamage = null;
   function read() {
     const r = load();
-    return r.error ? EMPTY() : r.record;
+    if (!r.error) { saidDamage = null; return r.record; }
+    if (!r.error.startsWith('unreadable') && r.error !== saidDamage) {
+      saidDamage = r.error;
+      log(`[main] ${STORE_KEY}: the file is ${r.error}; Home shows no pins or removed set until it is fixed`);
+    }
+    return EMPTY();
   }
 
   /** One edit on a fresh locked read: fn(record, key) -> the next record. Null when it was refused or failed. */
@@ -120,14 +133,14 @@ function createHomeRecord({ store, keyOf = normPath, now = Date.now, log = () =>
       let projects = had
         ? rec.projects.map((p) => (p === had ? { root: p.root, lastOpened: t } : p))
         : [...rec.projects, { root, lastOpened: t }];
-      if (projects.length > MAX_PROJECTS) projects = capProjects(projects, new Set(rec.pins.map(keyFor)));
+      if (projects.length > MAX_PROJECTS) projects = capProjects(projects, new Set([...rec.pins.map(keyFor), key]));
       return { projects, pins: rec.pins, removed: without(rec.removed, key) };
     });
   }
 
-  /** Drop the oldest unpinned entries (no time is oldest) until the list fits. */
-  function capProjects(projects, pinned) {
-    const order = projects.map((p, i) => ({ p, i })).filter(({ p }) => !pinned.has(keyFor(p.root)))
+  /** Drop the oldest entries not in `kept` (the pins and the root just opened; no time is oldest) until the list fits, or none is left to drop. */
+  function capProjects(projects, kept) {
+    const order = projects.map((p, i) => ({ p, i })).filter(({ p }) => !kept.has(keyFor(p.root)))
       .sort((a, b) => (a.p.lastOpened || 0) - (b.p.lastOpened || 0) || a.i - b.i);
     const drop = new Set(order.slice(0, projects.length - MAX_PROJECTS).map(({ p }) => p));
     return projects.filter((p) => !drop.has(p));
@@ -138,7 +151,7 @@ function createHomeRecord({ store, keyOf = normPath, now = Date.now, log = () =>
     return edit(root, (rec, key) => {
       const has = rec.pins.some((p) => keyFor(p) === key);
       const pins = on ? (has ? rec.pins : [...rec.pins, root].slice(-MAX_LIST)) : without(rec.pins, key);
-      return { projects: rec.projects, pins, removed: rec.removed };
+      return { projects: rec.projects, pins, removed: on ? without(rec.removed, key) : rec.removed };
     });
   }
 
