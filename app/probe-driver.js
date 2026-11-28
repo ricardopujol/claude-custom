@@ -14,6 +14,8 @@
  *                         scratch project, never a real one. Since single-instance PR 3 it goes through main's openProject (the queue).
  *   appLock               { owns, file, pid } the app lock this process holds (single-instance PR 3)
  *   openWindows           { record } the crash-restore record as parsed, or null
+ *   home / homeClick { key, act } / homeType { text } / homeShow / homeClose   Jiandu Home: its state and DOM, a real click, typing,
+ *                         showing it, and its own close
  * A window command added by PR 3: reader-unsaved { key, path } reports unsaved reader text for a tab without a real edit.
  *
  * Pure but for `net`: the registry, the windows' apis and startProject are handed in, so the routing is tested under plain node.
@@ -25,7 +27,7 @@ const { handleProbeCommand, probeAuthError, probeLineReader } = require('./tab-s
 
 const TOKEN_MIN = 16;
 // The process's own commands; every other command names a window (or the launch window).
-const APP_COMMANDS = new Set(['windows', 'openProject', 'webContents', 'appLock', 'openWindows']);
+const APP_COMMANDS = new Set(['windows', 'openProject', 'webContents', 'appLock', 'openWindows', 'home', 'homeClick', 'homeType', 'homeShow', 'homeClose']);
 
 /**
  * The real path of `p`: junctions, symlinks and 8.3 short names resolved. A folder not made yet (ENOENT) is the real path of its nearest
@@ -77,8 +79,15 @@ async function routeProbeLine(line, { token, windowApi, appApi }) {
 
 /** The process's own commands. */
 function createAppApi({ probePort, token, tempRoot, registry, launchWindow, openProject, countWebContents = () => null, portNamed = false,
-  appLock = () => null, openWindows = () => null }) {
+  appLock = () => null, openWindows = () => null, home = null }) {
+  const noHome = { ok: false, error: 'no Home in this process' };
   return {
+    // Jiandu Home (verify/probe-home.js): its window's state and DOM, a real click on a card's button, typing in the filter, showing it
+    async home() { return home ? { ok: true, ...(await home.state()) } : noHome; },
+    async homeClick(key, act) { return home ? home.click(key, act) : noHome; },
+    async homeType(text) { return home ? home.type(text) : noHome; },
+    async homeShow() { return home ? home.show() : noHome; },
+    async homeClose() { return home ? home.close() : noHome; },
     // single-instance PR 3: the app lock this process holds ({ owns, file, pid }) and the crash-restore record (parsed, or null)
     async appLock() { return { ok: true, ...(appLock() || { owns: false, file: null, pid: process.pid }) }; },
     async openWindows() { return { ok: true, record: openWindows() }; },

@@ -2793,6 +2793,16 @@ async function handleProbeCommand(line, api, expectedToken) {
       // single-instance PR 3 (verify/probe-single-instance.js): the app lock, the crash-restore record, and unsaved reader text with no edit
       case 'appLock': return await api.appLock();
       case 'openWindows': return await api.openWindows();
+      // Jiandu Home (verify/probe-home.js): the process's Home window, read and clicked in its real page
+      case 'home': return await api.home();
+      case 'homeShow': return await api.homeShow();
+      case 'homeClose': return await api.homeClose();
+      case 'homeClick':
+        if (typeof cmd.key !== 'string' || !cmd.key || typeof cmd.act !== 'string' || !cmd.act) return { ok: false, error: 'homeClick needs a key and an act' };
+        return await api.homeClick(cmd.key, cmd.act);
+      case 'homeType':
+        if (typeof cmd.text !== 'string') return { ok: false, error: 'homeType needs a text' };
+        return await api.homeType(cmd.text);
       case 'reader-unsaved':
         if (typeof cmd.key !== 'string' || !cmd.key || typeof cmd.path !== 'string' || !cmd.path) return { ok: false, error: 'reader-unsaved needs a key and a path' };
         return await api.readerUnsaved(cmd.key, cmd.path);
