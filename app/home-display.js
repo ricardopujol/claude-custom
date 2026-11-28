@@ -75,8 +75,9 @@ function buttonHtml(action) {
 }
 
 // The card's own question (H8: no popup) and its New lane form take the place of its buttons while they are open.
-function confirmHtml(c) {
-  const n = isCount(c.sessions) ? c.sessions : 0;
+// The number is main's answer to the ask (the sessions it read and bound to the token), never the card's older count.
+function confirmHtml(c, ask) {
+  const n = ask && isCount(ask.count) ? ask.count : 0;
   return `<div class="confirm"><span class="question">${esc(`Stop ${plural(n, 'session')} in ${c.label}?`)}</span>`
     + '<button data-act="stop-confirm" class="danger">Stop</button><button data-act="stop-cancel">Cancel</button></div>';
 }
@@ -108,12 +109,12 @@ function cardHtml(c, now, ui) {
 
 function below(c, u) {
   const acts = Array.isArray(c.actions) ? c.actions : [];
-  if (u.confirm === c.key && acts.includes('stop-sessions')) return confirmHtml(c);
+  if (u.confirm && u.confirm.key === c.key && acts.includes('stop-sessions')) return confirmHtml(c, u.confirm);
   if (u.laneForm && u.laneForm.key === c.key && acts.includes('new-lane')) return laneFormHtml(u.laneForm);
   return `<div class="actions">${acts.map(buttonHtml).join('')}</div>`;
 }
 
-/** The cards; `ui` is the page's own state: { confirm: key, laneForm: { key, prefix, name }, notes: { key: text } }. */
+/** The cards; `ui` is the page's own state: { confirm: { key, token, count }, laneForm: { key, prefix, name }, notes: { key: text } }. */
 function cardsHtml(p, ui) {
   const payload = p && typeof p === 'object' ? p : {};
   if (typeof payload.empty === 'string' && payload.empty) return `<div class="empty">${esc(payload.empty)}</div>`;
@@ -170,14 +171,28 @@ function start(doc, home) {
     if (first) { first = false; if (p && typeof p.filter === 'string') box.value = p.filter; }
   });
 
-  function stopConfirmed(key, c) {
-    const asked = c && isCount(c.sessions) ? c.sessions : 0;
+  // H8, the first click: main reads the card's sessions now and answers how many, with the token the second click must carry
+  function askStop(key) {
     ui.confirm = null;
-    ui.notes[key] = `Stopping ${plural(asked, 'session')}…`;
+    ui.laneForm = null;
+    delete ui.notes[key];
     render();
-    // the second click (H8): main refuses a stop that does not carry it
-    Promise.resolve(home.act({ action: 'stop-sessions', key, confirmed: true }))
-      .then((r) => stopNote(r, asked), () => stopNote(null, asked))
+    Promise.resolve(home.act({ action: 'stop-ask', key })).then((r) => r, () => null).then((r) => {
+      if (r && r.ok === true && typeof r.token === 'string' && isCount(r.count)) ui.confirm = { key, token: r.token, count: r.count };
+      else ui.notes[key] = stopNote(r, 0);
+      render();
+    });
+  }
+
+  function stopConfirmed(key) {
+    const ask = ui.confirm && ui.confirm.key === key ? ui.confirm : null;
+    if (!ask) return;
+    ui.confirm = null;
+    ui.notes[key] = `Stopping ${plural(ask.count, 'session')}…`;
+    render();
+    // the second click: it carries the question's token, and main stops only the sessions that question named
+    Promise.resolve(home.act({ action: 'stop-sessions', key, token: ask.token }))
+      .then((r) => stopNote(r, ask.count), () => stopNote(null, ask.count))
       .then((text) => { ui.notes[key] = text; render(); });
   }
 
@@ -203,9 +218,9 @@ function start(doc, home) {
   // the card's own controls: they change the page's state and ask main nothing until Stop or Create
   function pageAct(t, c) {
     switch (t.action) {
-      case 'stop-sessions': ui.confirm = t.key; ui.laneForm = null; delete ui.notes[t.key]; render(); return true;
+      case 'stop-sessions': askStop(t.key); return true;
       case 'stop-cancel': ui.confirm = null; render(); return true;
-      case 'stop-confirm': stopConfirmed(t.key, c); return true;
+      case 'stop-confirm': stopConfirmed(t.key); return true;
       case 'new-lane': ui.laneForm = { key: t.key, prefix: PREFIXES[0], name: '' }; ui.confirm = null; delete ui.notes[t.key]; render(); focusName(); return true;
       case 'lane-cancel': ui.laneForm = null; render(); return true;
       case 'lane-create': createLane(t.key); return true;

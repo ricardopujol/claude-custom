@@ -164,43 +164,65 @@ const windowless = (over = {}) => card({ key: 'kw', root: 'C:\\w', label: 'viral
   actions: ['open', 'stop-sessions', 'pin', 'show-in-explorer', 'new-lane'], ...over });
 const noteOf = (doc, key) => { const n = doc.querySelector(`[data-key="${key}"] .card-note`); return n ? n.textContent : null; };
 
-test('H8: Stop its sessions asks on the card, no popup: "Stop 2 sessions in viral? Stop / Cancel"; Cancel stops nothing', () => {
-  const p = livePage();
+// main's side of H8 in a page test: the ask answers a token and a count; the stop answers in turn from `stops`
+function stopPage({ count = 2, stops = [], askAnswer = null } = {}) {
+  return livePage((m) => {
+    if (m.action === 'stop-ask') return askAnswer || { ok: true, token: `tok-${m.key}`, count };
+    if (m.action === 'stop-sessions') return stops.shift();
+    return { ok: true };
+  });
+}
+
+test('H8: Stop its sessions asks MAIN first, then the card asks "Stop 2 sessions in viral? Stop / Cancel"; Cancel stops nothing', async () => {
+  const p = stopPage({ count: 2 });
   const doc = p.dom.window.document;
-  p.onModel(payload([windowless()]));
+  p.onModel(payload([windowless({ sessions: 5 })]));
   doc.querySelector('[data-act="stop-sessions"]').click();
-  assert.deepStrictEqual(p.acts, [], 'the first click only asks');
+  assert.deepStrictEqual(p.acts, [{ action: 'stop-ask', key: 'kw' }], 'the first click only asks; nothing stops');
+  await settle();
   const ask = doc.querySelector('[data-key="kw"] .confirm');
   assert.ok(ask, 'the question is on the card');
-  assert.strictEqual(ask.querySelector('.question').textContent, 'Stop 2 sessions in viral?');
+  assert.strictEqual(ask.querySelector('.question').textContent, 'Stop 2 sessions in viral?', 'main\'s number, not the card\'s older 5');
   assert.deepStrictEqual([...ask.querySelectorAll('button')].map((b) => b.textContent), ['Stop', 'Cancel']);
   assert.strictEqual(doc.querySelector('[data-key="kw"] [data-act="stop-sessions"]'), null, 'the actions give way to the question');
   p.onModel(payload([windowless()]));
   assert.ok(doc.querySelector('[data-key="kw"] .confirm'), 'a push while asking keeps the question');
   doc.querySelector('[data-act="stop-cancel"]').click();
   assert.strictEqual(doc.querySelector('[data-key="kw"] .confirm'), null);
-  assert.deepStrictEqual(p.acts, []);
-  const one = livePage();
-  one.onModel(payload([windowless({ sessions: 1, label: 'q<b>' })]));
+  assert.deepStrictEqual(p.acts, [{ action: 'stop-ask', key: 'kw' }]);
+  const one = stopPage({ count: 1 });
+  one.onModel(payload([windowless({ label: 'q<b>' })]));
   one.dom.window.document.querySelector('[data-act="stop-sessions"]').click();
+  await settle();
   assert.strictEqual(one.dom.window.document.querySelector('.confirm .question').textContent, 'Stop 1 session in q<b>?', 'one session, and the name escaped');
 });
 
-test('H8: Stop sends the second click, then the card says how many stopped; a refused stop says why', async () => {
-  const answers = [{ ok: true, stopped: 2, kept: 0 }, { ok: false, stopped: 1, kept: 1, error: 'Couldn\'t stop that session: it has a window open.' },
-    { ok: false, stopped: 0, kept: 0, error: 'powershell failed' }];
-  const p = livePage(() => answers.shift());
+test('H8: an ask main refused shows no question, and says why', async () => {
+  const p = stopPage({ askAnswer: { ok: false, error: 'no session of this project runs with no window now' } });
+  const doc = p.dom.window.document;
+  p.onModel(payload([windowless()]));
+  doc.querySelector('[data-act="stop-sessions"]').click();
+  await settle();
+  assert.strictEqual(doc.querySelector('.confirm'), null);
+  assert.strictEqual(noteOf(doc, 'kw'), 'The sessions were not stopped: no session of this project runs with no window now.');
+});
+
+test('H8: Stop sends the question\'s token, then the card says how many stopped; a refused stop says why', async () => {
+  const p = stopPage({ count: 2, stops: [{ ok: true, asked: 2, stopped: 2, kept: 0 },
+    { ok: false, asked: 2, stopped: 1, kept: 1, error: 'Couldn\'t stop that session: it has a window open.' },
+    { ok: false, asked: 0, stopped: 0, kept: 0, error: 'powershell failed' }] });
   const doc = p.dom.window.document;
   const stopOnce = async () => {
     p.onModel(payload([windowless()]));
     doc.querySelector('[data-act="stop-sessions"]').click();
+    await settle();
     doc.querySelector('[data-act="stop-confirm"]').click();
     assert.strictEqual(noteOf(doc, 'kw'), 'Stopping 2 sessions…');
     await settle();
     return noteOf(doc, 'kw');
   };
   assert.strictEqual(await stopOnce(), 'Stopped 2 sessions.');
-  assert.deepStrictEqual(p.acts.pop(), { action: 'stop-sessions', key: 'kw', confirmed: true });
+  assert.deepStrictEqual(p.acts.pop(), { action: 'stop-sessions', key: 'kw', token: 'tok-kw' });
   assert.strictEqual(await stopOnce(), 'Stopped 1 of 2 sessions. Couldn\'t stop that session: it has a window open.');
   assert.strictEqual(await stopOnce(), 'The sessions were not stopped: powershell failed.');
   p.onModel(payload([windowless({ state: 'closed', sessions: null, actions: ['open'] })]));

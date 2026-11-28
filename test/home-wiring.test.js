@@ -68,11 +68,13 @@ test('PR #263 Dexter 2: Home\'s session end is the project window\'s: quitting, 
   assert.match(MAIN, /onSessionEnd: \(\) => \{ quitting = true; markRecordClean\(\); \},/);
 });
 
-test('H-PR3: Stop its sessions is `--stop`\'s loop with its deps; New lane is the strip\'s + in the project\'s own window', () => {
-  assert.match(MAIN, /stopSessions: async \(root\) => \{\s*const rep = await stopFolder\(\{ folder: root \}, \{ list: \(\) => listBackground\(\), stopHost: \(row\) => stopHost\(\{ row \}, hostStopDeps\(\)\) \}\);/);
-  assert.match(MAIN, /return \{ stopped: ended, kept: rep\.kept, late: rep\.late, verified: rep\.verified === true,/);
-  assert.match(MAIN, /newLane: async \(root, branch\) => \{\s*const o = await openProject\(\{ cwd: root, show: 'shown' \}\);/);
-  assert.match(MAIN, /const shell = w && w\.tabShell;[\s\S]{0,300}return shell\.createWorktree\(branch\);/);
+test('H-PR3 (PR #265 Miguel Y1): the Stop and New lane effects are app/home-actions.js\'s (behaviour-tested there), on ONE windowless read', () => {
+  assert.match(MAIN, /async function homeWindowlessRows\(\) \{ return windowlessItems\(await appBackgroundModel\(\)\)\.map\(\(it\) => it\.row\); \}/);
+  assert.match(MAIN, /const homeActions = createHomeActions\(\{\s*windowless: \(\) => homeWindowlessRows\(\),\s*stopHost: \(row\) => stopHost\(\{ row \}, hostStopDeps\(\)\),\s*projectOf: homePaths\.projectOf, keyOf: normPath,/);
+  // the cards count from the same rows, with the same projectOf and keyOf (PR #265 Dexter 2)
+  assert.match(MAIN, /windowless: async \(\) => \(await homeWindowlessRows\(\)\)\.map\(\(r\) => \(\{ cwd: r\.cwd \}\)\),\s*projectOf: homePaths\.projectOf, exists: homePaths\.exists, keyOf: normPath,/);
+  assert.match(MAIN, /askStop: \(key\) => homeActions\.ask\(key\),\s*stopSessions: \(key, token\) => homeActions\.stop\(key, token\),\s*newLane: \(root, branch\) => homeActions\.newLane\(root, branch\),/);
+  assert.doesNotMatch(MAIN, /stopFolder\(/, 'never the folder stop: it matches a row\'s install (PR #265 Dexter 1)');
 });
 
 test('Home\'s close follows the project window\'s rule (H5): it hides only with minimise-on-close, a tray, and no quit under way', () => {

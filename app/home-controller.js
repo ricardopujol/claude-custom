@@ -19,8 +19,11 @@
  *                   lane          { key, lane }: the lane must be one of that card's lanes, by the exact path main sent (no disk call
  *                                 on page input: Miguel G8); opens the lane's folder
  *                   any other     the key must be a card's (ALL the cards, not only the shown ones) and the card must offer it
- *                   stop-sessions { key, confirmed: true } (H-PR3, H8): a windowless card only, and only the card's second click;
- *                                 host/stop-folder.js on the card's root -> a Promise of { ok, stopped, kept, error? }
+ *                   stop-ask      { key } (H-PR3, H8): a windowless card only; main reads that card's sessions now -> a Promise of
+ *                                 { ok: true, token, count } (the question's number) | { ok: false, error }
+ *                   stop-sessions { key, token }: the token of that card's question, once; ends only the sessions it named
+ *                                 (app/home-actions.js) -> a Promise of { ok, asked, stopped, kept, error? }. One stop per card at a
+ *                                 time; the card offers no Stop while one runs.
  *                   new-lane      { key, branch } (H-PR3): checkBranch first (no git call for a bad name), then the strip's + in
  *                                 the project's window -> a Promise of { ok: true, branch } | { ok: false, error }
  *                 -> { ok: true } | { ok: false, error }. A pin or remove the record refused (it answers null) is
@@ -38,8 +41,8 @@
  *
  * deps: record { readFresh, pin, remove } (app/home-record.js), readRecents() -> Promise<list | null>, windows() -> the model's windows,
  * windowless() -> Promise<[{ cwd }]>, projectOf, exists, keyOf, labelOf, push(payload), effects { open(cwd), goTo(root),
- * closeWindow(root), showInExplorer(root), chooseFolder(), stopSessions(root) -> Promise<{ stopped, kept, late, verified, texts }>,
- * newLane(root, branch) -> Promise<{ ok, branch } | { ok: false, error }> }, now(), log; optional defer(fn), onSourcesChanged().
+ * closeWindow(root), showInExplorer(root), chooseFolder(), askStop(key), stopSessions(key, token), newLane(root, branch)
+ * (app/home-actions.js) }, now(), log; optional defer(fn), onSourcesChanged().
  */
 
 const path = require('path');
@@ -58,7 +61,7 @@ const EMPTY_RECORD = () => ({ projects: [], pins: [], removed: [] });
 
 const isObj = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
 
-function pagePayload(model, filter, now) {
+function pagePayload(model, filter, now, stopping = new Set()) {
   const all = model && Array.isArray(model.cards) ? model.cards : [];
   const shown = filterCards(all, filter);
   const summary = { ...(model && model.summary), shown: shown.length };
@@ -68,7 +71,10 @@ function pagePayload(model, filter, now) {
   else if (shown.length === 0) empty = `No project matches "${text.trim()}".`;
   const cards = shown.map((c) => ({
     key: c.key, root: c.root, label: c.label, pinned: c.pinned, state: c.state, tabs: c.tabs, needs: c.needs, sessions: c.sessions,
-    lastUsed: c.lastUsed, lanes: c.lanes, actions: c.actions.filter((a) => WIRED_ACTIONS.includes(a)),
+    lastUsed: c.lastUsed, lanes: c.lanes,
+    // a card whose stop runs offers no second one (Dexter 6, Miguel Y3), and says it is stopping
+    actions: c.actions.filter((a) => WIRED_ACTIONS.includes(a) && !(a === 'stop-sessions' && stopping.has(c.key))),
+    ...(stopping.has(c.key) ? { stopping: true } : {}),
   }));
   return { cards, summary, filter: text, empty, now };
 }
@@ -107,6 +113,7 @@ function createHomeController(deps) {
   let inFlightForced = false;
   let again = null;            // a forced refresh waiting for an unforced one in flight (Miguel G3)
   let soon = false;
+  const stopping = new Set();  // card keys with a stop in flight
 
   function readRecord() {
     let r = null;
@@ -123,7 +130,7 @@ function createHomeController(deps) {
   }
 
   function publish() {
-    payload = pagePayload(built, filter, now());
+    payload = pagePayload(built, filter, now(), stopping);
     try { push(payload); } catch (err) { log(`[main] home: the push failed: ${err && err.message}`); }
     return payload;
   }
@@ -197,6 +204,11 @@ function createHomeController(deps) {
       if (!lane) return { ok: false, error: 'no such lane' };
       return run(() => { effects.open(lane.path); });
     }
+    if (action === 'stop-ask') {
+      if (!card.actions.includes('stop-sessions')) return { ok: false, error: 'that card does not offer stop-sessions' };
+      return askStop(card);
+    }
+    if (action === 'stop-sessions' && stopping.has(card.key)) return Promise.resolve({ ok: false, error: 'a stop is already running for this project' });
     if (!WIRED_ACTIONS.includes(action) || !card.actions.includes(action)) return { ok: false, error: `that card does not offer ${action}` };
     switch (action) {
       case 'open': return run(() => { effects.open(card.root); });
@@ -211,25 +223,42 @@ function createHomeController(deps) {
     }
   }
 
-  // H8: the card asks first ("Stop 2 sessions in viral? Stop / Cancel"); main refuses an ask that is not the second click, so no
-  // page bug can stop a session on one click. The stop is host/stop-folder.js's, as `claude-custom <folder> --stop` runs it. Only
-  // a stop that ended every session, with every session checked, is ok; anything else says why, with the count that did stop.
-  async function stopSessions(card, msg) {
-    if (msg.confirmed !== true) return { ok: false, error: 'a stop needs its second click' };
-    let rep;
-    try { rep = await effects.stopSessions(card.root); } catch (err) { return { ok: false, stopped: 0, kept: 0, error: errText(err) }; }
-    refresh({ force: true }).catch(() => {});
-    if (!isObj(rep) || !isCount(rep.stopped) || !isCount(rep.kept) || !isCount(rep.late)) {
-      return { ok: false, stopped: 0, kept: 0, error: 'the stop gave no answer' };
+  // H8, made in main (PR #265 Dexter 3, 5): the card's first click asks main, which reads the sessions now and answers how many with a
+  // one-time token bound to this card and those sessions (app/home-actions.js). Only a stop that carries that token runs, and it ends
+  // only those sessions. This guards against a page path that skips the question, a replay, and a count that changed under the
+  // question; it is not a guard against a page that both asks and confirms on one click (the page's two buttons are).
+  async function askStop(card) {
+    if (stopping.has(card.key)) return { ok: false, error: 'a stop is already running for this project' };
+    let r;
+    try { r = await effects.askStop(card.key); } catch (err) { return { ok: false, error: errText(err) }; }
+    if (!isObj(r) || r.ok !== true || typeof r.token !== 'string' || !isCount(r.count) || r.count < 1) {
+      return { ok: false, error: isObj(r) && typeof r.error === 'string' && r.error ? r.error : 'the sessions could not be read' };
     }
-    const kept = rep.kept + rep.late;
+    return { ok: true, token: r.token, count: r.count };
+  }
+
+  // One stop per card at a time (Dexter 6, Miguel Y3): its button leaves the card while it runs. The cards are read again (forced) on
+  // every way out, and that read is awaited, so the answer lands on the fresh card (Miguel G1).
+  async function stopSessions(card, msg) {
+    if (stopping.has(card.key)) return { ok: false, error: 'a stop is already running for this project' };
+    if (typeof msg.token !== 'string' || !msg.token) return { ok: false, error: 'a stop needs its question first' };
+    stopping.add(card.key);
+    publish();
+    let rep = null;
+    let thrown = null;
+    try { rep = await effects.stopSessions(card.key, msg.token); } catch (err) { thrown = err; }
+    finally {
+      stopping.delete(card.key);
+      await refresh({ force: true }).catch(() => {});
+    }
+    if (thrown) return { ok: false, asked: 0, stopped: 0, kept: 0, error: errText(thrown) };
+    if (isObj(rep) && rep.ok === false && typeof rep.error === 'string' && !isCount(rep.asked)) return { ok: false, error: rep.error };
+    if (!isObj(rep) || !isCount(rep.asked) || !isCount(rep.stopped) || !isCount(rep.kept)) {
+      return { ok: false, asked: 0, stopped: 0, kept: 0, error: 'the stop gave no answer' };
+    }
     const texts = Array.isArray(rep.texts) ? rep.texts.filter((s) => typeof s === 'string' && s) : [];
-    let error = null;
-    if (rep.kept > 0) error = texts[0] || 'a session could not be stopped';
-    else if (rep.late > 0) error = 'sessions kept starting while others were stopped; stop again';
-    else if (rep.verified !== true) error = 'not every session could be checked, so one may still run';
-    await inFlightDone();
-    return error === null ? { ok: true, stopped: rep.stopped, kept } : { ok: false, stopped: rep.stopped, kept, error };
+    if (rep.ok === true && rep.kept === 0) return { ok: true, asked: rep.asked, stopped: rep.stopped, kept: 0 };
+    return { ok: false, asked: rep.asked, stopped: rep.stopped, kept: rep.kept, error: texts[0] || 'a session could not be stopped' };
   }
 
   // New lane: the strip's + (app/tab-shell.js createWorktree: Contract A, then setup, then the lane's tab) in the project's window,
@@ -238,21 +267,24 @@ function createHomeController(deps) {
     if (typeof msg.branch !== 'string') return { ok: false, error: checkBranch('') };
     const branch = msg.branch.trim();
     if (branch.length > MAX_BRANCH) return { ok: false, error: `a branch name is at most ${MAX_BRANCH} characters` };
+    // a bare type (`feat/`) has no name: said here, not by the script's wrong "has no prefix" (Dexter 4, Miguel G3)
+    if (/\/$/.test(branch)) return { ok: false, error: 'type a name after the branch type' };
     const bad = checkBranch(branch);
     if (bad) return { ok: false, error: bad };
     let r;
     try { r = await effects.newLane(card.root, branch); } catch (err) { return { ok: false, error: errText(err) }; }
-    if (!isObj(r) || r.ok !== true) return { ok: false, error: isObj(r) && typeof r.error === 'string' && r.error ? r.error : 'the lane was not made' };
+    const made = isObj(r) && r.made === true;
+    if (!isObj(r) || r.ok !== true) {
+      const error = isObj(r) && typeof r.error === 'string' && r.error ? r.error : 'the lane was not made';
+      return made ? { ok: false, made: true, branch, error } : { ok: false, error };
+    }
     return { ok: true, branch: typeof r.branch === 'string' && r.branch ? r.branch : branch };
   }
-
-  // the refresh a stop started has pushed its cards before the stop answers, so the page's note lands on the fresh card
-  const inFlightDone = () => (inFlight ? inFlight.catch(() => {}) : Promise.resolve());
 
   function model() {
     if (payload) return payload;
     build();
-    return pagePayload(built, filter, now());
+    return pagePayload(built, filter, now(), stopping);
   }
 
   function closed() {

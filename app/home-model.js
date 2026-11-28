@@ -40,6 +40,17 @@ function actionsOf(state, pinned) {
   return [...lead, pinned ? 'unpin' : 'pin', 'show-in-explorer', 'new-lane', ...(state === 'closed' ? ['remove'] : [])];
 }
 
+/** The card a path belongs to: the key of its project root (projectOf; a path it cannot place is its own root). The ONE rule a card
+ *  counts its windowless sessions by, and the one its Stop selects them by (app/home-actions.js selectRows; PR #265 Dexter 2). */
+function sessionKeyOf(p, { projectOf, keyOf }) {
+  let root = p;
+  try {
+    const pr = projectOf(p);
+    if (pr && isPath(pr.root)) root = pr.root;
+  } catch { root = p; }
+  try { return keyOf(root); } catch { return null; }
+}
+
 function homeCards({ record, recents, windows, windowless, filter, projectOf, exists, keyOf, labelOf } = {}) {
   const placeOf = (p) => {
     try {
@@ -89,6 +100,7 @@ function homeCards({ record, recents, windows, windowless, filter, projectOf, ex
   for (const p of listOf(rec.pins)) if (isPath(p)) entry(rootOf(p));
   for (const s of listOf(windowless)) {
     if (!s || !isPath(s.cwd)) continue;
+    // the card is sessionKeyOf's (the rule Stop selects by): rootOf, then keyOf, exactly as below
     const e = entry(rootOf(s.cwd));
     if (e) e.sessions += 1;
   }
@@ -160,4 +172,4 @@ function byOrder(a, b) {
   return a.key < b.key ? -1 : a.key > b.key ? 1 : 0;
 }
 
-module.exports = { homeCards, filterCards };
+module.exports = { homeCards, filterCards, sessionKeyOf };

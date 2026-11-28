@@ -72,80 +72,121 @@ test('H-PR3: the page gets Stop its sessions (windowless cards only) and New lan
   });
 });
 
-function stopRig(report) {
+function stopRig(report, { askAnswer } = {}) {
   const calls = [];
   const t = rig({ effects: {
     open() {}, goTo() {}, closeWindow() {}, showInExplorer() {}, chooseFolder() {},
-    stopSessions: async (root) => { calls.push(['stop', root]); if (report instanceof Error) throw report; return report; },
-    newLane: async (root, branch) => { calls.push(['lane', root, branch]); return { ok: true, branch, path: `${root}\\${branch.replace('/', '-')}` }; },
+    askStop: async (key) => { calls.push(['ask', key]); return askAnswer || { ok: true, token: 'tok', count: 2 }; },
+    stopSessions: async (key, token) => {
+      calls.push(['stop', key, token]);
+      if (report instanceof Error) throw report;
+      if (typeof report === 'function') return report();
+      return report;
+    },
+    newLane: async (root, branch) => { calls.push(['lane', root, branch]); return { ok: true, branch }; },
   } });
   t.s.windowless = [{ cwd: 'C:\\a\\dev' }, { cwd: 'C:\\a\\feat-x' }];
   return { t, calls };
 }
 
-test('H8: Stop its sessions needs the second click: an ask without confirmed: true stops nothing', async () => {
-  const { t, calls } = stopRig({ stopped: 2, kept: 0, late: 0, verified: true, texts: [] });
+test('PR #265 Dexter 3, 5: the ask is main\'s: stop-ask answers the count and a token; a stop with no token stops nothing', async () => {
+  const { t, calls } = stopRig({ ok: true, asked: 2, stopped: 2, kept: 0, texts: [] });
   await t.c.refresh({ force: true });
-  for (const confirmed of [undefined, false, 'yes', 1]) {
-    assert.deepStrictEqual(await t.c.act({ action: 'stop-sessions', key: 'c:\\a', confirmed }), { ok: false, error: 'a stop needs its second click' });
+  assert.deepStrictEqual(await t.c.act({ action: 'stop-ask', key: 'c:\\a' }), { ok: true, token: 'tok', count: 2 });
+  for (const token of [undefined, '', 5, null]) {
+    assert.deepStrictEqual(await t.c.act({ action: 'stop-sessions', key: 'c:\\a', token, confirmed: true }), { ok: false, error: 'a stop needs its question first' });
   }
-  assert.deepStrictEqual(calls, []);
+  assert.deepStrictEqual(calls, [['ask', 'c:\\a']]);
+  assert.deepStrictEqual(await t.c.act({ action: 'stop-ask', key: 'c:\\b' }), { ok: false, error: 'that card does not offer stop-sessions' });
 });
 
-test('H8: a confirmed stop runs the folder stop on the card\'s root, answers how many stopped, and reads the lists again', async () => {
-  const { t, calls } = stopRig({ stopped: 2, kept: 0, late: 0, verified: true, texts: [] });
+test('an ask main refused (no session now, a stop running) is said; the page gets no token', async () => {
+  const { t } = stopRig(null, { askAnswer: { ok: false, error: 'no session of this project runs with no window now' } });
+  await t.c.refresh({ force: true });
+  assert.deepStrictEqual(await t.c.act({ action: 'stop-ask', key: 'c:\\a' }), { ok: false, error: 'no session of this project runs with no window now' });
+  const odd = stopRig(null, { askAnswer: { ok: true, token: 'x', count: 0 } });
+  await odd.t.c.refresh({ force: true });
+  assert.strictEqual((await odd.t.c.act({ action: 'stop-ask', key: 'c:\\a' })).ok, false, 'a question about no session is no question');
+});
+
+test('H8: a stop with its token runs on the card\'s KEY, answers the counts, and awaits a forced refresh before it answers (Miguel G1)', async () => {
+  const { t, calls } = stopRig({ ok: true, asked: 2, stopped: 2, kept: 0, texts: [] });
   await t.c.refresh({ force: true });
   const reads = t.s.windowlessReads;
   t.s.windowless = [];
-  assert.deepStrictEqual(await t.c.act({ action: 'stop-sessions', key: 'c:\\a', confirmed: true }), { ok: true, stopped: 2, kept: 0 });
-  assert.deepStrictEqual(calls, [['stop', 'C:\\a']]);
-  assert.strictEqual(t.s.windowlessReads, reads + 1, 'a forced refresh');
+  assert.deepStrictEqual(await t.c.act({ action: 'stop-sessions', key: 'c:\\a', token: 'tok' }), { ok: true, asked: 2, stopped: 2, kept: 0 });
+  assert.deepStrictEqual(calls, [['stop', 'c:\\a', 'tok']]);
+  assert.strictEqual(t.s.windowlessReads, reads + 1, 'a forced refresh, already done when the answer came');
   assert.strictEqual(t.last().cards.find((c) => c.key === 'c:\\a').state, 'closed');
 });
 
-test('H8: a stop that kept a session, could not check, or threw says so (ok: false), never a quiet success', async () => {
-  const kept = stopRig({ stopped: 1, kept: 1, late: 0, verified: true, texts: ['Couldn\'t stop that session: it has a window open.'] });
+test('Miguel G1: a stop that threw still reads the cards again before it answers', async () => {
+  const { t } = stopRig(new Error('powershell failed'));
+  await t.c.refresh({ force: true });
+  const reads = t.s.windowlessReads;
+  assert.deepStrictEqual(await t.c.act({ action: 'stop-sessions', key: 'c:\\a', token: 'tok' }), { ok: false, asked: 0, stopped: 0, kept: 0, error: 'powershell failed' });
+  assert.strictEqual(t.s.windowlessReads, reads + 1);
+});
+
+test('H8: a stop that kept a session says so with its text; a refusal passes through; a shapeless answer is no success', async () => {
+  const kept = stopRig({ ok: false, asked: 2, stopped: 1, kept: 1, texts: ['Couldn\'t stop that session: it has a window open.'] });
   await kept.t.c.refresh({ force: true });
-  assert.deepStrictEqual(await kept.t.c.act({ action: 'stop-sessions', key: 'c:\\a', confirmed: true }),
-    { ok: false, stopped: 1, kept: 1, error: 'Couldn\'t stop that session: it has a window open.' });
-  const late = stopRig({ stopped: 2, kept: 0, late: 1, verified: true, texts: [] });
-  await late.t.c.refresh({ force: true });
-  assert.deepStrictEqual(await late.t.c.act({ action: 'stop-sessions', key: 'c:\\a', confirmed: true }),
-    { ok: false, stopped: 2, kept: 1, error: 'sessions kept starting while others were stopped; stop again' });
-  const unsure = stopRig({ stopped: 2, kept: 0, late: 0, verified: false, texts: [] });
-  await unsure.t.c.refresh({ force: true });
-  assert.deepStrictEqual(await unsure.t.c.act({ action: 'stop-sessions', key: 'c:\\a', confirmed: true }),
-    { ok: false, stopped: 2, kept: 0, error: 'not every session could be checked, so one may still run' });
-  const threw = stopRig(new Error('powershell failed'));
-  await threw.t.c.refresh({ force: true });
-  assert.deepStrictEqual(await threw.t.c.act({ action: 'stop-sessions', key: 'c:\\a', confirmed: true }), { ok: false, stopped: 0, kept: 0, error: 'powershell failed' });
-  for (const bad of [null, {}, { stopped: '2' }]) {
+  assert.deepStrictEqual(await kept.t.c.act({ action: 'stop-sessions', key: 'c:\\a', token: 'tok' }),
+    { ok: false, asked: 2, stopped: 1, kept: 1, error: 'Couldn\'t stop that session: it has a window open.' });
+  const refused = stopRig({ ok: false, error: 'the question expired; ask again' });
+  await refused.t.c.refresh({ force: true });
+  assert.deepStrictEqual(await refused.t.c.act({ action: 'stop-sessions', key: 'c:\\a', token: 'tok' }), { ok: false, error: 'the question expired; ask again' });
+  for (const bad of [null, {}, { asked: 2, stopped: '2', kept: 0 }]) {
     const r = stopRig(bad);
     await r.t.c.refresh({ force: true });
-    assert.strictEqual((await r.t.c.act({ action: 'stop-sessions', key: 'c:\\a', confirmed: true })).ok, false, JSON.stringify(bad));
+    assert.strictEqual((await r.t.c.act({ action: 'stop-sessions', key: 'c:\\a', token: 'tok' })).ok, false, JSON.stringify(bad));
   }
 });
 
-test('New lane: a bad branch name is refused before any git call; a good one runs the strip\'s create on the card\'s root', async () => {
-  const { t, calls } = stopRig({ stopped: 0, kept: 0, late: 0, verified: true, texts: [] });
+test('PR #265 Dexter 6 / Miguel Y3: while a stop runs the card offers no Stop, says it is stopping, and a second stop is refused', async () => {
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const { t, calls } = stopRig(async () => { await gate; return { ok: true, asked: 2, stopped: 2, kept: 0, texts: [] }; });
+  await t.c.refresh({ force: true });
+  const first = t.c.act({ action: 'stop-sessions', key: 'c:\\a', token: 'tok' });
+  await flush();
+  const during = t.last().cards.find((c) => c.key === 'c:\\a');
+  assert.ok(!during.actions.includes('stop-sessions'), 'no Stop while one runs');
+  assert.strictEqual(during.stopping, true);
+  assert.deepStrictEqual(await t.c.act({ action: 'stop-sessions', key: 'c:\\a', token: 'tok' }), { ok: false, error: 'a stop is already running for this project' });
+  assert.deepStrictEqual(await t.c.act({ action: 'stop-ask', key: 'c:\\a' }), { ok: false, error: 'a stop is already running for this project' });
+  release();
+  assert.strictEqual((await first).ok, true);
+  assert.strictEqual(calls.filter((c) => c[0] === 'stop').length, 1);
+  assert.strictEqual(t.last().cards.find((c) => c.key === 'c:\\a').stopping, undefined);
+});
+
+test('New lane: a bad branch name or a bare type is refused before any call; a good one runs on the card\'s root', async () => {
+  const { t, calls } = stopRig(null);
   t.c.sync();
-  for (const branch of [undefined, '', '  ', '-x', 'feat/a b', 'feat/"x"']) {
+  for (const branch of [undefined, '', '  ', '-x', 'feat/a b', 'feat/"x"', 'feat/', 'refactor/']) {
     const r = await t.c.act({ action: 'new-lane', key: 'c:\\b', branch });
     assert.strictEqual(r.ok, false, JSON.stringify(branch));
     assert.strictEqual(typeof r.error, 'string');
   }
+  assert.deepStrictEqual(await t.c.act({ action: 'new-lane', key: 'c:\\b', branch: 'feat/' }), { ok: false, error: 'type a name after the branch type' });
   assert.deepStrictEqual(await t.c.act({ action: 'new-lane', key: 'c:\\b', branch: ' feat/x ' }), { ok: true, branch: 'feat/x' });
   assert.deepStrictEqual(calls, [['lane', 'C:\\b', 'feat/x']]);
-  const long = await t.c.act({ action: 'new-lane', key: 'c:\\b', branch: `feat/${'x'.repeat(200)}` });
-  assert.deepStrictEqual(long, { ok: false, error: 'a branch name is at most 120 characters' });
+  assert.deepStrictEqual(await t.c.act({ action: 'new-lane', key: 'c:\\b', branch: `feat/${'x'.repeat(200)}` }), { ok: false, error: 'a branch name is at most 120 characters' });
 });
 
-test('New lane: a create that failed answers its error word for word; a throw is an error too', async () => {
-  const t = rig({ effects: { open() {}, goTo() {}, closeWindow() {}, showInExplorer() {}, chooseFolder() {}, stopSessions: async () => null,
-    newLane: async (root, branch) => (branch === 'feat/boom' ? Promise.reject(new Error('the window did not start')) : { ok: false, error: 'demo has no prefix: use feat/.' }) } });
+test('New lane: a create that failed answers its error word for word; a throw is an error; a made lane with a failed setup says made', async () => {
+  const t = rig({ effects: { open() {}, goTo() {}, closeWindow() {}, showInExplorer() {}, chooseFolder() {}, askStop: async () => null, stopSessions: async () => null,
+    newLane: async (root, branch) => {
+      if (branch === 'feat/boom') throw new Error('the window did not start');
+      if (branch === 'feat/half') return { ok: false, made: true, branch, error: 'its setup failed: npm ci failed' };
+      return { ok: false, error: 'demo has no prefix: use feat/.' };
+    } } });
   t.c.sync();
   assert.deepStrictEqual(await t.c.act({ action: 'new-lane', key: 'c:\\b', branch: 'demo' }), { ok: false, error: 'demo has no prefix: use feat/.' });
   assert.deepStrictEqual(await t.c.act({ action: 'new-lane', key: 'c:\\b', branch: 'feat/boom' }), { ok: false, error: 'the window did not start' });
+  assert.deepStrictEqual(await t.c.act({ action: 'new-lane', key: 'c:\\b', branch: 'feat/half' }),
+    { ok: false, made: true, branch: 'feat/half', error: 'its setup failed: npm ci failed' });
 });
 
 test('Dexter 5: a read that fails just now keeps the last good record, so the pins and the order do not flip', () => {

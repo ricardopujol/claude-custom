@@ -139,7 +139,7 @@ const { createHomePaths } = require('./home-paths');
 const { createScoreStore } = require('../host/game-scores');
 const { listDeps, hostStopDeps } = require('../host/stop-deps');
 const { stopHost } = require('../host/stop-holder');
-const { stopFolder, ENDED: STOP_ENDED } = require('../host/stop-folder');
+const { createHomeActions } = require('./home-actions');
 // The tray icon (BACKLOG #119 A8): the needs-you count, show/hide, start minimised, minimise on close.
 const { createTrayController } = require('./tray-controller');
 const { renderTrayIcon } = require('./tray-icon');
@@ -476,12 +476,22 @@ const homeWindow = createHomeWindow({
   onClosed: () => homeController.closed(),
   log: (l) => console.log(l),
 });
+// The sessions with no window, as host rows: ONE read for the cards' counts and for Stop's choice (app/home-actions.js selectRows).
+async function homeWindowlessRows() { return windowlessItems(await appBackgroundModel()).map((it) => it.row); }
+const homeActions = createHomeActions({
+  windowless: () => homeWindowlessRows(),
+  stopHost: (row) => stopHost({ row }, hostStopDeps()),
+  projectOf: homePaths.projectOf, keyOf: normPath,
+  openProject: (o) => openProject(o),
+  registry,
+  log: (l) => console.log(l),
+});
 const homeController = createHomeController({
   record: homeRecord,
   readRecents: () => readRecentsOffThread({ projectsDir: readSeams(process.env).projectsDir || undefined, limit: HOME_RECENTS }),
   // each LIVE project window's tabs, needs and lanes (app/home-controller.js windowFacts; a dead registered window is closed: Dexter 8)
   windows: () => windowFacts(registry.list(), needsYouKeys),
-  windowless: async () => windowlessItems(await appBackgroundModel()).map((it) => ({ cwd: it.row && it.row.cwd })),
+  windowless: async () => (await homeWindowlessRows()).map((r) => ({ cwd: r.cwd })),
   projectOf: homePaths.projectOf, exists: homePaths.exists, keyOf: normPath, labelOf: (root) => projectLabel(root),
   push: (payload) => homeWindow.send(payload),
   onSourcesChanged: () => homePaths.clear(),
@@ -502,26 +512,11 @@ const homeController = createHomeController({
         if (r && r.canceled !== true && Array.isArray(r.filePaths) && typeof r.filePaths[0] === 'string') openProject({ cwd: r.filePaths[0], show: 'shown' }).catch(() => {});
       }).catch(() => {});
     },
-    // H-PR3 Stop its sessions: `claude-custom <folder> --stop`'s loop (host/stop-folder.js) with its deps, so the two cannot drift.
-    // stopHost never stops a session with a window open, and never a pid it cannot prove.
-    stopSessions: async (root) => {
-      const rep = await stopFolder({ folder: root }, { list: () => listBackground(), stopHost: (row) => stopHost({ row }, hostStopDeps()) });
-      for (const x of rep.results) console.log(`[main] home: Stop its sessions: ${x.outcome} (pid ${x.row.pid}, port ${x.row.port})`);
-      const ended = rep.results.filter((x) => STOP_ENDED.has(x.outcome)).length;
-      return { stopped: ended, kept: rep.kept, late: rep.late, verified: rep.verified === true,
-        texts: rep.results.filter((x) => !STOP_ENDED.has(x.outcome)).map((x) => x.text) };
-    },
-    // H-PR3 New lane: the strip's + (app/tab-shell.js createWorktree) in the project's window, opened first when it is not
-    newLane: async (root, branch) => {
-      const o = await openProject({ cwd: root, show: 'shown' });
-      if (!o || o.ok !== true) return { ok: false, error: (o && o.error) || 'the project did not open' };
-      if (o.elsewhere) return { ok: false, error: 'that project\'s window is in another Jiandu; make the lane there' };
-      const w = registry.get(o.root || root);
-      const shell = w && w.tabShell;
-      if (!shell) return { ok: false, error: 'the project\'s window did not start' };
-      if (shell.snapshot().mode !== 'tabs') return { ok: false, error: 'a new lane needs a project with worktrees (a dev folder)' };
-      return shell.createWorktree(branch);       // returned: the controller awaits it and answers its rejection
-    },
+    // H-PR3 (app/home-actions.js, behaviour-tested): Stop its sessions asks main first and stops only the sessions it named, chosen
+    // by their cwd's project root (never their install: PR #265 Dexter 1); New lane is the strip's + in the project's window.
+    askStop: (key) => homeActions.ask(key),
+    stopSessions: (key, token) => homeActions.stop(key, token),
+    newLane: (root, branch) => homeActions.newLane(root, branch),
   },
   log: (l) => console.log(l),
 });
