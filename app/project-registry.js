@@ -15,7 +15,8 @@
  *
  * closed(pw): when more than one window is registered, the closed one is removed and disposed (its poll, timers, dev servers and
  * claim stop) and the answer is true. The LAST window is left registered and the answer is false, so `window-all-closed` and the
- * quit handlers in main.js tear it down exactly as they did when a process held one window.
+ * quit handlers in main.js tear it down exactly as they did when a process held one window. With `othersStay: true` (Jiandu Home is
+ * open, so no window-all-closed comes) the last one is removed and disposed like any other.
  */
 
 const { normPath } = require('../host/project-layout');
@@ -57,8 +58,8 @@ function createProjectRegistry() {
     size() { return windows.size; },
     /** Every registered window, in insertion order (a copy). */
     list() { return [...windows.values()]; },
-    closed(pw) {
-      if (windows.get(keyOf(pw.root)) !== pw || windows.size <= 1) return false;
+    closed(pw, { othersStay = false } = {}) {
+      if (windows.get(keyOf(pw.root)) !== pw || (windows.size <= 1 && othersStay !== true)) return false;
       windows.delete(keyOf(pw.root));
       pw.dispose();
       return true;

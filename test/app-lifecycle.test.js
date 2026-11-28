@@ -229,3 +229,28 @@ test('currentWindows: root, launch folder, hidden only when the window is there 
   t.registry.add(fakeWin('B', { alive: false }));
   assert.deepStrictEqual(t.lc.currentWindows(), [{ root: 'A', cwd: 'A/dev', hidden: true }, { root: 'B', cwd: 'B/dev', hidden: false }]);
 });
+
+// ---- Jiandu Home ------------------------------------------------------------------------------------------------------------------
+
+test('Jiandu Home: an open Home keeps the process: quitIfEmpty with no project window and Home open neither stops the claim nor quits', () => {
+  let home = true;
+  const t = rig({ homeOpen: () => home });
+  assert.strictEqual(t.lc.quitIfEmpty(), false);
+  assert.deepStrictEqual(t.calls, []);
+  home = false;
+  assert.strictEqual(t.lc.quitIfEmpty(), true);
+  assert.deepStrictEqual(t.calls, [['appClaim.stop'], ['quit']]);
+});
+
+test('Jiandu Home (H9): a restore whose record had Home open shows Home; one without it does not', async () => {
+  const shown = [];
+  const decide = (record) => ({ restore: record.windows, skipped: [], reason: 'restore', home: record.home === true });
+  for (const home of [true, false]) {
+    const t = rig({ decide, showHome: () => shown.push(home) });
+    t.setRecord({ owner: { pid: 7, start: 'S7' }, clean: false, windows: [], home });
+    const plan = await t.lc.decideRestore(null);
+    t.lc.beginRecord();
+    await t.lc.runRestores(plan);
+  }
+  assert.deepStrictEqual(shown, [true]);
+});

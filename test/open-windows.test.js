@@ -79,12 +79,12 @@ test('P-O2: restoreDecision never throws on any JSON; its output is a subset of 
 
 // ---- the writer ---------------------------------------------------------------------------------------------------------------------
 
-function writer({ owns = () => true } = {}) {
+function writer({ owns = () => true, homeOpen } = {}) {
   const dir = tmpDir('cc-open-windows-');
   const file = path.join(dir, 'open-windows.json');
   let t = 100;
   const writes = [];
-  const w = load().createOpenWindowsWriter({ file, owner: { pid: 20, start: 'S20' }, owns, now: () => ++t, onWrite: (doc) => writes.push(doc) });
+  const w = load().createOpenWindowsWriter({ file, owner: { pid: 20, start: 'S20' }, owns, homeOpen, now: () => ++t, onWrite: (doc) => writes.push(doc) });
   const read = () => { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; } };
   return { w, file, read, writes };
 }
@@ -93,7 +93,33 @@ test('writer: begin writes the owner, not clean, restoring as told, and keeps th
   const { w, read } = writer();
   w.begin({ restoring: true, keep: [win(B, true)] });
   const doc = read();
-  assert.deepStrictEqual({ ...doc, at: 0 }, { owner: { pid: 20, start: 'S20' }, at: 0, clean: false, restoring: true, windows: [win(B, true)] });
+  assert.deepStrictEqual({ ...doc, at: 0 }, { owner: { pid: 20, start: 'S20' }, at: 0, clean: false, restoring: true, windows: [win(B, true)], home: false });
+});
+
+test('Jiandu Home (H9): the record says whether Home is open, and a change of Home alone is a change', () => {
+  let home = true;
+  const { w, read, writes } = writer({ homeOpen: () => home });
+  w.begin({ restoring: false, keep: [] });
+  assert.strictEqual(read().home, true);
+  w.endRestore([win(A)]);
+  const n = writes.length;
+  w.sync([win(A)]);
+  assert.strictEqual(writes.length, n, 'no change, no write');
+  home = false;
+  w.sync([win(A)]);
+  assert.strictEqual(writes.length, n + 1);
+  assert.strictEqual(read().home, false);
+  home = 'yes';
+  w.sync([win(A)]);
+  assert.strictEqual(read().home, false, 'only a real true');
+});
+
+test('Jiandu Home (H9): a restore brings Home back only when the crashed run had it open', () => {
+  assert.strictEqual(decide({ record: rec({ home: true }) }).home, true);
+  assert.strictEqual(decide({ record: rec({ home: 'yes' }) }).home, false);
+  assert.strictEqual(decide({ record: rec() }).home, false);
+  assert.strictEqual(decide({ record: rec({ home: true, windows: [] }) }).home, true, 'Home alone comes back');
+  assert.strictEqual(decide({ record: rec({ home: true, clean: true }) }).home, undefined, 'a clean quit restores nothing');
 });
 
 test('writer: sync is a no-op until endRestore(); then it writes only on a change', () => {

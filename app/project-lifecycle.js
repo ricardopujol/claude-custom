@@ -22,14 +22,15 @@
  *       `onChanged` (the tray's count, the Resources sampler's "who is looking").
  *
  * deps: registry, rootOf(cwd) (the project root a cwd belongs to), makeWindow(cwd, { launch }), makeRecord(pw), stopRecord(pw),
- * makeUnits(pw), dropUnits(pw), dropWatch(pw), dropExit(pw) (main's exit hooks for it), getAppStart(), afterStart(pw), onChanged(), log(...).
+ * makeUnits(pw), dropUnits(pw), dropWatch(pw), dropExit(pw) (main's exit hooks for it), getAppStart(), afterStart(pw), onChanged(), log(...),
+ * othersStay() (Jiandu Home is open: the last project window is dropped too, since no window-all-closed comes for it).
  */
 
 const { normPath } = require('../host/project-layout');
 
 function createProjectLifecycle({
   registry, rootOf, makeWindow, makeRecord, stopRecord, makeUnits, dropUnits, dropWatch, dropExit = () => {},
-  getAppStart, afterStart = () => {}, onChanged = () => {}, log = console.error,
+  getAppStart, afterStart = () => {}, onChanged = () => {}, othersStay = () => false, log = console.error,
 }) {
   const inFlight = new Map();          // normPath(root) -> the open in progress for that project
 
@@ -96,7 +97,9 @@ function createProjectLifecycle({
   }
 
   function projectClosed(pw) {
-    if (registry.closed(pw)) dropAll(pw);
+    let stay = false;
+    try { stay = othersStay() === true; } catch { stay = false; }
+    if (registry.closed(pw, { othersStay: stay })) dropAll(pw);
     onChanged();
   }
 

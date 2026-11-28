@@ -132,3 +132,16 @@ test('PR 3: touch(pw) / lastUsed(): the window used last (the tray\'s click with
   r.remove(b);
   assert.strictEqual(r.lastUsed(), null);
 });
+
+test('Jiandu Home: with another window staying (Home), the LAST project window is removed and disposed too', () => {
+  const r = createProjectRegistry();
+  const a = fakeWindow('A');
+  r.add(a);
+  assert.strictEqual(r.closed(a, { othersStay: true }), true);
+  assert.strictEqual(r.size(), 0);
+  assert.strictEqual(a.disposed, 1);
+  const b = fakeWindow('B');
+  r.add(b);
+  assert.strictEqual(r.closed(b, { othersStay: 'yes' }), false, 'only a real true');
+  assert.strictEqual(r.size(), 1);
+});

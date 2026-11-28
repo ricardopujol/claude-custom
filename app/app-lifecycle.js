@@ -26,7 +26,9 @@
  *
  * deps: registry, openQueue { busy(), onIdle(fn) }, appClaim { stop, resume, reclaim }, lockOn, pid, ownStart(), readLockOwner(),
  *       readRecord(), proveOwner(owner), decide(record, proof, launchRoot) -> restoreDecision's answer, makeWriter({ owner, owns }),
- *       openProject(o), quit(), getLaunchWindow(), quitGate { reset(), asking() }, setQuitting(v), isQuitting(), log.
+ *       openProject(o), quit(), getLaunchWindow(), quitGate { reset(), asking() }, setQuitting(v), isQuitting(), log;
+ *       optional (Jiandu Home): homeOpen() (an open Home keeps the process: quitIfEmpty says no), showHome() (a restore whose record had
+ *       Home open shows it first, H9).
  */
 
 const { cleanWindows } = require('../host/open-windows');
@@ -35,7 +37,9 @@ function createAppLifecycle(deps) {
   const { registry, openQueue, appClaim, lockOn, pid, ownStart, readLockOwner, readRecord, proveOwner, decide, makeWriter, openProject, quit,
     getLaunchWindow, quitGate, setQuitting, isQuitting } = deps;
   const log = deps.log || (() => {});
-  const state = { start: null, writer: null, plan: { restore: [], keep: [] } };
+  // Jiandu Home: an open Home is a window that keeps the process (H5), and a restore brings it back when the crashed run had it (H9)
+  const homeOpen = () => { try { return typeof deps.homeOpen === 'function' && deps.homeOpen() === true; } catch { return false; } };
+  const state = { start: null, writer: null, plan: { restore: [], keep: [], home: false } };
 
   const live = (p) => !!p.win && !p.win.isDestroyed();
 
@@ -48,7 +52,7 @@ function createAppLifecycle(deps) {
   const currentWindows = () => registry.list().map((p) => ({ root: p.root, cwd: p.launchCwd, hidden: live(p) && !p.win.isVisible() }));
 
   function quitIfEmpty() {
-    if (registry.size() > 0 || openQueue.busy()) return false;
+    if (registry.size() > 0 || openQueue.busy() || homeOpen()) return false;
     appClaim.stop();
     quit();
     return true;
@@ -74,7 +78,7 @@ function createAppLifecycle(deps) {
     const d = decide(record, proof, launchRoot);
     log(`[main] restore       : ${d.reason}${d.restore.length ? ` (${d.restore.length} window${d.restore.length === 1 ? '' : 's'})` : ''}`);
     for (const s of d.skipped || []) log(`[main] restore skipped ${JSON.stringify(s.root)}: ${s.reason}`);
-    state.plan = { restore: d.restore, keep: d.restore.length && record ? cleanWindows(record.windows) : [] };
+    state.plan = { restore: d.restore, keep: d.restore.length && record ? cleanWindows(record.windows) : [], home: d.home === true };
     return d.restore;
   }
 
@@ -86,6 +90,7 @@ function createAppLifecycle(deps) {
   }
 
   async function runRestores(list) {
+    if (state.plan.home && typeof deps.showHome === 'function') { try { deps.showHome(); } catch (err) { log(`[main] restore: Home did not show: ${err && err.message}`); } }
     try { await Promise.all(list.map((w) => openProject({ cwd: w.cwd, show: w.hidden ? 'hidden' : 'shown' }))); } catch { /* each open logs its own */ }
     if (state.writer) state.writer.endRestore(currentWindows());
     const lw = getLaunchWindow();
