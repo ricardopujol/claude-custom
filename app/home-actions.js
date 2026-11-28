@@ -14,14 +14,18 @@
  *                       (Dexter 3, 5).
  *     stop(key, token)  only with that token: the named rows that are still the card's and windowless on a fresh read are stopped,
  *                       one at a time (host/stop-folder.js stopRows, host/stop-holder.js stopHost: never a session with a window open,
- *                       never a pid it cannot prove). -> { ok, asked, stopped, kept, texts }: `stopped` counts the named rows that ended
- *                       (and those already gone), `kept` the rest, `ok` only when none was kept. One stop per card at a time (Dexter 6,
- *                       Miguel Y3): ask and stop answer "a stop is already running" meanwhile.
+ *                       never a pid it cannot prove). -> { ok, asked, stopped, kept, texts }: `stopped` counts the named rows that ended,
+ *                       and those PROVEN gone (absent from a verified fresh read); `kept` the rest, each with its reason in `texts` ("1
+ *                       now has a window", "1 is open as a tab now", "1 could not be checked ..."); `ok` only when none was kept. An
+ *                       unverified or failed fresh read stops nothing and says so (PR #265 Dexter R2-1: a session still running is never
+ *                       reported as stopped). One stop per card at a time (Dexter 6, Miguel Y3): ask and stop answer "a stop is already
+ *                       running" meanwhile.
  *     newLane(root, branch)  a flat project, or a folder placed nowhere, is refused before anything opens (Miguel G5, Dexter 4); then
  *                       the project opens (openProject) and the strip's + runs in its window (app/tab-shell.js createWorktree). A lane
  *                       made whose setup failed is { ok: false, made: true, error } (Miguel G6).
  *
- * deps: windowless() -> Promise<host rows> (main: app/tray-model.js windowlessItems' rows), stopHost(row) -> Promise<{ outcome, text }>,
+ * deps: readList() -> Promise<{ rows, verified }> (host/background-hosts.js), itemsOf(list) -> menu items (app/background-menu.js
+ * menuModel), windowlessOf(items) -> the windowless items (app/tray-model.js windowlessItems), stopHost(row) -> Promise<{ outcome, text }>,
  * projectOf, keyOf, openProject(o), registry { get(root) }, now(), newToken(), log.
  */
 
@@ -43,10 +47,22 @@ function selectRows(key, rows, { projectOf, keyOf }) {
     && sessionKeyOf(r.cwd, { projectOf, keyOf }) === key);
 }
 
+// Why a named session that is still listed is not stopped (PR #265 Dexter R2-1): it left "windowless" some way since the question.
+function keptReason(item) {
+  const r = item.row;
+  if (item.open && item.open.kind === 'select-tab') return 'is open as a tab now';
+  if (Number.isInteger(r.windows) && r.windows > 0) return 'now has a window';
+  if (r.windows !== 0) return 'could not be checked (its window count could not be read)';
+  return 'is no longer this project\'s';
+}
+
 function createHomeActions(deps) {
-  const { projectOf, keyOf, openProject, registry } = deps;
-  let windowless = deps.windowless;
+  const { projectOf, keyOf, openProject, registry, itemsOf, windowlessOf } = deps;
+  let readList = deps.readList;
   let stopHost = deps.stopHost;
+  // The host list as it is read ({ rows, verified }: host/background-hosts.js), its menu items (app/background-menu.js menuModel) and
+  // the windowless ones among them (app/tray-model.js windowlessItems): the same path as the cards' count.
+  const windowless = async () => windowlessOf(itemsOf(await readList())).map((it) => it.row);
   const now = deps.now || Date.now;
   const log = deps.log || (() => {});
   const newToken = deps.newToken || (() => require('crypto').randomBytes(16).toString('hex'));
@@ -74,30 +90,34 @@ function createHomeActions(deps) {
     asks.delete(token);                                     // good once
     if (now() > a.expires) return { ok: false, error: 'the question expired; ask again' };
     running.add(key);
+    const asked = a.ids.length;
+    const none = (text) => ({ ok: false, asked, stopped: 0, kept: asked, texts: [text] });
     try {
-      let rows;
-      try { rows = await windowless(); } catch (err) { return { ok: false, error: `the sessions could not be listed: ${errText(err)}` }; }
-      const list = Array.isArray(rows) ? rows : [];
-      const mine = new Map(selectRows(key, list, { projectOf, keyOf }).map((r) => [rowId(r), r]));
-      const listed = new Set(list.filter(hasId).map(rowId));
+      // the fresh read. Only a VERIFIED one may say a session is gone (PR #265 Dexter R2-1): an unverified or failed read stops nothing
+      let list;
+      try { list = await readList(); } catch (err) { return none(`the sessions could not be read, so none was stopped: ${errText(err)}`); }
+      if (!list || list.verified !== true || !Array.isArray(list.rows)) return none('the sessions could not be checked, so none was stopped');
+      const items = itemsOf(list).filter((it) => it && hasId(it.row));
+      const mine = new Map(selectRows(key, windowlessOf(items).map((it) => it.row), { projectOf, keyOf }).map((r) => [rowId(r), r]));
+      const anyState = new Map(items.map((it) => [rowId(it.row), it]));
       const targets = [];
       let gone = 0;
-      let moved = 0;
+      const reasons = new Map();                           // why a named session that still runs was not stopped -> how many
       for (const id of a.ids) {
         if (mine.has(id)) targets.push(mine.get(id));
-        else if (!listed.has(id)) gone += 1;              // it ended on its own since the question
-        else moved += 1;                                   // it got a window (or is no longer this card's): not asked to stop that
+        else if (anyState.has(id)) { const why = keptReason(anyState.get(id)); reasons.set(why, (reasons.get(why) || 0) + 1); }
+        else gone += 1;                                    // absent from a verified read: its host is proven not running
       }
       const results = await stopRows(targets, (r) => stopHost(r));
       for (const x of results) log(`[main] home: Stop its sessions: ${x.outcome} (pid ${x.row.pid}, port ${x.row.port})`);
       const ended = results.filter((x) => ENDED.has(x.outcome)).length;
       const texts = [
         ...results.filter((x) => !ENDED.has(x.outcome)).map((x) => x.text).filter((s) => typeof s === 'string' && s),
-        ...(moved > 0 ? [`${moved === 1 ? 'A session' : `${moved} sessions`} got a window since the question, so ${moved === 1 ? 'it was' : 'they were'} not stopped.`] : []),
+        ...[...reasons].map(([why, n]) => `${n} ${why}`),
       ];
       const stopped = ended + gone;
-      const kept = a.ids.length - stopped;
-      return { ok: kept === 0, asked: a.ids.length, stopped, kept, texts };
+      const kept = asked - stopped;
+      return { ok: kept === 0, asked, stopped, kept, texts };
     } finally {
       running.delete(key);
     }
@@ -127,7 +147,7 @@ function createHomeActions(deps) {
     busy: (key) => running.has(key),
     // test seams: swap a dep after construction
     _setStopHost: (fn) => { stopHost = fn; },
-    _setWindowless: (fn) => { windowless = fn; },
+    _setReadList: (fn) => { readList = fn; },
   };
 }
 

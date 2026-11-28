@@ -24,11 +24,18 @@ const projectOf = (p) => {
 let nextPid = 100;
 const row = (cwd, over = {}) => ({ pid: nextPid++, processStartedAt: '1340', cwd, install: 'C:\\cc\\dev', windows: 0, port: 7700, ...over });
 
+// The PRODUCTION path between the host list and the module (PR #265 Dexter R2-1): host/background-hosts.js's { rows, verified }, then
+// the real app/background-menu.js menuModel (a tab of a window here is 'select-tab') and app/tray-model.js windowlessItems.
+const { menuModel } = require('../app/background-menu');
+const { windowlessItems } = require('../app/tray-model');
+
 function rig({ rows = [], stopAnswer = () => ({ outcome: 'stopped', text: 'Stopped.' }), time = 1000 } = {}) {
-  const s = { rows, time, stopped: [], opened: [], reads: 0 };
+  const s = { rows, time, stopped: [], opened: [], reads: 0, verified: true, tabs: new Map() };
   const shells = new Map();
   const a = createHomeActions({
-    windowless: async () => { s.reads++; return s.rows; },
+    readList: async () => { s.reads++; return { rows: s.rows, verified: s.verified }; },
+    itemsOf: (list) => menuModel(list, { now: s.time, tabsByPort: s.tabs, projectRoot: null }).items,
+    windowlessOf: (items) => windowlessItems({ items }),
     stopHost: async (r) => { s.stopped.push(r.pid); const ans = stopAnswer(r); if (ans instanceof Error) throw ans; return ans; },
     projectOf, keyOf,
     openProject: async (o) => { s.opened.push(o.cwd); return s.openAnswer || { ok: true, root: o.cwd }; },
@@ -89,15 +96,56 @@ test('Dexter 3: the stop ends only the sessions its question named, still window
   assert.deepStrictEqual(r, { ok: true, asked: 1, stopped: 1, kept: 0, texts: [] });
 });
 
-test('Dexter 3: a named session that got a window is kept and said; one that already ended counts as stopped', async () => {
+test('Dexter 3: a named session that got a window is kept and said; one absent from a VERIFIED read is gone, counted as stopped', async () => {
   const t = rig({ rows: [row('C:\\a\\dev'), row('C:\\a\\feat-x'), row('C:\\a\\feat-y')] });
   const ask = await t.a.ask('c:\\a');
   assert.strictEqual(ask.count, 3);
   const [d, x] = t.s.rows;
-  t.s.rows = [d, { ...x, windows: 1 }];                 // feat-x got a window; feat-y ended by itself
+  t.s.rows = [d, { ...x, windows: 1 }];                 // feat-x got a window; feat-y ended by itself (a verified read without it)
   const r = await t.a.stop('c:\\a', ask.token);
   assert.deepStrictEqual(t.s.stopped, [d.pid]);
-  assert.deepStrictEqual(r, { ok: false, asked: 3, stopped: 2, kept: 1, texts: ['A session got a window since the question, so it was not stopped.'] });
+  assert.deepStrictEqual(r, { ok: false, asked: 3, stopped: 2, kept: 1, texts: ['1 now has a window'] });
+});
+
+// ---- PR #265 Dexter R2-1: a named session that still runs is never reported as stopped ----------------------------------------------
+
+async function askThenStop(change) {
+  const t = rig({ rows: [row('C:\\viral\\dev', { own: true, port: 4100 })] });
+  const ask = await t.a.ask('c:\\viral');
+  assert.strictEqual(ask.count, 1, 'asked with H at windows: 0');
+  change(t);
+  return { t, r: await t.a.stop('c:\\viral', ask.token) };
+}
+
+test('R2-1 A: H\'s window count could not be read (windows: null) on the fresh read: kept with that reason, no stop sent', async () => {
+  const { t, r } = await askThenStop((x) => { x.s.rows = [{ ...x.s.rows[0], windows: null }]; });
+  assert.deepStrictEqual(t.s.stopped, []);
+  assert.deepStrictEqual(r, { ok: false, asked: 1, stopped: 0, kept: 1, texts: ['1 could not be checked (its window count could not be read)'] });
+});
+
+test('R2-1 B: the fresh read is not verified (an empty unverified list): nothing is stopped, and it says the stop could not be checked', async () => {
+  const { t, r } = await askThenStop((x) => { x.s.rows = []; x.s.verified = false; });
+  assert.deepStrictEqual(t.s.stopped, []);
+  assert.deepStrictEqual(r, { ok: false, asked: 1, stopped: 0, kept: 1, texts: ['the sessions could not be checked, so none was stopped'] });
+});
+
+test('R2-1 C: H got its own window since the question: kept, "now has a window", no stop sent', async () => {
+  const { t, r } = await askThenStop((x) => { x.s.rows = [{ ...x.s.rows[0], windows: 1 }]; });
+  assert.deepStrictEqual(t.s.stopped, []);
+  assert.deepStrictEqual(r, { ok: false, asked: 1, stopped: 0, kept: 1, texts: ['1 now has a window'] });
+});
+
+test('R2-1 C\': H is open as a tab of a window here since the question (select-tab): kept, no stop sent', async () => {
+  const { t, r } = await askThenStop((x) => { x.s.tabs = new Map([[4100, 'c:\\viral\\dev']]); });
+  assert.deepStrictEqual(t.s.stopped, []);
+  assert.deepStrictEqual(r, { ok: false, asked: 1, stopped: 0, kept: 1, texts: ['1 is open as a tab now'] });
+});
+
+test('R2-1: a fresh read that throws stops nothing and says so; the counts still answer the question', async () => {
+  const { t, r } = await askThenStop((x) => { x.a._setReadList(async () => { throw new Error('no list'); }); });
+  assert.deepStrictEqual(t.s.stopped, []);
+  assert.deepStrictEqual(r, { ok: false, asked: 1, stopped: 0, kept: 1, texts: ['the sessions could not be read, so none was stopped: no list'] });
+  assert.strictEqual(t.a.busy('c:\\viral'), false);
 });
 
 test('Dexter 3: rows with a window, or `windows: null` (not known), are never asked about', async () => {
@@ -155,9 +203,8 @@ test('a failed or throwing stop of a named session is kept with its text; a list
   assert.strictEqual(r.texts[0], 'It has a window open.');
   assert.match(r.texts[1], /powershell failed/);
   const broken = rig({ rows: [row('C:\\a\\dev')] });
-  const ask2 = await broken.a.ask('c:\\a');
-  broken.a._setWindowless(async () => { throw new Error('no list'); });
-  assert.deepStrictEqual(await broken.a.stop('c:\\a', ask2.token), { ok: false, error: 'the sessions could not be listed: no list' });
+  broken.a._setReadList(async () => { throw new Error('no list'); });
+  assert.deepStrictEqual(await broken.a.ask('c:\\a'), { ok: false, error: 'the sessions could not be listed: no list' });
   assert.strictEqual(broken.a.busy('c:\\a'), false, 'the busy mark goes on the throw path too');
 });
 

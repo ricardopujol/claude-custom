@@ -414,10 +414,12 @@ function listBackground() {
 // ONE tray for the process (single-instance PR 3, design §6 option A): it sums and lists every window. The rules are app/tray-model.js,
 // the pixels app/tray-icon.js, the effects app/tray-controller.js; this hands them the real Electron, the registry and the shell.
 // The sessions with no window: ONE list for the process, with the tab ports of every window (a tab of any window is not "windowless").
-async function appBackgroundModel() {
+async function appBackgroundModel() { return backgroundModelOf(await listBackground()); }
+// The same model on a list already read (Jiandu Home's Stop reads the list itself, to keep its `verified`: PR #265 Dexter R2-1).
+function backgroundModelOf(list) {
   const tabsByPort = new Map();
   registry.forEach((p) => { if (p.tabShell) for (const t of p.tabShell.snapshot().tabs) if (Number.isInteger(t.port)) tabsByPort.set(t.port, t.key); });
-  return menuModel(await listBackground(), { now: Date.now(), tabsByPort, projectRoot: null });
+  return menuModel(list, { now: Date.now(), tabsByPort, projectRoot: null });
 }
 function startTray() {
   if (!TRAY_ON) return;
@@ -479,7 +481,10 @@ const homeWindow = createHomeWindow({
 // The sessions with no window, as host rows: ONE read for the cards' counts and for Stop's choice (app/home-actions.js selectRows).
 async function homeWindowlessRows() { return windowlessItems(await appBackgroundModel()).map((it) => it.row); }
 const homeActions = createHomeActions({
-  windowless: () => homeWindowlessRows(),
+  // the raw list (with `verified`), then the same menu model and windowless filter the cards count through
+  readList: () => listBackground(),
+  itemsOf: (list) => backgroundModelOf(list).items,
+  windowlessOf: (items) => windowlessItems({ items }),
   stopHost: (row) => stopHost({ row }, hostStopDeps()),
   projectOf: homePaths.projectOf, keyOf: normPath,
   openProject: (o) => openProject(o),

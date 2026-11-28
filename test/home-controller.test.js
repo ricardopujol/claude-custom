@@ -132,7 +132,12 @@ test('H8: a stop that kept a session says so with its text; a refusal passes thr
   const kept = stopRig({ ok: false, asked: 2, stopped: 1, kept: 1, texts: ['Couldn\'t stop that session: it has a window open.'] });
   await kept.t.c.refresh({ force: true });
   assert.deepStrictEqual(await kept.t.c.act({ action: 'stop-sessions', key: 'c:\\a', token: 'tok' }),
-    { ok: false, asked: 2, stopped: 1, kept: 1, error: 'Couldn\'t stop that session: it has a window open.' });
+    { ok: false, asked: 2, stopped: 1, kept: 1, error: 'Couldn\'t stop that session: it has a window open' });
+  // PR #265 Dexter R2-1: every reason reaches the card, so its words follow the counts
+  const two = stopRig({ ok: false, asked: 3, stopped: 1, kept: 2, texts: ['1 now has a window', '1 is open as a tab now'] });
+  await two.t.c.refresh({ force: true });
+  assert.deepStrictEqual(await two.t.c.act({ action: 'stop-sessions', key: 'c:\\a', token: 'tok' }),
+    { ok: false, asked: 3, stopped: 1, kept: 2, error: '1 now has a window; 1 is open as a tab now' });
   const refused = stopRig({ ok: false, error: 'the question expired; ask again' });
   await refused.t.c.refresh({ force: true });
   assert.deepStrictEqual(await refused.t.c.act({ action: 'stop-sessions', key: 'c:\\a', token: 'tok' }), { ok: false, error: 'the question expired; ask again' });

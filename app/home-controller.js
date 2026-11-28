@@ -258,7 +258,9 @@ function createHomeController(deps) {
     }
     const texts = Array.isArray(rep.texts) ? rep.texts.filter((s) => typeof s === 'string' && s) : [];
     if (rep.ok === true && rep.kept === 0) return { ok: true, asked: rep.asked, stopped: rep.stopped, kept: 0 };
-    return { ok: false, asked: rep.asked, stopped: rep.stopped, kept: rep.kept, error: texts[0] || 'a session could not be stopped' };
+    // every reason, so the card's words follow the counts ("Stopped 1 of 2 sessions. 1 now has a window.": PR #265 Dexter R2-1)
+    const error = texts.map((s) => s.replace(/\.+$/, '')).join('; ') || 'a session could not be stopped';
+    return { ok: false, asked: rep.asked, stopped: rep.stopped, kept: rep.kept, error };
   }
 
   // New lane: the strip's + (app/tab-shell.js createWorktree: Contract A, then setup, then the lane's tab) in the project's window,

@@ -70,7 +70,9 @@ test('PR #263 Dexter 2: Home\'s session end is the project window\'s: quitting, 
 
 test('H-PR3 (PR #265 Miguel Y1): the Stop and New lane effects are app/home-actions.js\'s (behaviour-tested there), on ONE windowless read', () => {
   assert.match(MAIN, /async function homeWindowlessRows\(\) \{ return windowlessItems\(await appBackgroundModel\(\)\)\.map\(\(it\) => it\.row\); \}/);
-  assert.match(MAIN, /const homeActions = createHomeActions\(\{\s*windowless: \(\) => homeWindowlessRows\(\),\s*stopHost: \(row\) => stopHost\(\{ row \}, hostStopDeps\(\)\),\s*projectOf: homePaths\.projectOf, keyOf: normPath,/);
+  // PR #265 Dexter R2-1: the raw list, so a stop can tell a verified read from an unverified one; the cards' own model and filter
+  assert.match(MAIN, /const homeActions = createHomeActions\(\{[^\n]*\n\s*readList: \(\) => listBackground\(\),\s*itemsOf: \(list\) => backgroundModelOf\(list\)\.items,\s*windowlessOf: \(items\) => windowlessItems\(\{ items \}\),\s*stopHost: \(row\) => stopHost\(\{ row \}, hostStopDeps\(\)\),\s*projectOf: homePaths\.projectOf, keyOf: normPath,/);
+  assert.match(MAIN, /async function appBackgroundModel\(\) \{ return backgroundModelOf\(await listBackground\(\)\); \}/);
   // the cards count from the same rows, with the same projectOf and keyOf (PR #265 Dexter 2)
   assert.match(MAIN, /windowless: async \(\) => \(await homeWindowlessRows\(\)\)\.map\(\(r\) => \(\{ cwd: r\.cwd \}\)\),\s*projectOf: homePaths\.projectOf, exists: homePaths\.exists, keyOf: normPath,/);
   assert.match(MAIN, /askStop: \(key\) => homeActions\.ask\(key\),\s*stopSessions: \(key, token\) => homeActions\.stop\(key, token\),\s*newLane: \(root, branch\) => homeActions\.newLane\(root, branch\),/);
