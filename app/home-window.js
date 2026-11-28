@@ -18,6 +18,7 @@
  */
 
 const { boundsToUse, boundsToSave, DEFAULT_SIZE, MIN_SIZE } = require('./home-bounds');
+const { guardNavigation } = require('./nav-guard');
 
 const STORE_KEY = 'home-window';
 const TITLE = 'Jiandu Home';
@@ -56,6 +57,10 @@ function createHomeWindow({ BrowserWindow, screen, store, preload, page, forProb
       webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, preload },
     }));
     const w = win;
+    // Miguel B1 (PR #204's rule for every page with a bridge): Home is loaded once with loadFile and never navigates. A link or a file
+    // dropped on it would load that page in this webContents WITH the `home` bridge, so every navigation is refused and no window opens.
+    guardNavigation(w.webContents, log);
+    w.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     w.on('close', (e) => {
       saveBounds();
       let hide = false;

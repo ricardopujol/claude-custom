@@ -19,7 +19,13 @@ class FakeWin extends EventEmitter {
     this.loaded = null;
     this.sent = [];
     this.minimized = false;
-    this.webContents = { id: 7, send: (ch, p) => this.sent.push([ch, p]), isDestroyed: () => this.destroyed };
+    const wc = new EventEmitter();
+    wc.id = 7;
+    wc.send = (ch, p) => this.sent.push([ch, p]);
+    wc.isDestroyed = () => this.destroyed;
+    wc.openHandler = null;
+    wc.setWindowOpenHandler = (fn) => { wc.openHandler = fn; };
+    this.webContents = wc;
   }
   loadFile(f) { this.loaded = f; }
   isDestroyed() { return this.destroyed; }
@@ -135,6 +141,20 @@ test('isSender: only the Home window\'s own webContents', () => {
   assert.strictEqual(t.hw.isSender(FakeWin.made[0].webContents), true);
   assert.strictEqual(t.hw.isSender({ id: 7 }), false, 'the same id is not the same page');
   assert.strictEqual(t.hw.isSender(null), false);
+});
+
+test('Miguel B1: Home never navigates (a dropped link or file is refused) and never opens a window', () => {
+  const t = rig();
+  t.hw.show();
+  const wc = FakeWin.made[0].webContents;
+  for (const ev of ['will-navigate', 'will-frame-navigate', 'will-redirect']) {
+    assert.ok(wc.listenerCount(ev) >= 1, `${ev} is guarded`);
+    let prevented = false;
+    wc.emit(ev, { preventDefault: () => { prevented = true; } }, 'https://example.com/');
+    assert.strictEqual(prevented, true, `${ev} is refused`);
+  }
+  assert.strictEqual(typeof wc.openHandler, 'function', 'a window-open handler is set');
+  assert.deepStrictEqual(wc.openHandler({ url: 'https://example.com/' }), { action: 'deny' });
 });
 
 test('isVisible: open, shown and not minimised', () => {

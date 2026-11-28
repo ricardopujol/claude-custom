@@ -37,6 +37,13 @@ test('Show in Explorer goes through app/file-link.js (#37: a folder opens; nothi
   assert.match(MAIN, /showInExplorer: \(root\) => \{\s*fileLink\.open\(root, root, fileFs, shell\)\.then\(/);
 });
 
+test('Miguel B1: the Home window guards its navigation and denies every window open (a page that navigates keeps its bridge)', () => {
+  const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'app', 'home-window.js'), 'utf8');
+  assert.match(src, /require\('\.\/nav-guard'\)/);
+  assert.match(src, /guardNavigation\(w\.webContents, /);
+  assert.match(src, /w\.webContents\.setWindowOpenHandler\(\(\) => \(\{ action: 'deny' \}\)\);/);
+});
+
 test('Home\'s close follows the project window\'s rule (H5): it hides only with minimise-on-close, a tray, and no quit under way', () => {
   assert.match(MAIN, /hidesOnClose: \(\) => hidesOnClose\(\{ settings: readTraySettings\(uiStore\), trayExists: !!trayController && trayController\.state\(\)\.exists, quitting \}\),/);
 });
