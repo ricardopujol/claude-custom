@@ -123,8 +123,9 @@ test('the preload and the Style tab: the DESIRED state goes out, the saved answe
 });
 
 test('found by a probe run: main imports menuModel, which appBackgroundModel calls (the tray said "menuModel is not defined" and listed no windowless session)', () => {
-  const body = bodyOf(/async function appBackgroundModel\(\)/);
-  assert.match(body, /menuModel\(await listBackground\(\)/);
+  // PR #265 Dexter R2-1: the call moved into backgroundModelOf(list), which Home's Stop also uses on a list it read itself
+  assert.match(MAIN, /async function appBackgroundModel\(\) \{ return backgroundModelOf\(await listBackground\(\)\); \}/);
+  assert.match(bodyOf(/function backgroundModelOf\(list\)/), /return menuModel\(list, \{ now: Date\.now\(\), tabsByPort, projectRoot: null \}\);/);
   // main.js ALONE (this file's MAIN also holds app/project-window.js, which has its own import)
   assert.match(require('./main-source').mainOnly(), /^const \{ menuModel \} = require\('\.\/background-menu'\);/m);
 });
