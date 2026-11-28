@@ -215,6 +215,20 @@ test('cleanOpen refuses a missing, relative or over-long cwd, another install, a
   assert.deepStrictEqual(clean({ ...ok, env: { CLAUDE_CUSTOM_BIN: 7 } }).env, {});
 });
 
+test('Jiandu Home: a home launch is type \'home\' on the app pipe; the owner hears { cwd, env, home: true }, an open never carries home', () => {
+  const { cleanOpenFor, sendFor } = load();
+  const clean = cleanOpenFor({ install: INSTALL, probe: false, samePath });
+  const ok = { type: 'home', cwd: CWD, install: INSTALL, probe: false };
+  assert.deepStrictEqual(clean(ok), { cwd: CWD, env: {}, home: true });
+  assert.strictEqual(clean({ ...ok, install: path.resolve('/apps/other') }), null, 'the same gates as an open');
+  assert.strictEqual(clean({ ...ok, cwd: 'relative' }), null);
+  assert.deepStrictEqual(clean({ ...ok, type: 'open', home: true }), { cwd: CWD, env: {} }, 'a home field on an open is ignored');
+  const sent = [];
+  sendFor({ send: (o) => { sent.push(o); return { ok: true }; }, home: true })({ pid: 5, msg: { cwd: CWD } });
+  sendFor({ send: (o) => { sent.push(o); return { ok: true }; }, home: false })({ pid: 6, msg: { cwd: CWD } });
+  assert.deepStrictEqual(sent.map((o) => [o.type, o.name]), [['home', '\\\\.\\pipe\\claude-custom-app-5'], ['open', '\\\\.\\pipe\\claude-custom-app-6']]);
+});
+
 test('app-owner: the file is <dir>\\app.json, made in a plain folder (no .claude-custom), and read() parses it', async () => {
   const dir = path.join(tmpDir('cc-app-'), 'nested', 'state');
   const o = owner();

@@ -34,14 +34,20 @@ function resolveLaunchTarget(arg, { cwd = process.cwd(), stat = fs.statSync } = 
 function parseCli(argv, { cwd = process.cwd() } = {}) {
   if (argv.includes('-h') || argv.includes('--help')) return { cmd: 'help' };
   let stop = false;
+  let home = false;
   const folders = [];
   for (const a of argv) {
     if (a === '--stop') stop = true;
+    // Jiandu Home (documentation/DESIGN_PROJECT_HUB.md H3): the shortcuts open Home; a folder still opens that folder, with no Home.
+    else if (a === '--home') home = true;
     else if (!a.trim()) throw new Error('an empty folder name (name a folder, or leave it out for this one)');
     else if (a.startsWith('-')) throw new Error(`unknown option: ${a}`);
     else folders.push(a);
   }
   if (folders.length > 1) throw new Error(`one folder at a time (got ${folders.length})`);
+  if (home && stop) throw new Error('--home and --stop do different things: give one of them');
+  if (home && folders.length) throw new Error('--home opens Home: name no folder with it');
+  if (home) return { cmd: 'home' };
   if (stop) return { cmd: 'stop', folder: path.resolve(cwd, folders[0] || '.') };
   return { cmd: 'open', arg: folders[0] };
 }
@@ -86,6 +92,16 @@ function launchEnv(env, target) {
   delete out.ELECTRON_RUN_AS_NODE;
   out.CLAUDE_CUSTOM_CWD = target;
   return out;
+}
+
+/**
+ * `claude-custom --home` (Jiandu Home): launchEnv's clean slate on the user's home folder (main needs a launch folder for the app pipe's
+ * message, and opens no project from it), plus HOME_FLAG, which main reads once and removes so no host or window inherits it.
+ */
+const HOME_FLAG = 'CLAUDE_CUSTOM_HOME';
+
+function homeEnv(env, { homeDir = require('os').homedir() } = {}) {
+  return { ...launchEnv(env, homeDir), [HOME_FLAG]: '1' };
 }
 
 /**
@@ -233,4 +249,4 @@ function shellEnv(base) {
   return out;
 }
 
-module.exports = { isFileSync, splitCommand, runnableExts, resolveLaunchTarget, parseCli, launchEnv, attachEnv, attachOnlyDecision, pickShell, shellEnv, findOnPath, SHELL_OVERRIDE };
+module.exports = { isFileSync, splitCommand, runnableExts, resolveLaunchTarget, parseCli, launchEnv, homeEnv, HOME_FLAG, attachEnv, attachOnlyDecision, pickShell, shellEnv, findOnPath, SHELL_OVERRIDE };
