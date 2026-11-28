@@ -19,13 +19,17 @@
  *                   lane          { key, lane }: the lane must be one of that card's lanes, by the exact path main sent (no disk call
  *                                 on page input: Miguel G8); opens the lane's folder
  *                   any other     the key must be a card's (ALL the cards, not only the shown ones) and the card must offer it
+ *                   stop-sessions { key, confirmed: true } (H-PR3, H8): a windowless card only, and only the card's second click;
+ *                                 host/stop-folder.js on the card's root -> a Promise of { ok, stopped, kept, error? }
+ *                   new-lane      { key, branch } (H-PR3): checkBranch first (no git call for a bad name), then the strip's + in
+ *                                 the project's window -> a Promise of { ok: true, branch } | { ok: false, error }
  *                 -> { ok: true } | { ok: false, error }. A pin or remove the record refused (it answers null) is
  *                 { ok: false, error: 'the record was not written' } (PR #263 Miguel Y3).
  *     model()     the last payload (built now if none was).
  *     closed()    the Home window closed: its filter goes, so a new Home shows every card under an empty box (PR #263 Dexter 1).
  *
- *   pagePayload(model, filter, now) -> { cards, summary, filter, empty, now }: the shown cards with only the actions this PR wires
- *   (WIRED_ACTIONS: Stop its sessions and New lane come with H-PR3), `empty` the empty-state line or null.
+ *   pagePayload(model, filter, now) -> { cards, summary, filter, empty, now }: the shown cards with only the wired actions
+ *   (WIRED_ACTIONS), `empty` the empty-state line or null.
  *   windowFacts(projectWindows, needsYouKeys) -> the model's windows: each LIVE project window's tabs, needs and lanes. A registered
  *   window whose BrowserWindow is gone is left out, so its card is closed and offers Open (PR #263 Dexter 8).
  *
@@ -34,17 +38,22 @@
  *
  * deps: record { readFresh, pin, remove } (app/home-record.js), readRecents() -> Promise<list | null>, windows() -> the model's windows,
  * windowless() -> Promise<[{ cwd }]>, projectOf, exists, keyOf, labelOf, push(payload), effects { open(cwd), goTo(root),
- * closeWindow(root), showInExplorer(root), chooseFolder() }, now(), log; optional defer(fn), onSourcesChanged().
+ * closeWindow(root), showInExplorer(root), chooseFolder(), stopSessions(root) -> Promise<{ stopped, kept, late, verified, texts }>,
+ * newLane(root, branch) -> Promise<{ ok, branch } | { ok: false, error }> }, now(), log; optional defer(fn), onSourcesChanged().
  */
 
 const path = require('path');
 const { homeCards, filterCards } = require('./home-model');
+const { checkBranch } = require('../host/worktree-ops');
 
 const RECENTS_MAX_AGE_MS = 60_000;
 const MAX_FILTER = 200;
 const EMPTY_TEXT = 'No projects yet. Choose a folder to open one.';
-const WIRED_ACTIONS = Object.freeze(['open', 'go-to', 'close-window', 'pin', 'unpin', 'remove', 'show-in-explorer']);
+const WIRED_ACTIONS = Object.freeze(['open', 'go-to', 'close-window', 'pin', 'unpin', 'remove', 'show-in-explorer', 'stop-sessions', 'new-lane']);
 const NOT_WRITTEN = 'the record was not written';
+const MAX_BRANCH = 120;
+const isCount = (n) => typeof n === 'number' && Number.isInteger(n) && n >= 0;
+const errText = (err) => String((err && err.message) || err);
 const EMPTY_RECORD = () => ({ projects: [], pins: [], removed: [] });
 
 const isObj = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
@@ -196,9 +205,49 @@ function createHomeController(deps) {
       case 'show-in-explorer': return run(() => { effects.showInExplorer(card.root); });
       case 'pin': case 'unpin': return run(() => edited(record.pin(card.root, action === 'pin')));
       case 'remove': return run(() => edited(record.remove(card.root)));
+      case 'stop-sessions': return stopSessions(card, msg);
+      case 'new-lane': return newLane(card, msg);
       default: return { ok: false, error: `that card does not offer ${action}` };
     }
   }
+
+  // H8: the card asks first ("Stop 2 sessions in viral? Stop / Cancel"); main refuses an ask that is not the second click, so no
+  // page bug can stop a session on one click. The stop is host/stop-folder.js's, as `claude-custom <folder> --stop` runs it. Only
+  // a stop that ended every session, with every session checked, is ok; anything else says why, with the count that did stop.
+  async function stopSessions(card, msg) {
+    if (msg.confirmed !== true) return { ok: false, error: 'a stop needs its second click' };
+    let rep;
+    try { rep = await effects.stopSessions(card.root); } catch (err) { return { ok: false, stopped: 0, kept: 0, error: errText(err) }; }
+    refresh({ force: true }).catch(() => {});
+    if (!isObj(rep) || !isCount(rep.stopped) || !isCount(rep.kept) || !isCount(rep.late)) {
+      return { ok: false, stopped: 0, kept: 0, error: 'the stop gave no answer' };
+    }
+    const kept = rep.kept + rep.late;
+    const texts = Array.isArray(rep.texts) ? rep.texts.filter((s) => typeof s === 'string' && s) : [];
+    let error = null;
+    if (rep.kept > 0) error = texts[0] || 'a session could not be stopped';
+    else if (rep.late > 0) error = 'sessions kept starting while others were stopped; stop again';
+    else if (rep.verified !== true) error = 'not every session could be checked, so one may still run';
+    await inFlightDone();
+    return error === null ? { ok: true, stopped: rep.stopped, kept } : { ok: false, stopped: rep.stopped, kept, error };
+  }
+
+  // New lane: the strip's + (app/tab-shell.js createWorktree: Contract A, then setup, then the lane's tab) in the project's window,
+  // which opens if it was not. The name is checked here first (host/worktree-ops.js checkBranch), so a bad one makes no git call.
+  async function newLane(card, msg) {
+    if (typeof msg.branch !== 'string') return { ok: false, error: checkBranch('') };
+    const branch = msg.branch.trim();
+    if (branch.length > MAX_BRANCH) return { ok: false, error: `a branch name is at most ${MAX_BRANCH} characters` };
+    const bad = checkBranch(branch);
+    if (bad) return { ok: false, error: bad };
+    let r;
+    try { r = await effects.newLane(card.root, branch); } catch (err) { return { ok: false, error: errText(err) }; }
+    if (!isObj(r) || r.ok !== true) return { ok: false, error: isObj(r) && typeof r.error === 'string' && r.error ? r.error : 'the lane was not made' };
+    return { ok: true, branch: typeof r.branch === 'string' && r.branch ? r.branch : branch };
+  }
+
+  // the refresh a stop started has pushed its cards before the stop answers, so the page's note lands on the fresh card
+  const inFlightDone = () => (inFlight ? inFlight.catch(() => {}) : Promise.resolve());
 
   function model() {
     if (payload) return payload;

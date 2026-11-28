@@ -137,7 +137,9 @@ const { createChipStore, watchChip, KEY: CHIP_KEY } = require('../host/chip-stor
 const { createHomeRecord } = require('./home-record');
 const { createHomePaths } = require('./home-paths');
 const { createScoreStore } = require('../host/game-scores');
-const { listDeps } = require('../host/stop-deps');
+const { listDeps, hostStopDeps } = require('../host/stop-deps');
+const { stopHost } = require('../host/stop-holder');
+const { stopFolder, ENDED: STOP_ENDED } = require('../host/stop-folder');
 // The tray icon (BACKLOG #119 A8): the needs-you count, show/hide, start minimised, minimise on close.
 const { createTrayController } = require('./tray-controller');
 const { renderTrayIcon } = require('./tray-icon');
@@ -500,6 +502,26 @@ const homeController = createHomeController({
         if (r && r.canceled !== true && Array.isArray(r.filePaths) && typeof r.filePaths[0] === 'string') openProject({ cwd: r.filePaths[0], show: 'shown' }).catch(() => {});
       }).catch(() => {});
     },
+    // H-PR3 Stop its sessions: `claude-custom <folder> --stop`'s loop (host/stop-folder.js) with its deps, so the two cannot drift.
+    // stopHost never stops a session with a window open, and never a pid it cannot prove.
+    stopSessions: async (root) => {
+      const rep = await stopFolder({ folder: root }, { list: () => listBackground(), stopHost: (row) => stopHost({ row }, hostStopDeps()) });
+      for (const x of rep.results) console.log(`[main] home: Stop its sessions: ${x.outcome} (pid ${x.row.pid}, port ${x.row.port})`);
+      const ended = rep.results.filter((x) => STOP_ENDED.has(x.outcome)).length;
+      return { stopped: ended, kept: rep.kept, late: rep.late, verified: rep.verified === true,
+        texts: rep.results.filter((x) => !STOP_ENDED.has(x.outcome)).map((x) => x.text) };
+    },
+    // H-PR3 New lane: the strip's + (app/tab-shell.js createWorktree) in the project's window, opened first when it is not
+    newLane: async (root, branch) => {
+      const o = await openProject({ cwd: root, show: 'shown' });
+      if (!o || o.ok !== true) return { ok: false, error: (o && o.error) || 'the project did not open' };
+      if (o.elsewhere) return { ok: false, error: 'that project\'s window is in another Jiandu; make the lane there' };
+      const w = registry.get(o.root || root);
+      const shell = w && w.tabShell;
+      if (!shell) return { ok: false, error: 'the project\'s window did not start' };
+      if (shell.snapshot().mode !== 'tabs') return { ok: false, error: 'a new lane needs a project with worktrees (a dev folder)' };
+      return shell.createWorktree(branch);       // returned: the controller awaits it and answers its rejection
+    },
   },
   log: (l) => console.log(l),
 });
@@ -512,9 +534,9 @@ function showHome({ hidden = false } = {}) {
 function registerHomeIpc() {
   ipcMain.on('home:ready', (e) => { if (homeWindow.isSender(e.sender)) homeWindow.send(homeController.model()); });
   // an invoke: the page says what happened from main's answer, never before it (PR #263 Miguel Y3)
-  ipcMain.handle('home:act', (e, msg) => {
+  ipcMain.handle('home:act', async (e, msg) => {
     if (!homeWindow.isSender(e.sender)) return { ok: false, error: 'not the Home page' };
-    const r = homeController.act(msg);
+    const r = await homeController.act(msg);      // Stop its sessions and New lane answer later (H-PR3)
     if (!r.ok) console.log(`[main] home: ${JSON.stringify(msg && msg.action)} refused: ${r.error}`);
     return r;
   });

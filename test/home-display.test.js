@@ -157,3 +157,107 @@ test('the page wiring: a push draws the cards and the summary; a click acts; typ
   await settle();
   assert.strictEqual(doc.getElementById('notice').textContent, 'q removed from the list. Its folder is not touched.');
 });
+
+// ---- H-PR3: Stop its sessions (H8, the card asks) and New lane -----------------------------------------------------------------
+
+const windowless = (over = {}) => card({ key: 'kw', root: 'C:\\w', label: 'viral', state: 'windowless', sessions: 2,
+  actions: ['open', 'stop-sessions', 'pin', 'show-in-explorer', 'new-lane'], ...over });
+const noteOf = (doc, key) => { const n = doc.querySelector(`[data-key="${key}"] .card-note`); return n ? n.textContent : null; };
+
+test('H8: Stop its sessions asks on the card, no popup: "Stop 2 sessions in viral? Stop / Cancel"; Cancel stops nothing', () => {
+  const p = livePage();
+  const doc = p.dom.window.document;
+  p.onModel(payload([windowless()]));
+  doc.querySelector('[data-act="stop-sessions"]').click();
+  assert.deepStrictEqual(p.acts, [], 'the first click only asks');
+  const ask = doc.querySelector('[data-key="kw"] .confirm');
+  assert.ok(ask, 'the question is on the card');
+  assert.strictEqual(ask.querySelector('.question').textContent, 'Stop 2 sessions in viral?');
+  assert.deepStrictEqual([...ask.querySelectorAll('button')].map((b) => b.textContent), ['Stop', 'Cancel']);
+  assert.strictEqual(doc.querySelector('[data-key="kw"] [data-act="stop-sessions"]'), null, 'the actions give way to the question');
+  p.onModel(payload([windowless()]));
+  assert.ok(doc.querySelector('[data-key="kw"] .confirm'), 'a push while asking keeps the question');
+  doc.querySelector('[data-act="stop-cancel"]').click();
+  assert.strictEqual(doc.querySelector('[data-key="kw"] .confirm'), null);
+  assert.deepStrictEqual(p.acts, []);
+  const one = livePage();
+  one.onModel(payload([windowless({ sessions: 1, label: 'q<b>' })]));
+  one.dom.window.document.querySelector('[data-act="stop-sessions"]').click();
+  assert.strictEqual(one.dom.window.document.querySelector('.confirm .question').textContent, 'Stop 1 session in q<b>?', 'one session, and the name escaped');
+});
+
+test('H8: Stop sends the second click, then the card says how many stopped; a refused stop says why', async () => {
+  const answers = [{ ok: true, stopped: 2, kept: 0 }, { ok: false, stopped: 1, kept: 1, error: 'Couldn\'t stop that session: it has a window open.' },
+    { ok: false, stopped: 0, kept: 0, error: 'powershell failed' }];
+  const p = livePage(() => answers.shift());
+  const doc = p.dom.window.document;
+  const stopOnce = async () => {
+    p.onModel(payload([windowless()]));
+    doc.querySelector('[data-act="stop-sessions"]').click();
+    doc.querySelector('[data-act="stop-confirm"]').click();
+    assert.strictEqual(noteOf(doc, 'kw'), 'Stopping 2 sessions…');
+    await settle();
+    return noteOf(doc, 'kw');
+  };
+  assert.strictEqual(await stopOnce(), 'Stopped 2 sessions.');
+  assert.deepStrictEqual(p.acts.pop(), { action: 'stop-sessions', key: 'kw', confirmed: true });
+  assert.strictEqual(await stopOnce(), 'Stopped 1 of 2 sessions. Couldn\'t stop that session: it has a window open.');
+  assert.strictEqual(await stopOnce(), 'The sessions were not stopped: powershell failed.');
+  p.onModel(payload([windowless({ state: 'closed', sessions: null, actions: ['open'] })]));
+  assert.strictEqual(noteOf(doc, 'kw'), 'The sessions were not stopped: powershell failed.', 'the note stays on the card after the push');
+});
+
+test('New lane: a form on the card (a type prefix and a name); Create sends prefix + name; the card says it opened', async () => {
+  const p = livePage((m) => (m.action === 'new-lane' ? { ok: true, branch: m.branch } : { ok: true }));
+  const doc = p.dom.window.document;
+  const win = p.dom.window;
+  p.onModel(payload([windowless()]));
+  doc.querySelector('[data-act="new-lane"]').click();
+  const form = doc.querySelector('[data-key="kw"] .lane-form');
+  assert.ok(form, 'the form is on the card');
+  const prefix = form.querySelector('select[data-field="prefix"]');
+  assert.deepStrictEqual([...prefix.options].map((o) => o.value), ['feat/', 'fix/', 'spike/', 'chore/', 'docs/', 'refactor/', 'test/']);
+  assert.deepStrictEqual(p.acts, []);
+  prefix.value = 'fix/';
+  prefix.dispatchEvent(new win.Event('change', { bubbles: true }));
+  const name = doc.querySelector('[data-key="kw"] input[data-field="name"]');
+  name.value = 'crash-on-open';
+  name.dispatchEvent(new win.Event('input', { bubbles: true }));
+  p.onModel(payload([windowless()]));
+  assert.strictEqual(doc.querySelector('[data-key="kw"] input[data-field="name"]').value, 'crash-on-open', 'a push while typing keeps the name');
+  assert.strictEqual(doc.querySelector('[data-key="kw"] select[data-field="prefix"]').value, 'fix/');
+  doc.querySelector('[data-act="lane-create"]').click();
+  assert.deepStrictEqual(p.acts.pop(), { action: 'new-lane', key: 'kw', branch: 'fix/crash-on-open' });
+  assert.strictEqual(noteOf(doc, 'kw'), 'Creating fix/crash-on-open… Its window shows the progress.');
+  await settle();
+  assert.strictEqual(noteOf(doc, 'kw'), 'fix/crash-on-open opened in its window.');
+  assert.strictEqual(doc.querySelector('[data-key="kw"] .lane-form'), null);
+});
+
+test('New lane: a name typed with its own prefix is kept as typed; Cancel and Escape close the form; a refused name reopens it with why', async () => {
+  const p = livePage((m) => (m.action === 'new-lane' ? { ok: false, error: 'A branch name can\'t contain spaces.' } : { ok: true }));
+  const doc = p.dom.window.document;
+  const win = p.dom.window;
+  p.onModel(payload([windowless()]));
+  doc.querySelector('[data-act="new-lane"]').click();
+  doc.querySelector('[data-act="lane-cancel"]').click();
+  assert.strictEqual(doc.querySelector('.lane-form'), null);
+  doc.querySelector('[data-act="new-lane"]').click();
+  doc.querySelector('input[data-field="name"]').dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  assert.strictEqual(doc.querySelector('.lane-form'), null, 'Escape closes it');
+  doc.querySelector('[data-act="new-lane"]').click();
+  const n2 = doc.querySelector('input[data-field="name"]');
+  n2.value = 'docs/a b';
+  n2.dispatchEvent(new win.Event('input', { bubbles: true }));
+  n2.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+  assert.deepStrictEqual(p.acts.pop(), { action: 'new-lane', key: 'kw', branch: 'docs/a b' });
+  await settle();
+  assert.strictEqual(noteOf(doc, 'kw'), 'The lane was not made: A branch name can\'t contain spaces.');
+  assert.strictEqual(doc.querySelector('input[data-field="name"]').value, 'docs/a b', 'the form is back with the name');
+});
+
+test('the H-PR3 buttons read "Stop its sessions" and "New lane", with titles that say what they do', () => {
+  const html = D.cardsHtml(payload([windowless()]));
+  assert.match(html, /<button data-act="stop-sessions" title="[^"]+">Stop its sessions<\/button>/);
+  assert.match(html, /<button data-act="new-lane" title="[^"]+">New lane<\/button>/);
+});
